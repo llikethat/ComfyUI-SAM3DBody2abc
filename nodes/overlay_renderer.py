@@ -121,8 +121,9 @@ class RenderMeshOverlay:
         
         # Render joints and skeleton
         if joints_2d is not None:
+            joint_parents = sam3dbody_mesh.get("joint_parents")
             if show_skeleton:
-                overlay = self._render_skeleton(overlay, joints_2d, joint_rgb, line_thickness, has_cv2)
+                overlay = self._render_skeleton(overlay, joints_2d, joint_rgb, line_thickness, has_cv2, joint_parents)
             if show_joints or render_mode == "joints_only":
                 overlay = self._render_joints(overlay, joints_2d, joint_rgb, joint_radius, has_cv2)
         
@@ -158,9 +159,11 @@ class RenderMeshOverlay:
         camera = mesh.get("camera")
         if camera is None:
             camera = mesh.get("cam")
+        focal_length = mesh.get("focal_length")
         
         if joints_3d is not None and camera is not None:
-            return self._project_to_2d(np.array(joints_3d), camera, W, H)
+            joints_3d = np.array(joints_3d)
+            return self._project_to_2d(joints_3d, camera, W, H, focal_length)
         
         return None
     
@@ -176,9 +179,10 @@ class RenderMeshOverlay:
         camera = mesh.get("camera")
         if camera is None:
             camera = mesh.get("cam")
+        focal_length = mesh.get("focal_length")
         
         if camera is not None:
-            return self._project_to_2d(verts_3d, camera, W, H)
+            return self._project_to_2d(verts_3d, camera, W, H, focal_length)
         
         # Simple orthographic projection as fallback
         verts_2d = verts_3d[:, :2]
@@ -186,7 +190,7 @@ class RenderMeshOverlay:
         verts_2d = verts_2d * np.array([W * 0.8, H * 0.8]) + np.array([W * 0.1, H * 0.1])
         return verts_2d
     
-    def _project_to_2d(self, points_3d: np.ndarray, camera: Any, W: int, H: int) -> np.ndarray:
+    def _project_to_2d(self, points_3d: np.ndarray, camera: Any, W: int, H: int, focal_length: Any = None) -> np.ndarray:
         """Project 3D points to 2D using camera parameters."""
         # Handle different camera formats
         if isinstance(camera, dict):
@@ -196,7 +200,7 @@ class RenderMeshOverlay:
         elif isinstance(camera, (list, np.ndarray)):
             camera = np.array(camera).flatten()
             if len(camera) >= 3:
-                # Assume [s, tx, ty] format
+                # Assume [s, tx, ty] format (weak perspective)
                 s, tx, ty = camera[0], camera[1], camera[2]
                 points_2d = points_3d[:, :2] * s + np.array([tx, ty])
                 points_2d = points_2d * np.array([W, H]) / 2 + np.array([W, H]) / 2
@@ -206,6 +210,13 @@ class RenderMeshOverlay:
         else:
             focal = 5000
             cx, cy = W / 2, H / 2
+        
+        # Use focal_length from mesh data if provided
+        if focal_length is not None:
+            if isinstance(focal_length, (list, np.ndarray)):
+                focal = float(np.array(focal_length).flatten()[0])
+            else:
+                focal = float(focal_length)
         
         # Perspective projection
         z = points_3d[:, 2:3] + 1e-6
@@ -296,18 +307,30 @@ class RenderMeshOverlay:
         joints_2d: np.ndarray,
         color: Tuple,
         thickness: int,
-        has_cv2: bool
+        has_cv2: bool,
+        joint_parents: Optional[List[int]] = None
     ) -> np.ndarray:
-        """Render skeleton connections."""
+        """Render skeleton connections using joint hierarchy."""
+        
+        # Build connections from joint_parents if available
+        if joint_parents is not None:
+            connections = []
+            for i, parent in enumerate(joint_parents):
+                if parent >= 0 and parent < len(joints_2d) and i < len(joints_2d):
+                    connections.append((parent, i))
+        else:
+            # Fallback to hardcoded SMPL connections (24 joints)
+            connections = self.SKELETON_CONNECTIONS
+        
         if has_cv2:
             import cv2
-            for conn in self.SKELETON_CONNECTIONS:
+            for conn in connections:
                 if conn[0] < len(joints_2d) and conn[1] < len(joints_2d):
                     pt1 = tuple(joints_2d[conn[0]].astype(np.int32))
                     pt2 = tuple(joints_2d[conn[1]].astype(np.int32))
                     cv2.line(img, pt1, pt2, color, thickness)
         else:
-            for conn in self.SKELETON_CONNECTIONS:
+            for conn in connections:
                 if conn[0] < len(joints_2d) and conn[1] < len(joints_2d):
                     self._draw_line_numpy(img, joints_2d[conn[0]], joints_2d[conn[1]], color)
         return img
@@ -396,6 +419,8 @@ class RenderMeshOverlayBatch:
                     "joints": mesh.get("joints"),
                     "joints_2d": mesh.get("joints_2d"),
                     "camera": mesh.get("camera"),
+                    "joint_parents": mesh.get("joint_parents"),
+                    "focal_length": mesh.get("focal_length"),
                 }
                 
                 result, = renderer.render_overlay(

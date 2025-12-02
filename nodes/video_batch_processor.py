@@ -133,6 +133,21 @@ class SAM3DBodyBatchProcessor:
                 fov_estimator=None,
             )
             
+            # Extract joint parent hierarchy from MHR model (constant for all frames)
+            joint_parents = None
+            try:
+                if hasattr(sam_3d_model, 'mhr_head') and hasattr(sam_3d_model.mhr_head, 'mhr'):
+                    mhr = sam_3d_model.mhr_head.mhr
+                    if hasattr(mhr, 'character_torch') and hasattr(mhr.character_torch, 'skeleton'):
+                        skeleton_obj = mhr.character_torch.skeleton
+                        if hasattr(skeleton_obj, 'joint_parents'):
+                            parent_tensor = skeleton_obj.joint_parents
+                            if isinstance(parent_tensor, torch.Tensor):
+                                joint_parents = parent_tensor.cpu().numpy().tolist()
+                                print(f"[SAM3DBody2abc] Extracted joint hierarchy: {len(joint_parents)} joints")
+            except Exception as e:
+                print(f"[SAM3DBody2abc] Could not extract joint parents: {e}")
+            
             mesh_sequence = []
             valid_count = 0
             
@@ -186,11 +201,23 @@ class SAM3DBodyBatchProcessor:
                             if isinstance(joints, torch.Tensor):
                                 joints = joints.cpu().numpy()
                         
+                        # Extract joint rotations for FBX export
+                        joint_rotations = output.get("pred_global_rots", None)
+                        if joint_rotations is not None:
+                            if isinstance(joint_rotations, torch.Tensor):
+                                joint_rotations = joint_rotations.cpu().numpy()
+                        
                         # Extract camera
                         camera = output.get("pred_cam_t", None)
                         if camera is not None:
                             if isinstance(camera, torch.Tensor):
                                 camera = camera.cpu().numpy()
+                        
+                        # Extract focal length
+                        focal_length = output.get("focal_length", None)
+                        if focal_length is not None:
+                            if isinstance(focal_length, torch.Tensor):
+                                focal_length = focal_length.cpu().numpy()
                         
                         mesh_data = {
                             "frame_index": idx,
@@ -199,8 +226,10 @@ class SAM3DBodyBatchProcessor:
                             "vertices": vertices,
                             "faces": estimator.faces if hasattr(estimator, 'faces') else None,
                             "joints": joints,
+                            "joint_parents": joint_parents,  # From model (constant)
+                            "joint_rotations": joint_rotations,
                             "camera": camera,
-                            "focal_length": output.get("focal_length", None),
+                            "focal_length": focal_length,
                             "bbox": output.get("bbox", None),
                             "pose_params": {
                                 "body_pose": output.get("body_pose_params", None),
@@ -216,6 +245,8 @@ class SAM3DBodyBatchProcessor:
                             valid_count += 1
                             if valid_count == 1:
                                 print(f"[SAM3DBody2abc] First valid mesh: {vertices.shape[0]} vertices")
+                                if joints is not None:
+                                    print(f"[SAM3DBody2abc] Joint data: {joints.shape[0]} joints")
                     else:
                         mesh_sequence.append({
                             "frame_index": idx,

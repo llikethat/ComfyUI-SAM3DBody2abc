@@ -101,14 +101,21 @@ class ExportAnimatedAlembic:
         if not valid_frames:
             return (output_path, "Error: No valid mesh data", 0)
         
-        # Try native Alembic export
+        # Try native Alembic export (PyAlembic - not SQLAlchemy alembic!)
         try:
+            # Check for the correct PyAlembic package (not SQLAlchemy's alembic)
+            from alembic import Abc, AbcGeom
+            import imath
+            print("[ExportAnimatedAlembic] PyAlembic found, using native export...")
             result = self._export_native_alembic(
                 valid_frames, output_path, fps, include_joints, scale, up_axis, center_mesh
             )
             return result
-        except ImportError:
-            print("[ExportAnimatedAlembic] Native Alembic not available, trying Blender export...")
+        except ImportError as e:
+            # Could be missing PyAlembic entirely, or have wrong package (SQLAlchemy)
+            print(f"[ExportAnimatedAlembic] PyAlembic not available ({e}), trying Blender...")
+        except Exception as e:
+            print(f"[ExportAnimatedAlembic] PyAlembic export failed: {e}, trying Blender...")
         
         # Try Blender export
         try:
@@ -578,23 +585,8 @@ class ExportAnimatedFBX:
     Export animated skeleton to FBX format.
     Creates a SINGLE FBX file with animated skeleton across ALL frames.
     
-    The skeleton follows SMPL joint hierarchy (24 joints) and can be
-    imported into any 3D software for retargeting to other characters.
+    Uses the joint hierarchy from MHR (Momentum Human Rig) model.
     """
-    
-    # SMPL joint names
-    JOINT_NAMES = [
-        "pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee",
-        "spine2", "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot",
-        "neck", "left_collar", "right_collar", "head", "left_shoulder", "right_shoulder",
-        "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand"
-    ]
-    
-    # SMPL skeleton hierarchy (parent indices)
-    JOINT_PARENTS = [
-        -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
-        9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21
-    ]
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -685,6 +677,19 @@ class ExportAnimatedFBX:
         if not blender_path:
             raise RuntimeError("Blender not found")
         
+        # Get joint hierarchy from first frame (constant for all frames)
+        joint_parents = frames[0].get("joint_parents")
+        if joint_parents is None:
+            print("[ExportAnimatedFBX] Warning: No joint_parents in data, skeleton hierarchy may be incorrect")
+            # Fallback: create flat hierarchy
+            num_joints = len(frames[0]["joints"])
+            joint_parents = [-1] + [0] * (num_joints - 1)  # All joints parent to root
+        
+        num_joints = len(joint_parents)
+        joint_names = [f"joint_{i:03d}" for i in range(num_joints)]
+        
+        print(f"[ExportAnimatedFBX] Exporting skeleton with {num_joints} joints")
+        
         # Prepare data
         export_data = {
             "frames": [],
@@ -692,13 +697,16 @@ class ExportAnimatedFBX:
             "fps": fps,
             "scale": scale,
             "include_mesh": include_mesh,
-            "joint_names": self.JOINT_NAMES,
-            "joint_parents": self.JOINT_PARENTS,
+            "joint_names": joint_names,
+            "joint_parents": joint_parents if isinstance(joint_parents, list) else joint_parents.tolist(),
         }
         
         for frame in frames:
+            joints = frame.get("joints")
+            if joints is None:
+                continue
             frame_export = {
-                "joints": np.array(frame["joints"]).tolist(),
+                "joints": np.array(joints).tolist(),
             }
             if include_mesh and frame.get("vertices") is not None:
                 frame_export["vertices"] = np.array(frame["vertices"]).tolist()
@@ -722,6 +730,10 @@ class ExportAnimatedFBX:
                 text=True,
                 timeout=600
             )
+            
+            print(f"[ExportAnimatedFBX] Blender stdout: {result.stdout[-500:] if result.stdout else 'None'}")
+            if result.stderr:
+                print(f"[ExportAnimatedFBX] Blender stderr: {result.stderr[-500:]}")
             
             if result.returncode == 0 and os.path.exists(output_path):
                 return (output_path, f"Exported {len(frames)} frames to FBX", len(frames))
