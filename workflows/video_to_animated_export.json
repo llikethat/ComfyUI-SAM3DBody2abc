@@ -53,7 +53,7 @@
       ],
       "title": "🎬 SAM3DBody2abc Batch Processor",
       "properties": {"Node name for S&R": "SAM3DBody2abc_BatchProcessor"},
-      "widgets_values": [0, -1, 1]
+      "widgets_values": [0.8, "full", 0, -1, 1]
     },
     {
       "id": 4,

@@ -351,6 +351,7 @@ class ExportAnimatedAlembic:
     def _find_blender(self) -> Optional[str]:
         """Find Blender executable."""
         import shutil
+        import glob
         
         locations = [
             shutil.which("blender"),
@@ -358,6 +359,35 @@ class ExportAnimatedAlembic:
             "/usr/local/bin/blender",
             "/Applications/Blender.app/Contents/MacOS/Blender",
         ]
+        
+        # ComfyUI SAM3DBody bundled Blender - try multiple approaches
+        try:
+            # Method 1: From this file's location (custom_nodes/ComfyUI-SAM3DBody2abc/nodes/)
+            custom_nodes_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            
+            # Method 2: From folder_paths
+            try:
+                import folder_paths
+                custom_nodes_dir2 = os.path.join(folder_paths.base_path, "custom_nodes")
+            except:
+                custom_nodes_dir2 = None
+            
+            # Search patterns for SAM3DBody bundled Blender
+            for base_dir in [custom_nodes_dir, custom_nodes_dir2, "/workspace/ComfyUI/custom_nodes"]:
+                if base_dir is None:
+                    continue
+                sam3d_blender_patterns = [
+                    os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*-linux-x64", "blender"),
+                    os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*", "blender"),
+                    os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "*", "blender"),
+                ]
+                for pattern in sam3d_blender_patterns:
+                    matches = glob.glob(pattern)
+                    if matches:
+                        print(f"[SAM3DBody2abc] Found Blender: {matches[0]}")
+                        locations.extend(matches)
+        except Exception as e:
+            print(f"[SAM3DBody2abc] Error searching for Blender: {e}")
         
         # Windows paths
         for version in ["4.2", "4.1", "4.0", "3.6"]:
@@ -648,6 +678,7 @@ class ExportAnimatedFBX:
     def _find_blender(self) -> Optional[str]:
         """Find Blender executable."""
         import shutil
+        import glob
         
         locations = [
             shutil.which("blender"),
@@ -655,6 +686,19 @@ class ExportAnimatedFBX:
             "/usr/local/bin/blender",
             "/Applications/Blender.app/Contents/MacOS/Blender",
         ]
+        
+        # ComfyUI SAM3DBody bundled Blender
+        try:
+            comfy_base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            sam3d_blender_patterns = [
+                os.path.join(comfy_base, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*", "blender"),
+                os.path.join(comfy_base, "ComfyUI-SAM3DBody", "lib", "blender", "*/blender"),
+            ]
+            for pattern in sam3d_blender_patterns:
+                matches = glob.glob(pattern)
+                locations.extend(matches)
+        except:
+            pass
         
         for version in ["4.2", "4.1", "4.0", "3.6"]:
             locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")

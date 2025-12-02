@@ -152,8 +152,12 @@ class RenderMeshOverlay:
                     return joints
         
         # Project 3D joints if camera available
-        joints_3d = mesh.get("joints") or mesh.get("J")
-        camera = mesh.get("camera") or mesh.get("cam")
+        joints_3d = mesh.get("joints")
+        if joints_3d is None:
+            joints_3d = mesh.get("J")
+        camera = mesh.get("camera")
+        if camera is None:
+            camera = mesh.get("cam")
         
         if joints_3d is not None and camera is not None:
             return self._project_to_2d(np.array(joints_3d), camera, W, H)
@@ -162,12 +166,16 @@ class RenderMeshOverlay:
     
     def _get_2d_vertices(self, mesh: Dict, W: int, H: int) -> Optional[np.ndarray]:
         """Get 2D vertex positions."""
-        verts_3d = mesh.get("verts") or mesh.get("vertices")
+        verts_3d = mesh.get("verts")
+        if verts_3d is None:
+            verts_3d = mesh.get("vertices")
         if verts_3d is None:
             return None
         
         verts_3d = np.array(verts_3d)
-        camera = mesh.get("camera") or mesh.get("cam")
+        camera = mesh.get("camera")
+        if camera is None:
+            camera = mesh.get("cam")
         
         if camera is not None:
             return self._project_to_2d(verts_3d, camera, W, H)
