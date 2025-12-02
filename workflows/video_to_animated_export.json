@@ -35,7 +35,7 @@
     },
     {
       "id": 3,
-      "type": "SAM3DBodyBatchProcessor",
+      "type": "SAM3DBody2abc_BatchProcessor",
       "pos": [450, 200],
       "size": {"0": 350, "1": 300},
       "flags": {},
@@ -52,13 +52,13 @@
         {"name": "frame_count", "type": "INT", "links": null},
         {"name": "status", "type": "STRING", "links": [7]}
       ],
-      "title": "🎬 SAM3DBody Batch Processor",
-      "properties": {"Node name for S&R": "SAM3DBodyBatchProcessor"},
+      "title": "🎬 SAM3DBody2abc Batch Processor",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_BatchProcessor"},
       "widgets_values": ["full", 0.5, 0, -1, 1, 60.0]
     },
     {
       "id": 4,
-      "type": "ExportAnimatedAlembic",
+      "type": "SAM3DBody2abc_ExportAlembic",
       "pos": [900, 100],
       "size": {"0": 350, "1": 250},
       "flags": {},
@@ -72,13 +72,13 @@
         {"name": "status", "type": "STRING", "links": null},
         {"name": "exported_frames", "type": "INT", "links": null}
       ],
-      "title": "📦 Export Animated Alembic (.abc)",
-      "properties": {"Node name for S&R": "ExportAnimatedAlembic"},
+      "title": "📦 SAM3DBody2abc Export Alembic",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAlembic"},
       "widgets_values": ["body_animation", 24.0, "", true, 1.0, "Y", false]
     },
     {
       "id": 5,
-      "type": "ExportAnimatedFBX",
+      "type": "SAM3DBody2abc_ExportFBX",
       "pos": [900, 400],
       "size": {"0": 350, "1": 200},
       "flags": {},
@@ -92,13 +92,13 @@
         {"name": "status", "type": "STRING", "links": null},
         {"name": "exported_frames", "type": "INT", "links": null}
       ],
-      "title": "🦴 Export Animated Skeleton FBX",
-      "properties": {"Node name for S&R": "ExportAnimatedFBX"},
+      "title": "🦴 SAM3DBody2abc Export FBX",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportFBX"},
       "widgets_values": ["body_skeleton", 24.0, "", 1.0, false]
     },
     {
       "id": 6,
-      "type": "RenderMeshOverlayBatch",
+      "type": "SAM3DBody2abc_OverlayBatch",
       "pos": [900, 650],
       "size": {"0": 350, "1": 200},
       "flags": {},
@@ -111,8 +111,8 @@
       "outputs": [
         {"name": "overlay_images", "type": "IMAGE", "links": [10]}
       ],
-      "title": "🎨 Render Mesh Overlay (Batch)",
-      "properties": {"Node name for S&R": "RenderMeshOverlayBatch"},
+      "title": "🎨 SAM3DBody2abc Overlay Batch",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_OverlayBatch"},
       "widgets_values": ["wireframe", "0,255,0", "255,0,0", 0.7, true, true]
     },
     {
@@ -210,7 +210,7 @@
     "info": {
       "name": "Video to Animated Alembic + FBX",
       "description": "Process video through SAM3DBody and export animated Alembic geometry and FBX skeleton",
-      "author": "ComfyUI-SAM3DBody-Video-Alembic"
+      "author": "SAM3DBody2abc"
     }
   },
   "version": 0.4

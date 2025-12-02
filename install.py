@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Installation script for ComfyUI-SAM3DBody-Video-Alembic
+Installation script for SAM3DBody2abc
 Extension for animated export from SAM3DBody
 """
 
@@ -24,7 +24,7 @@ def check_package(package_name):
 
 def main():
     print("=" * 70)
-    print("ComfyUI-SAM3DBody-Video-Alembic Installation")
+    print("SAM3DBody2abc Installation")
     print("Extension for animated export from SAM3DBody")
     print("=" * 70)
     

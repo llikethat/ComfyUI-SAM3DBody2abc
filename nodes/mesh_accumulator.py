@@ -42,7 +42,7 @@ class MeshSequenceAccumulator:
     RETURN_TYPES = ("MESH_SEQUENCE", "INT", "STRING")
     RETURN_NAMES = ("mesh_sequence", "frame_count", "status")
     FUNCTION = "accumulate"
-    CATEGORY = "SAM3DBody/Video"
+    CATEGORY = "SAM3DBody2abc/Video"
     
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -145,7 +145,7 @@ class MeshSequenceFromSAM3DBody:
     RETURN_TYPES = ("MESH_SEQUENCE",)
     RETURN_NAMES = ("mesh_sequence",)
     FUNCTION = "convert"
-    CATEGORY = "SAM3DBody/Video"
+    CATEGORY = "SAM3DBody2abc/Video"
     
     def convert(
         self,
@@ -194,7 +194,7 @@ class MeshSequencePreview:
     RETURN_TYPES = ("INT", "INT", "INT", "BOOLEAN", "STRING")
     RETURN_NAMES = ("frame_count", "vertex_count", "joint_count", "has_faces", "info")
     FUNCTION = "preview"
-    CATEGORY = "SAM3DBody/Video"
+    CATEGORY = "SAM3DBody2abc/Video"
     
     def preview(self, mesh_sequence: List[Dict]) -> Tuple[int, int, int, bool, str]:
         """Get sequence information."""
@@ -256,7 +256,7 @@ class MeshSequenceSmooth:
     RETURN_TYPES = ("MESH_SEQUENCE",)
     RETURN_NAMES = ("smoothed_sequence",)
     FUNCTION = "smooth"
-    CATEGORY = "SAM3DBody/Video"
+    CATEGORY = "SAM3DBody2abc/Video"
     
     def smooth(
         self,
@@ -344,7 +344,7 @@ class ClearMeshSequence:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("status",)
     FUNCTION = "clear"
-    CATEGORY = "SAM3DBody/Video"
+    CATEGORY = "SAM3DBody2abc/Video"
     
     def clear(
         self,

@@ -65,7 +65,7 @@ class ExportAnimatedAlembic:
     RETURN_TYPES = ("STRING", "STRING", "INT")
     RETURN_NAMES = ("file_path", "status", "exported_frames")
     FUNCTION = "export_alembic"
-    CATEGORY = "SAM3DBody/Export"
+    CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
     
     def export_alembic(
@@ -507,7 +507,7 @@ class ExportAnimatedFBX:
     RETURN_TYPES = ("STRING", "STRING", "INT")
     RETURN_NAMES = ("file_path", "status", "exported_frames")
     FUNCTION = "export_fbx"
-    CATEGORY = "SAM3DBody/Export"
+    CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
     
     def export_fbx(
@@ -809,7 +809,7 @@ class ExportAnimatedMesh:
     RETURN_TYPES = ("STRING", "STRING", "STRING")
     RETURN_NAMES = ("alembic_path", "fbx_path", "status")
     FUNCTION = "export_all"
-    CATEGORY = "SAM3DBody/Export"
+    CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
     
     def export_all(

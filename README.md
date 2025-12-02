@@ -1,4 +1,4 @@
-# ComfyUI-SAM3DBody-Video-Alembic
+# SAM3DBody2abc
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
@@ -39,15 +39,15 @@ The existing [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3D
 
 ### Via ComfyUI Manager
 1. Open ComfyUI Manager
-2. Search for "SAM3DBody-Video-Alembic"
+2. Search for "SAM3DBody2abc"
 3. Click Install
 4. Restart ComfyUI
 
 ### Manual Installation
 ```bash
 cd ComfyUI/custom_nodes/
-git clone https://github.com/your-username/ComfyUI-SAM3DBody-Video-Alembic.git
-cd ComfyUI-SAM3DBody-Video-Alembic
+git clone https://github.com/your-username/SAM3DBody2abc.git
+cd SAM3DBody2abc
 python install.py
 ```
 

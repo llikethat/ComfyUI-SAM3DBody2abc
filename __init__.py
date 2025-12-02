@@ -1,5 +1,5 @@
 """
-ComfyUI-SAM3DBody-Video-Alembic
+SAM3DBody2abc
 Extension for ComfyUI-SAM3DBody that adds video batch processing
 and animated export to Alembic (.abc) and FBX formats.
 
@@ -20,7 +20,8 @@ Version: 2.0.0
 
 from .nodes.video_batch_processor import (
     SAM3DBodyBatchProcessor,
-    SAM3DBodySequenceProcess
+    SAM3DBodySequenceProcess,
+    SAM3DBodyModelDebug
 )
 from .nodes.animated_export import (
     ExportAnimatedAlembic,
@@ -41,46 +42,48 @@ from .nodes.overlay_renderer import (
 
 NODE_CLASS_MAPPINGS = {
     # Video/Batch Processing
-    "SAM3DBodyBatchProcessor": SAM3DBodyBatchProcessor,
-    "SAM3DBodySequenceProcess": SAM3DBodySequenceProcess,
+    "SAM3DBody2abc_BatchProcessor": SAM3DBodyBatchProcessor,
+    "SAM3DBody2abc_SequenceProcess": SAM3DBodySequenceProcess,
+    "SAM3DBody2abc_ModelDebug": SAM3DBodyModelDebug,
     
     # Animated Export
-    "ExportAnimatedAlembic": ExportAnimatedAlembic,
-    "ExportAnimatedFBX": ExportAnimatedFBX,
-    "ExportAnimatedMesh": ExportAnimatedMesh,
+    "SAM3DBody2abc_ExportAlembic": ExportAnimatedAlembic,
+    "SAM3DBody2abc_ExportFBX": ExportAnimatedFBX,
+    "SAM3DBody2abc_ExportMesh": ExportAnimatedMesh,
     
     # Mesh Sequence Management
-    "MeshSequenceAccumulator": MeshSequenceAccumulator,
-    "MeshSequenceFromSAM3DBody": MeshSequenceFromSAM3DBody,
-    "MeshSequencePreview": MeshSequencePreview,
-    "MeshSequenceSmooth": MeshSequenceSmooth,
-    "ClearMeshSequence": ClearMeshSequence,
+    "SAM3DBody2abc_Accumulator": MeshSequenceAccumulator,
+    "SAM3DBody2abc_MeshToSequence": MeshSequenceFromSAM3DBody,
+    "SAM3DBody2abc_Preview": MeshSequencePreview,
+    "SAM3DBody2abc_Smooth": MeshSequenceSmooth,
+    "SAM3DBody2abc_Clear": ClearMeshSequence,
     
     # Overlay Rendering
-    "RenderMeshOverlay": RenderMeshOverlay,
-    "RenderMeshOverlayBatch": RenderMeshOverlayBatch,
+    "SAM3DBody2abc_Overlay": RenderMeshOverlay,
+    "SAM3DBody2abc_OverlayBatch": RenderMeshOverlayBatch,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     # Video/Batch Processing
-    "SAM3DBodyBatchProcessor": "🎬 SAM3DBody Batch Processor",
-    "SAM3DBodySequenceProcess": "📹 Process Image Sequence → SAM3DBody",
+    "SAM3DBody2abc_BatchProcessor": "🎬 SAM3DBody2abc Batch Processor",
+    "SAM3DBody2abc_SequenceProcess": "📹 SAM3DBody2abc Sequence Process",
+    "SAM3DBody2abc_ModelDebug": "🔍 SAM3DBody2abc Model Debug",
     
     # Animated Export
-    "ExportAnimatedAlembic": "📦 Export Animated Alembic (.abc)",
-    "ExportAnimatedFBX": "🦴 Export Animated Skeleton FBX",
-    "ExportAnimatedMesh": "💾 Export Animated Mesh (All Formats)",
+    "SAM3DBody2abc_ExportAlembic": "📦 SAM3DBody2abc Export Alembic (.abc)",
+    "SAM3DBody2abc_ExportFBX": "🦴 SAM3DBody2abc Export FBX Skeleton",
+    "SAM3DBody2abc_ExportMesh": "💾 SAM3DBody2abc Export All Formats",
     
     # Mesh Sequence Management
-    "MeshSequenceAccumulator": "📋 Mesh Sequence Accumulator",
-    "MeshSequenceFromSAM3DBody": "🔄 Convert SAM3DBody Mesh → Sequence",
-    "MeshSequencePreview": "👁️ Preview Mesh Sequence",
-    "MeshSequenceSmooth": "〰️ Smooth Mesh Sequence",
-    "ClearMeshSequence": "🗑️ Clear Mesh Sequence",
+    "SAM3DBody2abc_Accumulator": "📋 SAM3DBody2abc Accumulator",
+    "SAM3DBody2abc_MeshToSequence": "🔄 SAM3DBody2abc Mesh → Sequence",
+    "SAM3DBody2abc_Preview": "👁️ SAM3DBody2abc Preview",
+    "SAM3DBody2abc_Smooth": "〰️ SAM3DBody2abc Smooth",
+    "SAM3DBody2abc_Clear": "🗑️ SAM3DBody2abc Clear",
     
     # Overlay Rendering
-    "RenderMeshOverlay": "🎨 Render Mesh Overlay",
-    "RenderMeshOverlayBatch": "🎨 Render Mesh Overlay (Batch)",
+    "SAM3DBody2abc_Overlay": "🎨 SAM3DBody2abc Overlay",
+    "SAM3DBody2abc_OverlayBatch": "🎨 SAM3DBody2abc Overlay Batch",
 }
 
 # Custom type for mesh sequences

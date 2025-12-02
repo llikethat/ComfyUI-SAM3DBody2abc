@@ -59,7 +59,7 @@ class RenderMeshOverlay:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("overlay_image",)
     FUNCTION = "render_overlay"
-    CATEGORY = "SAM3DBody/Visualization"
+    CATEGORY = "SAM3DBody2abc/Visualization"
     
     # SMPL skeleton connections
     SKELETON_CONNECTIONS = [
@@ -353,7 +353,7 @@ class RenderMeshOverlayBatch:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("overlay_images",)
     FUNCTION = "render_batch"
-    CATEGORY = "SAM3DBody/Visualization"
+    CATEGORY = "SAM3DBody2abc/Visualization"
     
     def render_batch(
         self,
@@ -381,7 +381,7 @@ class RenderMeshOverlayBatch:
             mesh = mesh_sequence[i]
             
             if mesh.get("valid"):
-                # Convert mesh_sequence format to SAM3DBODY_MESH format
+                # Convert mesh_sequence format to SAM3D_MESH format
                 sam3dbody_mesh = {
                     "verts": mesh.get("vertices"),
                     "faces": mesh.get("faces"),
