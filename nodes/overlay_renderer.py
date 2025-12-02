@@ -19,7 +19,7 @@ class RenderMeshOverlay:
         return {
             "required": {
                 "image": ("IMAGE",),  # Single image [1, H, W, C]
-                "sam3dbody_mesh": ("SAM3DBODY_MESH",),  # From SAM3DBody
+                "sam3dbody_mesh": ("SAM3D_MESH",),  # From SAM3DBody
             },
             "optional": {
                 "render_mode": (["wireframe", "shaded", "both", "joints_only"], {

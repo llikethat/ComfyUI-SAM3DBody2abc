@@ -22,7 +22,7 @@ class MeshSequenceAccumulator:
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "sam3dbody_mesh": ("SAM3DBODY_MESH",),  # From SAM3DBody Process Image
+                "sam3dbody_mesh": ("SAM3D_MESH",),  # From SAM3DBody Process Image
                 "sequence_id": ("STRING", {
                     "default": "animation_001",
                     "multiline": False
@@ -135,7 +135,7 @@ class MeshSequenceFromSAM3DBody:
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "sam3dbody_mesh": ("SAM3DBODY_MESH",),
+                "sam3dbody_mesh": ("SAM3D_MESH",),
             },
             "optional": {
                 "frame_index": ("INT", {"default": 0, "min": 0, "max": 100000}),

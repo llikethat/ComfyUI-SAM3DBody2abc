@@ -22,7 +22,7 @@ class SAM3DBodyBatchProcessor:
         return {
             "required": {
                 "images": ("IMAGE",),  # [N, H, W, C] batch from VHS Load Video
-                "sam3dbody_model": ("SAM3DBODY_MODEL",),  # From Load SAM 3D Body Model
+                "sam3dbody_model": ("SAM3D_MODEL",),  # From Load SAM 3D Body Model
             },
             "optional": {
                 "masks": ("MASK",),  # Optional per-frame masks
@@ -224,7 +224,7 @@ class SAM3DBodySequenceProcess:
         return {
             "required": {
                 "images": ("IMAGE",),  # Can be from Load Images node
-                "sam3dbody_model": ("SAM3DBODY_MODEL",),
+                "sam3dbody_model": ("SAM3D_MODEL",),
             },
             "optional": {
                 "detection_mode": (["full", "body", "hand"], {"default": "full"}),
