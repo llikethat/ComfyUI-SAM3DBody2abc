@@ -1,0 +1,217 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 12,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 150],
+      "size": {"0": 315, "1": 250},
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "frame_count", "type": "INT", "links": null},
+        {"name": "AUDIO", "type": "AUDIO", "links": null},
+        {"name": "VHS_VIDEOINFO", "type": "VHS_VIDEOINFO", "links": null}
+      ],
+      "title": "Load Video (Upload) 🎥",
+      "properties": {"Node name for S&R": "VHS_LoadVideo"}
+    },
+    {
+      "id": 2,
+      "type": "LoadSAM3DBodyModel",
+      "pos": [50, 450],
+      "size": {"0": 315, "1": 82},
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "outputs": [
+        {"name": "SAM3DBODY_MODEL", "type": "SAM3DBODY_MODEL", "links": [2], "slot_index": 0}
+      ],
+      "title": "Load SAM 3D Body Model",
+      "properties": {"Node name for S&R": "LoadSAM3DBodyModel"}
+    },
+    {
+      "id": 3,
+      "type": "SAM3DBodyBatchProcessor",
+      "pos": [450, 200],
+      "size": {"0": 350, "1": 300},
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 1},
+        {"name": "sam3dbody_model", "type": "SAM3DBODY_MODEL", "link": 2},
+        {"name": "masks", "type": "MASK", "link": null}
+      ],
+      "outputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [3, 4, 5], "slot_index": 0},
+        {"name": "overlay_images", "type": "IMAGE", "links": [6], "slot_index": 1},
+        {"name": "frame_count", "type": "INT", "links": null},
+        {"name": "status", "type": "STRING", "links": [7]}
+      ],
+      "title": "🎬 SAM3DBody Batch Processor",
+      "properties": {"Node name for S&R": "SAM3DBodyBatchProcessor"},
+      "widgets_values": ["full", 0.5, 0, -1, 1, 60.0]
+    },
+    {
+      "id": 4,
+      "type": "ExportAnimatedAlembic",
+      "pos": [900, 100],
+      "size": {"0": 350, "1": 250},
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 3}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [8]},
+        {"name": "status", "type": "STRING", "links": null},
+        {"name": "exported_frames", "type": "INT", "links": null}
+      ],
+      "title": "📦 Export Animated Alembic (.abc)",
+      "properties": {"Node name for S&R": "ExportAnimatedAlembic"},
+      "widgets_values": ["body_animation", 24.0, "", true, 1.0, "Y", false]
+    },
+    {
+      "id": 5,
+      "type": "ExportAnimatedFBX",
+      "pos": [900, 400],
+      "size": {"0": 350, "1": 200},
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 4}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [9]},
+        {"name": "status", "type": "STRING", "links": null},
+        {"name": "exported_frames", "type": "INT", "links": null}
+      ],
+      "title": "🦴 Export Animated Skeleton FBX",
+      "properties": {"Node name for S&R": "ExportAnimatedFBX"},
+      "widgets_values": ["body_skeleton", 24.0, "", 1.0, false]
+    },
+    {
+      "id": 6,
+      "type": "RenderMeshOverlayBatch",
+      "pos": [900, 650],
+      "size": {"0": 350, "1": 200},
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 6},
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 5}
+      ],
+      "outputs": [
+        {"name": "overlay_images", "type": "IMAGE", "links": [10]}
+      ],
+      "title": "🎨 Render Mesh Overlay (Batch)",
+      "properties": {"Node name for S&R": "RenderMeshOverlayBatch"},
+      "widgets_values": ["wireframe", "0,255,0", "255,0,0", 0.7, true, true]
+    },
+    {
+      "id": 7,
+      "type": "PreviewImage",
+      "pos": [1350, 650],
+      "size": {"0": 300, "1": 300},
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 10}
+      ],
+      "title": "Preview Overlay",
+      "properties": {"Node name for S&R": "PreviewImage"}
+    },
+    {
+      "id": 8,
+      "type": "ShowText|pysssss",
+      "pos": [1350, 100],
+      "size": {"0": 300, "1": 100},
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 8}
+      ],
+      "title": "Alembic Path",
+      "properties": {}
+    },
+    {
+      "id": 9,
+      "type": "ShowText|pysssss",
+      "pos": [1350, 250],
+      "size": {"0": 300, "1": 100},
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 9}
+      ],
+      "title": "FBX Path",
+      "properties": {}
+    },
+    {
+      "id": 10,
+      "type": "ShowText|pysssss",
+      "pos": [1350, 400],
+      "size": {"0": 300, "1": 100},
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 7}
+      ],
+      "title": "Processing Status",
+      "properties": {}
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "IMAGE"],
+    [2, 2, 0, 3, 1, "SAM3DBODY_MODEL"],
+    [3, 3, 0, 4, 0, "MESH_SEQUENCE"],
+    [4, 3, 0, 5, 0, "MESH_SEQUENCE"],
+    [5, 3, 0, 6, 1, "MESH_SEQUENCE"],
+    [6, 3, 1, 6, 0, "IMAGE"],
+    [7, 3, 3, 10, 0, "STRING"],
+    [8, 4, 0, 8, 0, "STRING"],
+    [9, 5, 0, 9, 0, "STRING"],
+    [10, 6, 0, 7, 0, "IMAGE"]
+  ],
+  "groups": [
+    {
+      "title": "Input",
+      "bounding": [30, 80, 380, 500],
+      "color": "#3f789e"
+    },
+    {
+      "title": "Processing",
+      "bounding": [430, 80, 400, 500],
+      "color": "#8a5a3e"
+    },
+    {
+      "title": "Export & Visualization",
+      "bounding": [880, 80, 800, 900],
+      "color": "#3e8a5a"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8,
+      "offset": [0, 0]
+    },
+    "info": {
+      "name": "Video to Animated Alembic + FBX",
+      "description": "Process video through SAM3DBody and export animated Alembic geometry and FBX skeleton",
+      "author": "ComfyUI-SAM3DBody-Video-Alembic"
+    }
+  },
+  "version": 0.4
+}
