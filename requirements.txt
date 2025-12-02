@@ -1,0 +1,40 @@
+# ComfyUI-SAM3DBody-Video-Alembic Requirements
+# This extension works with the existing ComfyUI-SAM3DBody node
+
+# Core (typically already installed with ComfyUI)
+numpy>=1.20.0
+torch>=1.9.0
+
+# For mesh handling
+trimesh>=3.9.0
+
+# For overlay visualization (optional but recommended)
+opencv-python>=4.5.0
+
+# For advanced mesh operations (optional)
+scipy>=1.7.0
+
+# ============================================================
+# OPTIONAL: Native Alembic Export
+# ============================================================
+# PyAlembic is optional - if not installed, the extension
+# will use Blender subprocess or OBJ sequence fallback.
+#
+# To install native Alembic:
+#   conda install -c conda-forge alembic
+#   OR
+#   pip install PyAlembic (may need to build from source)
+#
+# ============================================================
+# OPTIONAL: FBX Export
+# ============================================================
+# FBX export requires Blender to be installed on your system.
+# The extension will automatically find Blender if it's in
+# standard installation locations or in PATH.
+#
+# Blender download: https://www.blender.org/download/
+# ============================================================
+
+# Required ComfyUI custom nodes (install separately):
+# - ComfyUI-SAM3DBody: https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody
+# - ComfyUI-VideoHelperSuite: https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite (optional, for video input)
