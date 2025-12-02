@@ -134,17 +134,33 @@ class ExportAnimatedAlembic:
         up_axis: str,
         center_mesh: bool,
     ) -> Tuple[str, str, int]:
-        """Export using native PyAlembic."""
+        """Export using native PyAlembic with constant topology."""
         import alembic
         from alembic import Abc, AbcGeom
         import imath
+        
+        print(f"[ExportAnimatedAlembic] Using native PyAlembic export")
+        print(f"[ExportAnimatedAlembic] {len(frames)} frames at {fps} FPS")
+        
+        # Get reference topology from first frame (constant for all frames)
+        ref_faces = frames[0].get("faces")
+        if ref_faces is None:
+            raise ValueError("No face data in mesh sequence - cannot export Alembic")
+        
+        ref_faces = np.array(ref_faces)
+        num_faces = len(ref_faces)
+        face_indices = imath.IntArray(ref_faces.flatten().tolist())
+        face_counts = imath.IntArray([3] * num_faces)  # All triangles
+        
+        print(f"[ExportAnimatedAlembic] Topology: {len(frames[0]['vertices'])} verts, {num_faces} faces")
         
         # Create archive
         archive = Abc.OArchive(output_path)
         top = archive.getTop()
         
-        # Time sampling
-        time_sampling = Abc.TimeSampling(1.0 / fps, 0.0)
+        # Time sampling - uniform samples at fps
+        time_per_frame = 1.0 / fps
+        time_sampling = Abc.TimeSampling(time_per_frame, 0.0)
         ts_idx = archive.addTimeSampling(time_sampling)
         
         # Create mesh object
@@ -153,62 +169,51 @@ class ExportAnimatedAlembic:
         mesh_schema.setTimeSampling(ts_idx)
         
         # Create joints object if requested
-        joints_obj = None
+        joints_schema = None
         if include_joints:
             joints_obj = AbcGeom.OPoints(top, "body_joints")
             joints_schema = joints_obj.getSchema()
             joints_schema.setTimeSampling(ts_idx)
         
-        # Get reference faces from first frame
-        ref_faces = frames[0].get("faces")
-        if ref_faces is not None:
-            ref_faces = np.array(ref_faces)
-        
-        # Axis conversion
+        # Axis conversion matrix
         axis_transform = self._get_axis_transform(up_axis)
         
+        # Compute global center if needed (from first frame)
+        global_center = np.zeros(3)
+        if center_mesh:
+            global_center = np.mean(np.array(frames[0]["vertices"]), axis=0)
+        
         # Write each frame
-        for frame_data in frames:
-            vertices = np.array(frame_data["vertices"]) * scale
+        for idx, frame_data in enumerate(frames):
+            vertices = np.array(frame_data["vertices"], dtype=np.float32)
             
-            # Center if requested
+            # Apply transforms
+            vertices = vertices * scale
             if center_mesh:
-                vertices = vertices - np.mean(vertices, axis=0)
-            
-            # Apply axis transform
+                vertices = vertices - global_center * scale
             if axis_transform is not None:
                 vertices = vertices @ axis_transform.T
             
-            # Convert to imath
+            # Convert to imath array
             vertex_array = imath.V3fArray(len(vertices))
             for i, v in enumerate(vertices):
                 vertex_array[i] = imath.V3f(float(v[0]), float(v[1]), float(v[2]))
             
-            # Face data
-            faces = frame_data.get("faces") or ref_faces
-            if faces is not None:
-                faces = np.array(faces)
-                face_indices = faces.flatten().tolist()
-                face_counts = [3] * len(faces)  # Assuming triangles
-            else:
-                face_indices = list(range(len(vertices)))
-                face_counts = [3] * (len(vertices) // 3)
-            
-            # Create sample
+            # Create mesh sample with SAME topology for all frames
             mesh_sample = AbcGeom.OPolyMeshSchemaSample(
                 vertex_array,
-                imath.IntArray(face_indices),
-                imath.IntArray(face_counts)
+                face_indices,
+                face_counts
             )
             mesh_schema.set(mesh_sample)
             
-            # Write joints if available
-            if include_joints and joints_obj is not None:
+            # Write joints
+            if joints_schema is not None:
                 joints = frame_data.get("joints")
                 if joints is not None:
-                    joints = np.array(joints) * scale
+                    joints = np.array(joints, dtype=np.float32) * scale
                     if center_mesh:
-                        joints = joints - np.mean(np.array(frame_data["vertices"]) * scale, axis=0)
+                        joints = joints - global_center * scale
                     if axis_transform is not None:
                         joints = joints @ axis_transform.T
                     
@@ -217,10 +222,16 @@ class ExportAnimatedAlembic:
                         joint_array[i] = imath.V3f(float(j[0]), float(j[1]), float(j[2]))
                     
                     joints_sample = AbcGeom.OPointsSchemaSample(joint_array)
-                    joints_schema = joints_obj.getSchema()
                     joints_schema.set(joints_sample)
+            
+            if (idx + 1) % 50 == 0:
+                print(f"[ExportAnimatedAlembic] Written {idx + 1}/{len(frames)} frames...")
         
-        return (output_path, f"Exported {len(frames)} frames to Alembic", len(frames))
+        # Archive is closed when it goes out of scope
+        del archive
+        
+        print(f"[ExportAnimatedAlembic] Successfully exported {len(frames)} frames")
+        return (output_path, f"Exported {len(frames)} frames via PyAlembic", len(frames))
     
     def _export_via_blender(
         self,
@@ -400,12 +411,12 @@ class ExportAnimatedAlembic:
         return None
     
     def _create_blender_alembic_script(self) -> str:
-        """Create Blender Python script for animated Alembic export."""
+        """Create Blender Python script for animated Alembic export using mesh cache."""
         return '''
 import bpy
 import json
 import sys
-import bmesh
+import os
 
 argv = sys.argv
 data_path = argv[argv.index("--") + 1]
@@ -417,72 +428,148 @@ frames = data["frames"]
 output_path = data["output_path"]
 fps = data["fps"]
 scale = data["scale"]
+num_frames = len(frames)
+
+print(f"[Blender] Exporting {num_frames} frames to Alembic...")
 
 # Clear scene
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete()
 
-# Set FPS
+# Set FPS and frame range
 bpy.context.scene.render.fps = int(fps)
 bpy.context.scene.frame_start = 1
-bpy.context.scene.frame_end = len(frames)
+bpy.context.scene.frame_end = num_frames
 
-# Create mesh from first frame
-first_verts = [[v * scale for v in vert] for vert in frames[0]["vertices"]]
+# Write OBJ sequence to temp directory
+temp_dir = os.path.dirname(data_path)
+obj_dir = os.path.join(temp_dir, "obj_sequence")
+os.makedirs(obj_dir, exist_ok=True)
+
+print(f"[Blender] Writing {num_frames} OBJ files...")
+
+# Get faces from first frame (constant topology)
 first_faces = frames[0].get("faces", [])
 
-mesh = bpy.data.meshes.new("body_mesh")
-obj = bpy.data.objects.new("body_mesh", mesh)
-bpy.context.collection.objects.link(obj)
+for idx, frame_data in enumerate(frames):
+    verts = frame_data["vertices"]
+    faces = frame_data.get("faces", first_faces)
+    
+    obj_path = os.path.join(obj_dir, f"frame_{idx+1:06d}.obj")
+    
+    with open(obj_path, 'w') as f:
+        for v in verts:
+            f.write(f"v {v[0] * scale} {v[1] * scale} {v[2] * scale}\\n")
+        for face in faces:
+            f.write(f"f {int(face[0])+1} {int(face[1])+1} {int(face[2])+1}\\n")
+    
+    if (idx + 1) % 50 == 0:
+        print(f"[Blender] Written {idx + 1}/{num_frames} OBJ files...")
 
-if first_faces:
-    mesh.from_pydata(first_verts, [], first_faces)
-else:
-    mesh.from_pydata(first_verts, [], [])
-mesh.update()
+print(f"[Blender] Importing first frame...")
+
+# Import first OBJ
+first_obj = os.path.join(obj_dir, "frame_000001.obj")
+bpy.ops.wm.obj_import(filepath=first_obj)
+
+# Get imported object
+obj = bpy.context.selected_objects[0]
+obj.name = "body_mesh"
+mesh = obj.data
+mesh.name = "body_mesh"
+
+print(f"[Blender] Mesh has {len(mesh.vertices)} vertices, {len(mesh.polygons)} faces")
+
+# Add Mesh Cache modifier pointing to OBJ sequence
+mod = obj.modifiers.new(name="MeshCache", type='MESH_SEQUENCE_CACHE')
+
+# Unfortunately MESH_SEQUENCE_CACHE needs Alembic input, not OBJ
+# Remove it and use shape keys instead
+obj.modifiers.remove(mod)
+
+print(f"[Blender] Creating shape keys from OBJ sequence...")
 
 # Add basis shape key
 obj.shape_key_add(name="Basis", from_mix=False)
 
-# Add shape key for each frame and keyframe it
-for idx, frame_data in enumerate(frames):
-    sk = obj.shape_key_add(name=f"frame_{idx:05d}", from_mix=False)
+# Create shape keys from OBJ files
+for idx in range(num_frames):
+    obj_path = os.path.join(obj_dir, f"frame_{idx+1:06d}.obj")
     
-    verts = frame_data["vertices"]
+    # Read vertices
+    verts = []
+    with open(obj_path, 'r') as f:
+        for line in f:
+            if line.startswith('v '):
+                parts = line.split()
+                verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+    
+    # Create shape key
+    sk = obj.shape_key_add(name=f"frame_{idx+1:06d}", from_mix=False)
     for i, v in enumerate(verts):
         if i < len(sk.data):
-            sk.data[i].co = [v[0] * scale, v[1] * scale, v[2] * scale]
+            sk.data[i].co = v
     
-    # Keyframe animation
+    if (idx + 1) % 50 == 0:
+        print(f"[Blender] Created {idx + 1}/{num_frames} shape keys...")
+
+print(f"[Blender] Keyframing shape keys with CONSTANT interpolation...")
+
+# Get all shape keys (excluding Basis)
+shape_keys = [kb for kb in obj.data.shape_keys.key_blocks if kb.name != "Basis"]
+
+# Set all to 0 initially
+for sk in shape_keys:
+    sk.value = 0.0
+
+# Keyframe each shape key: on at its frame, off elsewhere
+for idx, sk in enumerate(shape_keys):
     frame_num = idx + 1
     
-    # Turn off all shape keys
-    for key in obj.data.shape_keys.key_blocks:
-        if key.name != "Basis":
-            key.value = 0.0
-            key.keyframe_insert(data_path="value", frame=frame_num)
-    
-    # Turn on this frame's shape key
+    # Turn this one on
     sk.value = 1.0
     sk.keyframe_insert(data_path="value", frame=frame_num)
+    
+    # Turn it off at adjacent frames
+    if frame_num > 1:
+        sk.value = 0.0
+        sk.keyframe_insert(data_path="value", frame=frame_num - 1)
+    if frame_num < num_frames:
+        sk.value = 0.0
+        sk.keyframe_insert(data_path="value", frame=frame_num + 1)
 
-# Select for export
+# Set CONSTANT interpolation
+if obj.data.shape_keys.animation_data and obj.data.shape_keys.animation_data.action:
+    for fc in obj.data.shape_keys.animation_data.action.fcurves:
+        for kp in fc.keyframe_points:
+            kp.interpolation = 'CONSTANT'
+
+# Select object for export
 obj.select_set(True)
 bpy.context.view_layer.objects.active = obj
 
+# Cleanup OBJ files
+import shutil
+shutil.rmtree(obj_dir, ignore_errors=True)
+
+print(f"[Blender] Exporting to Alembic with evaluated mesh...")
+
 # Export to Alembic
+# use_mesh_modifiers=True ensures shape keys are evaluated
 bpy.ops.wm.alembic_export(
     filepath=output_path,
     selected=True,
     start=1,
-    end=len(frames),
+    end=num_frames,
     flatten=False,
+    visible_objects_only=False,
     export_hair=False,
     export_particles=False,
     apply_subdiv=False,
+    evaluation_mode='RENDER',  # Ensures modifiers/shape keys evaluated
 )
 
-print(f"SUCCESS: Exported {len(frames)} frames to {output_path}")
+print(f"SUCCESS: Exported {num_frames} frames to {output_path}")
 '''
 
 
@@ -890,3 +977,157 @@ class ExportAnimatedMesh:
             status_parts.append(f"FBX: {status}")
         
         return (abc_path, fbx_path, " | ".join(status_parts))
+
+
+class ExportOBJSequence:
+    """
+    Export mesh sequence as OBJ file sequence.
+    
+    Creates numbered OBJ files (frame_000001.obj, frame_000002.obj, etc.)
+    that can be imported into any 3D software using Stop Motion OBJ addon
+    or similar mesh sequence importers.
+    
+    This is the most reliable export format for animated meshes.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "mesh_sequence": ("MESH_SEQUENCE",),
+                "filename_prefix": ("STRING", {
+                    "default": "body",
+                    "multiline": False,
+                    "tooltip": "Prefix for OBJ files (e.g., 'body' -> body_000001.obj)"
+                }),
+            },
+            "optional": {
+                "output_dir": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "Leave empty for ComfyUI output folder"
+                }),
+                "scale": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.001,
+                    "max": 1000.0,
+                    "step": 0.01,
+                }),
+                "flip_yz": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Swap Y and Z axes (for Z-up software)"
+                }),
+                "write_mtl": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Write .mtl material files"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("STRING", "STRING", "INT")
+    RETURN_NAMES = ("output_dir", "status", "frame_count")
+    FUNCTION = "export_obj_sequence"
+    CATEGORY = "SAM3DBody2abc/Export"
+    OUTPUT_NODE = True
+    
+    def export_obj_sequence(
+        self,
+        mesh_sequence: List[Dict],
+        filename_prefix: str = "body",
+        output_dir: str = "",
+        scale: float = 1.0,
+        flip_yz: bool = False,
+        write_mtl: bool = False,
+    ) -> Tuple[str, str, int]:
+        """Export mesh sequence as numbered OBJ files."""
+        
+        # Setup output directory
+        if not output_dir:
+            output_dir = folder_paths.get_output_directory()
+        
+        # Create subdirectory for OBJ sequence
+        seq_dir = os.path.join(output_dir, f"{filename_prefix}_obj_sequence")
+        os.makedirs(seq_dir, exist_ok=True)
+        
+        # Filter valid frames
+        valid_frames = [f for f in mesh_sequence if f.get("valid") and f.get("vertices") is not None]
+        
+        if not valid_frames:
+            return (seq_dir, "Error: No valid mesh data", 0)
+        
+        # Get reference faces (constant topology)
+        ref_faces = valid_frames[0].get("faces")
+        if ref_faces is None:
+            return (seq_dir, "Error: No face data", 0)
+        ref_faces = np.array(ref_faces)
+        
+        print(f"[ExportOBJSequence] Exporting {len(valid_frames)} frames to {seq_dir}")
+        
+        for idx, frame_data in enumerate(valid_frames):
+            vertices = np.array(frame_data["vertices"]) * scale
+            faces = frame_data.get("faces")
+            if faces is None:
+                faces = ref_faces
+            else:
+                faces = np.array(faces)
+            
+            # Apply axis flip if needed
+            if flip_yz:
+                vertices = vertices[:, [0, 2, 1]]  # Swap Y and Z
+                vertices[:, 2] = -vertices[:, 2]   # Flip new Z
+            
+            # Write OBJ file
+            frame_num = idx + 1
+            obj_path = os.path.join(seq_dir, f"{filename_prefix}_{frame_num:06d}.obj")
+            
+            with open(obj_path, 'w') as f:
+                f.write(f"# SAM3DBody2abc OBJ Export - Frame {frame_num}\n")
+                f.write(f"# Vertices: {len(vertices)}, Faces: {len(faces)}\n")
+                
+                if write_mtl:
+                    mtl_name = f"{filename_prefix}_{frame_num:06d}.mtl"
+                    f.write(f"mtllib {mtl_name}\n")
+                    f.write(f"usemtl body_material\n")
+                
+                # Write vertices
+                for v in vertices:
+                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+                
+                # Write faces (1-indexed)
+                for face in faces:
+                    f.write(f"f {int(face[0])+1} {int(face[1])+1} {int(face[2])+1}\n")
+            
+            # Write MTL if requested
+            if write_mtl:
+                mtl_path = os.path.join(seq_dir, f"{filename_prefix}_{frame_num:06d}.mtl")
+                with open(mtl_path, 'w') as f:
+                    f.write("# SAM3DBody2abc MTL\n")
+                    f.write("newmtl body_material\n")
+                    f.write("Kd 0.8 0.6 0.5\n")  # Skin-ish color
+                    f.write("Ka 0.2 0.2 0.2\n")
+                    f.write("Ks 0.3 0.3 0.3\n")
+                    f.write("Ns 50.0\n")
+            
+            if (idx + 1) % 50 == 0:
+                print(f"[ExportOBJSequence] Written {idx + 1}/{len(valid_frames)} files...")
+        
+        # Write info file for importers
+        info_path = os.path.join(seq_dir, "sequence_info.json")
+        import json
+        with open(info_path, 'w') as f:
+            json.dump({
+                "prefix": filename_prefix,
+                "start_frame": 1,
+                "end_frame": len(valid_frames),
+                "total_frames": len(valid_frames),
+                "padding": 6,
+                "extension": "obj",
+                "pattern": f"{filename_prefix}_######.obj",
+                "vertex_count": len(valid_frames[0]["vertices"]),
+                "face_count": len(ref_faces),
+            }, f, indent=2)
+        
+        status = f"Exported {len(valid_frames)} OBJ files"
+        print(f"[ExportOBJSequence] {status}")
+        
+        return (seq_dir, status, len(valid_frames))

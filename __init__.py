@@ -59,6 +59,7 @@ SAM3DBodySequenceProcess = _video_batch.SAM3DBodySequenceProcess
 ExportAnimatedAlembic = _animated_export.ExportAnimatedAlembic
 ExportAnimatedFBX = _animated_export.ExportAnimatedFBX
 ExportAnimatedMesh = _animated_export.ExportAnimatedMesh
+ExportOBJSequence = _animated_export.ExportOBJSequence
 
 MeshSequenceAccumulator = _mesh_accumulator.MeshSequenceAccumulator
 MeshSequenceFromSAM3DBody = _mesh_accumulator.MeshSequenceFromSAM3DBody
@@ -78,6 +79,7 @@ NODE_CLASS_MAPPINGS = {
     "SAM3DBody2abc_ExportAlembic": ExportAnimatedAlembic,
     "SAM3DBody2abc_ExportFBX": ExportAnimatedFBX,
     "SAM3DBody2abc_ExportMesh": ExportAnimatedMesh,
+    "SAM3DBody2abc_ExportOBJSequence": ExportOBJSequence,
     
     # Mesh Sequence Management
     "SAM3DBody2abc_Accumulator": MeshSequenceAccumulator,
@@ -100,6 +102,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SAM3DBody2abc_ExportAlembic": "📦 SAM3DBody2abc Export Alembic (.abc)",
     "SAM3DBody2abc_ExportFBX": "🦴 SAM3DBody2abc Export FBX Skeleton",
     "SAM3DBody2abc_ExportMesh": "💾 SAM3DBody2abc Export All Formats",
+    "SAM3DBody2abc_ExportOBJSequence": "📁 SAM3DBody2abc Export OBJ Sequence",
     
     # Mesh Sequence Management
     "SAM3DBody2abc_Accumulator": "📋 SAM3DBody2abc Accumulator",
