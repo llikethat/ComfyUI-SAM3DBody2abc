@@ -55,7 +55,6 @@ _overlay_renderer = _load_module(
 # Import classes from loaded modules
 SAM3DBodyBatchProcessor = _video_batch.SAM3DBodyBatchProcessor
 SAM3DBodySequenceProcess = _video_batch.SAM3DBodySequenceProcess
-SAM3DBodyModelDebug = _video_batch.SAM3DBodyModelDebug
 
 ExportAnimatedAlembic = _animated_export.ExportAnimatedAlembic
 ExportAnimatedFBX = _animated_export.ExportAnimatedFBX
@@ -74,7 +73,6 @@ NODE_CLASS_MAPPINGS = {
     # Video/Batch Processing
     "SAM3DBody2abc_BatchProcessor": SAM3DBodyBatchProcessor,
     "SAM3DBody2abc_SequenceProcess": SAM3DBodySequenceProcess,
-    "SAM3DBody2abc_ModelDebug": SAM3DBodyModelDebug,
     
     # Animated Export
     "SAM3DBody2abc_ExportAlembic": ExportAnimatedAlembic,
@@ -97,7 +95,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     # Video/Batch Processing
     "SAM3DBody2abc_BatchProcessor": "🎬 SAM3DBody2abc Batch Processor",
     "SAM3DBody2abc_SequenceProcess": "📹 SAM3DBody2abc Sequence Process",
-    "SAM3DBody2abc_ModelDebug": "🔍 SAM3DBody2abc Model Debug",
     
     # Animated Export
     "SAM3DBody2abc_ExportAlembic": "📦 SAM3DBody2abc Export Alembic (.abc)",
