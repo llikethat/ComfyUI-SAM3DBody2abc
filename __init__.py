@@ -84,6 +84,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 # Custom type for mesh sequences
+# Note: Uses SAM3D_MODEL and SAM3D_MESH types from ComfyUI-SAM3DBody
 MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
