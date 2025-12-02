@@ -90,8 +90,8 @@ class SAM3DBodyBatchProcessor:
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "INT", "STRING")
-    RETURN_NAMES = ("mesh_sequence", "frame_count", "status")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING")
+    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc/Video"
     
@@ -102,7 +102,7 @@ class SAM3DBodyBatchProcessor:
         start_frame: int = 0,
         end_frame: int = -1,
         skip_frames: int = 1,
-    ) -> Tuple[List[Dict], int, str]:
+    ) -> Tuple[List[Dict], torch.Tensor, int, str]:
         """Process video frames through SAM3DBody."""
         import comfy.utils
         
@@ -111,7 +111,7 @@ class SAM3DBodyBatchProcessor:
         frame_indices = list(range(start_frame, actual_end, skip_frames))
         
         if not frame_indices:
-            return ([], 0, "Error: No frames in range")
+            return ([], images[:1], 0, "Error: No frames in range")
         
         mesh_sequence = []
         valid_count = 0
@@ -127,7 +127,7 @@ class SAM3DBodyBatchProcessor:
         # Try to find the pipeline/predictor
         pipeline = self._get_pipeline(sam3dbody_model)
         if pipeline is None:
-            return ([], 0, f"Error: Could not extract pipeline from model. Type: {type(sam3dbody_model)}")
+            return ([], images[:1], 0, f"Error: Could not extract pipeline from model. Type: {type(sam3dbody_model)}")
         
         print(f"[SAM3DBody2abc] Pipeline type: {type(pipeline)}")
         
@@ -173,11 +173,14 @@ class SAM3DBodyBatchProcessor:
             
             pbar.update(1)
         
+        # Get the processed frame images
+        output_images = images[frame_indices] if frame_indices else images
+        
         status = f"Processed {len(frame_indices)} frames, {valid_count} valid meshes"
         if errors:
             status += f". Errors: {len(errors)}"
         
-        return (mesh_sequence, len(frame_indices), status)
+        return (mesh_sequence, output_images, len(frame_indices), status)
     
     def _get_pipeline(self, model: Any) -> Any:
         """Extract the inference pipeline from the model object."""
@@ -342,7 +345,7 @@ class SAM3DBodySequenceProcess:
         """Process sequence with optional temporal smoothing."""
         
         processor = SAM3DBodyBatchProcessor()
-        mesh_sequence, frame_count, status = processor.process_batch(
+        mesh_sequence, output_images, frame_count, status = processor.process_batch(
             images=images,
             sam3dbody_model=sam3dbody_model,
             start_frame=0,

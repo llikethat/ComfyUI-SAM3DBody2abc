@@ -18,27 +18,57 @@ License: MIT
 Version: 2.0.0
 """
 
-from .nodes.video_batch_processor import (
-    SAM3DBodyBatchProcessor,
-    SAM3DBodySequenceProcess,
-    SAM3DBodyModelDebug
+import os
+import sys
+import importlib.util
+
+# Get the directory where this __init__.py is located
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_nodes_dir = os.path.join(_current_dir, "nodes")
+
+def _load_module(name, filepath):
+    """Load a module from file path (works regardless of folder name)."""
+    spec = importlib.util.spec_from_file_location(name, filepath)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+# Load node modules using direct file paths
+_video_batch = _load_module(
+    "sam3dbody2abc_video_batch", 
+    os.path.join(_nodes_dir, "video_batch_processor.py")
 )
-from .nodes.animated_export import (
-    ExportAnimatedAlembic,
-    ExportAnimatedFBX,
-    ExportAnimatedMesh
+_animated_export = _load_module(
+    "sam3dbody2abc_animated_export",
+    os.path.join(_nodes_dir, "animated_export.py")
 )
-from .nodes.mesh_accumulator import (
-    MeshSequenceAccumulator,
-    MeshSequenceFromSAM3DBody,
-    MeshSequencePreview,
-    MeshSequenceSmooth,
-    ClearMeshSequence
+_mesh_accumulator = _load_module(
+    "sam3dbody2abc_mesh_accumulator",
+    os.path.join(_nodes_dir, "mesh_accumulator.py")
 )
-from .nodes.overlay_renderer import (
-    RenderMeshOverlay,
-    RenderMeshOverlayBatch
+_overlay_renderer = _load_module(
+    "sam3dbody2abc_overlay_renderer",
+    os.path.join(_nodes_dir, "overlay_renderer.py")
 )
+
+# Import classes from loaded modules
+SAM3DBodyBatchProcessor = _video_batch.SAM3DBodyBatchProcessor
+SAM3DBodySequenceProcess = _video_batch.SAM3DBodySequenceProcess
+SAM3DBodyModelDebug = _video_batch.SAM3DBodyModelDebug
+
+ExportAnimatedAlembic = _animated_export.ExportAnimatedAlembic
+ExportAnimatedFBX = _animated_export.ExportAnimatedFBX
+ExportAnimatedMesh = _animated_export.ExportAnimatedMesh
+
+MeshSequenceAccumulator = _mesh_accumulator.MeshSequenceAccumulator
+MeshSequenceFromSAM3DBody = _mesh_accumulator.MeshSequenceFromSAM3DBody
+MeshSequencePreview = _mesh_accumulator.MeshSequencePreview
+MeshSequenceSmooth = _mesh_accumulator.MeshSequenceSmooth
+ClearMeshSequence = _mesh_accumulator.ClearMeshSequence
+
+RenderMeshOverlay = _overlay_renderer.RenderMeshOverlay
+RenderMeshOverlayBatch = _overlay_renderer.RenderMeshOverlayBatch
 
 NODE_CLASS_MAPPINGS = {
     # Video/Batch Processing
@@ -92,5 +122,5 @@ MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __author__ = "Custom Extension"
