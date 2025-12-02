@@ -28,7 +28,7 @@
       "order": 1,
       "mode": 0,
       "outputs": [
-        {"name": "SAM3DBODY_MODEL", "type": "SAM3DBODY_MODEL", "links": [2], "slot_index": 0}
+        {"name": "SAM3D_MODEL", "type": "SAM3D_MODEL", "links": [2], "slot_index": 0}
       ],
       "title": "Load SAM 3D Body Model",
       "properties": {"Node name for S&R": "LoadSAM3DBodyModel"}
@@ -43,7 +43,7 @@
       "mode": 0,
       "inputs": [
         {"name": "images", "type": "IMAGE", "link": 1},
-        {"name": "sam3dbody_model", "type": "SAM3DBODY_MODEL", "link": 2},
+        {"name": "sam3dbody_model", "type": "SAM3D_MODEL", "link": 2},
         {"name": "masks", "type": "MASK", "link": null}
       ],
       "outputs": [
@@ -174,7 +174,7 @@
   ],
   "links": [
     [1, 1, 0, 3, 0, "IMAGE"],
-    [2, 2, 0, 3, 1, "SAM3DBODY_MODEL"],
+    [2, 2, 0, 3, 1, "SAM3D_MODEL"],
     [3, 3, 0, 4, 0, "MESH_SEQUENCE"],
     [4, 3, 0, 5, 0, "MESH_SEQUENCE"],
     [5, 3, 0, 6, 1, "MESH_SEQUENCE"],
