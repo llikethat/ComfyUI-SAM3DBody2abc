@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """
 Overlay renderer for SAM3DBody2abc.
-Renders mesh overlay on images using OpenCV.
+Renders mesh overlay on images using OpenCV (matching pyrender logic).
 """
 
 import numpy as np
@@ -102,7 +102,8 @@ class SAM3DBody2abcOverlay:
                 focal_length = focal_length.cpu().numpy()
             focal_length = float(np.array(focal_length).flatten()[0])
         
-        faces = faces.astype(np.int32)
+        vertices = np.array(vertices)
+        faces = np.array(faces).astype(np.int32)
         h, w = img_bgr.shape[:2]
         
         print(f"[SAM3DBody2abc] Mesh: {len(vertices)} verts, {len(faces)} faces")
@@ -114,7 +115,7 @@ class SAM3DBody2abcOverlay:
         # Render mesh
         result = self._render_mesh(
             img_bgr, vertices, faces, cam_t, focal_length, 
-            color, render_mode, opacity, line_thickness
+            color, render_mode, opacity, line_thickness, debug=True
         )
         
         print("[SAM3DBody2abc] [OK] Rendered overlay")
@@ -136,40 +137,70 @@ class SAM3DBody2abcOverlay:
         render_mode: str,
         opacity: float,
         line_thickness: int,
+        debug: bool = False,
     ) -> np.ndarray:
-        """Render mesh using OpenCV with proper projection."""
+        """
+        Render mesh using OpenCV with projection matching pyrender.
+        
+        Based on original SAM3DBody renderer.py:
+        1. camera_translation[0] *= -1.0 (flip camera X)
+        2. mesh.apply_transform(rot) - 180° rotation around X axis
+        3. Camera uses intrinsics (focal_length, cx=w/2, cy=h/2)
+        """
         
         h, w = img_bgr.shape[:2]
         
         # Default camera params
         if focal_length is None or focal_length <= 0:
-            focal_length = max(h, w) * 1.2
+            focal_length = max(h, w)
         if cam_t is None:
-            cam_t = np.array([0, 0, 3.0])
+            cam_t = np.array([0.0, 0.3, 2.5])  # Typical SAM3D camera position
         
         cam_t = np.array(cam_t).flatten()
         if len(cam_t) < 3:
-            cam_t = np.array([0, 0, 3.0])
+            cam_t = np.array([0.0, 0.3, 2.5])
         
-        # Apply 180 degree X rotation (flip Y and Z) - MHR coordinate fix
+        # Step 1: Apply 180° X rotation to vertices (flip Y and Z)
         verts = vertices.copy()
         verts[:, 1] = -verts[:, 1]
         verts[:, 2] = -verts[:, 2]
         
-        # Perspective projection
-        # Add camera translation
-        verts_cam = verts.copy()
-        verts_cam[:, 0] += cam_t[0]
-        verts_cam[:, 1] += cam_t[1]
-        verts_cam[:, 2] += cam_t[2]
+        # Step 2: Apply camera translation (with X negated as in pyrender)
+        # In vertices_to_trimesh: mesh = trimesh.Trimesh(vertices.copy() + camera_translation, ...)
+        # where camera_translation[0] is negated
+        camera_translation = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+        verts_cam = verts + camera_translation
         
-        # Project to 2D with perspective
+        if debug:
+            print(f"  - Original vertices range: X=[{vertices[:, 0].min():.3f}, {vertices[:, 0].max():.3f}], "
+                  f"Y=[{vertices[:, 1].min():.3f}, {vertices[:, 1].max():.3f}], "
+                  f"Z=[{vertices[:, 2].min():.3f}, {vertices[:, 2].max():.3f}]")
+            print(f"  - Camera translation (adjusted): {camera_translation}")
+            print(f"  - Camera-space vertices Z range: [{verts_cam[:, 2].min():.3f}, {verts_cam[:, 2].max():.3f}]")
+        
+        # Step 3: Perspective projection (camera at origin looking down +Z in OpenCV convention)
+        # In pyrender with IntrinsicsCamera: fx=focal, fy=focal, cx=w/2, cy=h/2
         z = verts_cam[:, 2:3]
-        z = np.maximum(z, 0.01)  # Avoid division by zero
+        
+        # Filter vertices that are behind camera (z <= 0)
+        valid_z = z > 0.01
+        z_safe = np.where(valid_z, z, 0.01)
+        
+        cx, cy = w / 2.0, h / 2.0
         
         pts_2d = np.zeros((len(verts), 2))
-        pts_2d[:, 0] = verts_cam[:, 0] * focal_length / z.flatten() + w / 2
-        pts_2d[:, 1] = verts_cam[:, 1] * focal_length / z.flatten() + h / 2
+        pts_2d[:, 0] = verts_cam[:, 0] * focal_length / z_safe.flatten() + cx
+        pts_2d[:, 1] = verts_cam[:, 1] * focal_length / z_safe.flatten() + cy
+        
+        if debug:
+            print(f"  - Focal length: {focal_length}, center: ({cx:.1f}, {cy:.1f})")
+            print(f"  - 2D points X range: [{pts_2d[:, 0].min():.1f}, {pts_2d[:, 0].max():.1f}]")
+            print(f"  - 2D points Y range: [{pts_2d[:, 1].min():.1f}, {pts_2d[:, 1].max():.1f}]")
+            # Check how many points are in frame
+            in_frame = ((pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < w) & 
+                        (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < h) &
+                        valid_z.flatten())
+            print(f"  - Points in frame: {in_frame.sum()}/{len(pts_2d)}")
         
         # Create mesh overlay
         if render_mode == "mesh_only":
@@ -177,42 +208,64 @@ class SAM3DBody2abcOverlay:
         else:
             mesh_img = img_bgr.copy()
         
-        # Sort faces by depth for proper rendering
+        # Sort faces by depth (far to near for proper occlusion)
         face_depths = []
         for face in faces:
-            avg_z = (z[face[0]] + z[face[1]] + z[face[2]]) / 3
+            # Use average Z of face vertices
+            avg_z = (z_safe[face[0]] + z_safe[face[1]] + z_safe[face[2]]) / 3
             face_depths.append(avg_z[0])
         
         sorted_indices = np.argsort(face_depths)[::-1]  # Far to near
         
         # Draw filled faces with transparency
         overlay = mesh_img.copy()
+        faces_drawn = 0
         
         for idx in sorted_indices:
             face = faces[idx]
+            
+            # Skip if any vertex is behind camera
+            if not (valid_z[face[0]] and valid_z[face[1]] and valid_z[face[2]]):
+                continue
+            
             pts = pts_2d[face].astype(np.int32)
             
-            # Check if face is visible (all points in frame)
-            if np.all(pts[:, 0] >= -w) and np.all(pts[:, 0] < 2*w) and \
-               np.all(pts[:, 1] >= -h) and np.all(pts[:, 1] < 2*h):
-                # Draw filled triangle
+            # Check if face is at least partially visible
+            if (np.any(pts[:, 0] >= -w) and np.any(pts[:, 0] < 2*w) and 
+                np.any(pts[:, 1] >= -h) and np.any(pts[:, 1] < 2*h)):
                 cv2.fillPoly(overlay, [pts], color)
+                faces_drawn += 1
+        
+        if debug:
+            print(f"  - Faces drawn: {faces_drawn}/{len(faces)}")
         
         # Blend with original
         mesh_img = cv2.addWeighted(overlay, opacity, mesh_img, 1 - opacity, 0)
         
-        # Draw edges for definition
-        edge_color = tuple(int(c * 0.6) for c in color)  # Darker edges
-        for idx in sorted_indices[:len(sorted_indices)//3]:  # Only front-facing edges
+        # Draw edges for definition (only front faces)
+        edge_color = tuple(max(0, int(c * 0.6)) for c in color)
+        edges_drawn = 0
+        num_edge_faces = max(1, len(sorted_indices) // 3)
+        
+        for idx in sorted_indices[:num_edge_faces]:
             face = faces[idx]
+            
+            if not (valid_z[face[0]] and valid_z[face[1]] and valid_z[face[2]]):
+                continue
+                
             pts = pts_2d[face].astype(np.int32)
             
-            if np.all(pts[:, 0] >= 0) and np.all(pts[:, 0] < w) and \
-               np.all(pts[:, 1] >= 0) and np.all(pts[:, 1] < h):
-                for j in range(3):
-                    p1 = tuple(pts[j])
-                    p2 = tuple(pts[(j + 1) % 3])
+            for j in range(3):
+                p1 = tuple(pts[j])
+                p2 = tuple(pts[(j + 1) % 3])
+                # Check if line is reasonably in view
+                if ((-w <= p1[0] < 2*w) and (-h <= p1[1] < 2*h) and
+                    (-w <= p2[0] < 2*w) and (-h <= p2[1] < 2*h)):
                     cv2.line(mesh_img, p1, p2, edge_color, line_thickness, cv2.LINE_AA)
+                    edges_drawn += 1
+        
+        if debug:
+            print(f"  - Edges drawn: {edges_drawn}")
         
         if render_mode == "side_by_side":
             result = np.hstack([img_bgr, mesh_img])
@@ -312,7 +365,8 @@ class SAM3DBody2abcOverlayBatch:
             if isinstance(faces, torch.Tensor):
                 faces = faces.cpu().numpy()
             
-            faces = faces.astype(np.int32)
+            vertices = np.array(vertices)
+            faces = np.array(faces).astype(np.int32)
             
             # Get camera params
             cam_t = mesh.get("camera")
@@ -327,10 +381,21 @@ class SAM3DBody2abcOverlayBatch:
                     focal_length = focal_length.cpu().numpy()
                 focal_length = float(np.array(focal_length).flatten()[0])
             
+            # Debug first frame
+            if i == 0:
+                print(f"[SAM3DBody2abc] Frame 0 debug:")
+                print(f"  - Vertices shape: {vertices.shape}")
+                print(f"  - Vertices range: X=[{vertices[:, 0].min():.3f}, {vertices[:, 0].max():.3f}], "
+                      f"Y=[{vertices[:, 1].min():.3f}, {vertices[:, 1].max():.3f}], "
+                      f"Z=[{vertices[:, 2].min():.3f}, {vertices[:, 2].max():.3f}]")
+                print(f"  - Camera: {cam_t}")
+                print(f"  - Focal length: {focal_length}")
+                print(f"  - Image size: {img_bgr.shape}")
+            
             # Render
             result = self._render_mesh(
                 img_bgr, vertices, faces, cam_t, focal_length, 
-                color, opacity, line_thickness
+                color, opacity, line_thickness, debug=(i==0)
             )
             
             # Convert BGR to RGB
@@ -356,73 +421,105 @@ class SAM3DBody2abcOverlayBatch:
         color: Tuple[int, int, int],
         opacity: float,
         line_thickness: int,
+        debug: bool = False,
     ) -> np.ndarray:
-        """Render mesh using OpenCV with proper projection."""
+        """
+        Render mesh using OpenCV with projection matching pyrender.
+        """
         
         h, w = img_bgr.shape[:2]
         
         # Default camera params
         if focal_length is None or focal_length <= 0:
-            focal_length = max(h, w) * 1.2
+            focal_length = max(h, w)
         if cam_t is None:
-            cam_t = np.array([0, 0, 3.0])
+            cam_t = np.array([0.0, 0.3, 2.5])
         
         cam_t = np.array(cam_t).flatten()
         if len(cam_t) < 3:
-            cam_t = np.array([0, 0, 3.0])
+            cam_t = np.array([0.0, 0.3, 2.5])
         
-        # Apply 180 degree X rotation (flip Y and Z) - MHR coordinate fix
+        # Step 1: Apply 180° X rotation to vertices (flip Y and Z)
         verts = vertices.copy()
         verts[:, 1] = -verts[:, 1]
         verts[:, 2] = -verts[:, 2]
         
-        # Perspective projection
-        verts_cam = verts.copy()
-        verts_cam[:, 0] += cam_t[0]
-        verts_cam[:, 1] += cam_t[1]
-        verts_cam[:, 2] += cam_t[2]
+        # Step 2: Apply camera translation (with X negated as in pyrender)
+        camera_translation = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+        verts_cam = verts + camera_translation
         
+        if debug:
+            print(f"  - Camera translation (adjusted): {camera_translation}")
+            print(f"  - Camera-space Z range: [{verts_cam[:, 2].min():.3f}, {verts_cam[:, 2].max():.3f}]")
+        
+        # Step 3: Perspective projection
         z = verts_cam[:, 2:3]
-        z = np.maximum(z, 0.01)
+        valid_z = z > 0.01
+        z_safe = np.where(valid_z, z, 0.01)
+        
+        cx, cy = w / 2.0, h / 2.0
         
         pts_2d = np.zeros((len(verts), 2))
-        pts_2d[:, 0] = verts_cam[:, 0] * focal_length / z.flatten() + w / 2
-        pts_2d[:, 1] = verts_cam[:, 1] * focal_length / z.flatten() + h / 2
+        pts_2d[:, 0] = verts_cam[:, 0] * focal_length / z_safe.flatten() + cx
+        pts_2d[:, 1] = verts_cam[:, 1] * focal_length / z_safe.flatten() + cy
+        
+        if debug:
+            in_frame = ((pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < w) & 
+                        (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < h) &
+                        valid_z.flatten())
+            print(f"  - 2D X range: [{pts_2d[:, 0].min():.1f}, {pts_2d[:, 0].max():.1f}]")
+            print(f"  - 2D Y range: [{pts_2d[:, 1].min():.1f}, {pts_2d[:, 1].max():.1f}]")
+            print(f"  - Points in frame: {in_frame.sum()}/{len(pts_2d)}")
         
         mesh_img = img_bgr.copy()
         
         # Sort faces by depth
         face_depths = []
         for face in faces:
-            avg_z = (z[face[0]] + z[face[1]] + z[face[2]]) / 3
+            avg_z = (z_safe[face[0]] + z_safe[face[1]] + z_safe[face[2]]) / 3
             face_depths.append(avg_z[0])
         
         sorted_indices = np.argsort(face_depths)[::-1]
         
         # Draw filled faces
         overlay = mesh_img.copy()
+        faces_drawn = 0
         
         for idx in sorted_indices:
             face = faces[idx]
+            
+            if not (valid_z[face[0]] and valid_z[face[1]] and valid_z[face[2]]):
+                continue
+            
             pts = pts_2d[face].astype(np.int32)
             
-            if np.all(pts[:, 0] >= -w) and np.all(pts[:, 0] < 2*w) and \
-               np.all(pts[:, 1] >= -h) and np.all(pts[:, 1] < 2*h):
+            if (np.any(pts[:, 0] >= -w) and np.any(pts[:, 0] < 2*w) and 
+                np.any(pts[:, 1] >= -h) and np.any(pts[:, 1] < 2*h)):
                 cv2.fillPoly(overlay, [pts], color)
+                faces_drawn += 1
+        
+        if debug:
+            print(f"  - Faces drawn: {faces_drawn}/{len(faces)}")
         
         mesh_img = cv2.addWeighted(overlay, opacity, mesh_img, 1 - opacity, 0)
         
         # Draw edges
-        edge_color = tuple(int(c * 0.6) for c in color)
-        for idx in sorted_indices[:len(sorted_indices)//3]:
+        edge_color = tuple(max(0, int(c * 0.6)) for c in color)
+        num_edge_faces = max(1, len(sorted_indices) // 3)
+        
+        for idx in sorted_indices[:num_edge_faces]:
             face = faces[idx]
+            
+            if not (valid_z[face[0]] and valid_z[face[1]] and valid_z[face[2]]):
+                continue
+                
             pts = pts_2d[face].astype(np.int32)
             
-            if np.all(pts[:, 0] >= 0) and np.all(pts[:, 0] < w) and \
-               np.all(pts[:, 1] >= 0) and np.all(pts[:, 1] < h):
-                for j in range(3):
-                    p1 = tuple(pts[j])
-                    p2 = tuple(pts[(j + 1) % 3])
+            for j in range(3):
+                p1 = tuple(pts[j])
+                p2 = tuple(pts[(j + 1) % 3])
+                if ((-w <= p1[0] < 2*w) and (-h <= p1[1] < 2*h) and
+                    (-w <= p2[0] < 2*w) and (-h <= p2[1] < 2*h)):
                     cv2.line(mesh_img, p1, p2, edge_color, line_thickness, cv2.LINE_AA)
         
         return mesh_img

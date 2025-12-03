@@ -122,5 +122,5 @@ MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 __author__ = "Custom Extension"

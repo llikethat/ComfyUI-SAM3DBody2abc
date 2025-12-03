@@ -1007,13 +1007,13 @@ class ExportAnimatedFBX:
         return None
     
     def _create_blender_fbx_script(self) -> str:
-        """Create Blender script for animated FBX skeleton export with MHR hierarchy."""
+        """Create Blender script for animated FBX skeleton export using empties."""
         return '''
 import bpy
 import json
 import sys
 import numpy as np
-from mathutils import Vector, Matrix
+from mathutils import Vector
 
 argv = sys.argv
 data_path = argv[argv.index("--") + 1]
@@ -1030,8 +1030,11 @@ scale = data["scale"]
 joint_names = data["joint_names"]
 joint_parents = data["joint_parents"]
 
+num_joints = len(joint_names)
+num_frames = len(frames)
+
 print(f"FBX export starting... '{output_path}'")
-print(f"Joints: {len(joint_names)}, Frames: {len(frames)}")
+print(f"Joints: {num_joints}, Frames: {num_frames}")
 
 # Clean scene
 for c in bpy.data.actions:
@@ -1050,111 +1053,173 @@ bpy.context.scene.collection.children.link(collection)
 # Set FPS and frame range
 bpy.context.scene.render.fps = int(fps)
 bpy.context.scene.frame_start = 1
-bpy.context.scene.frame_end = len(frames)
+bpy.context.scene.frame_end = num_frames
 
-# Get first frame joints and apply coordinate correction
-# Original coords: x, y, z -> Blender coords: x, -z, y
-first_joints_raw = np.array(frames[0]["joints"])
-first_joints = np.zeros_like(first_joints_raw)
-first_joints[:, 0] = first_joints_raw[:, 0]  # x stays x
-first_joints[:, 1] = -first_joints_raw[:, 2]  # y = -z
-first_joints[:, 2] = first_joints_raw[:, 1]   # z = y
+# Find root joint(s)
+root_indices = [i for i, p in enumerate(joint_parents) if p == -1]
+print(f"Root joint(s): {root_indices}")
 
-# Calculate skeleton center and make positions relative
-skeleton_center = first_joints.mean(axis=0)
-rel_joints = first_joints - skeleton_center
+# Create empties for each joint
+empties = {}
+for i, name in enumerate(joint_names):
+    bpy.ops.object.empty_add(type='SPHERE', radius=0.02 * scale)
+    empty = bpy.context.active_object
+    empty.name = name
+    empty.empty_display_size = 0.02 * scale
+    
+    # Move to collection
+    if empty.name in bpy.context.scene.collection.objects:
+        bpy.context.scene.collection.objects.unlink(empty)
+    collection.objects.link(empty)
+    
+    empties[name] = empty
 
-# Create armature
-bpy.ops.object.armature_add(enter_editmode=True)
+# Set up hierarchy (parent empties)
+for i, parent_idx in enumerate(joint_parents):
+    if parent_idx >= 0 and parent_idx < num_joints:
+        child_name = joint_names[i]
+        parent_name = joint_names[parent_idx]
+        empties[child_name].parent = empties[parent_name]
+
+# Animate empties
+for frame_idx, frame_data in enumerate(frames):
+    bpy.context.scene.frame_set(frame_idx + 1)
+    
+    joints_raw = np.array(frame_data["joints"])
+    
+    # Apply coordinate correction: x, y, z -> x, -z, y (to match Blender)
+    joints = np.zeros_like(joints_raw)
+    joints[:, 0] = joints_raw[:, 0] * scale
+    joints[:, 1] = -joints_raw[:, 2] * scale
+    joints[:, 2] = joints_raw[:, 1] * scale
+    
+    for i, name in enumerate(joint_names):
+        empty = empties[name]
+        
+        # Set world position
+        world_pos = Vector((joints[i, 0], joints[i, 1], joints[i, 2]))
+        
+        # If has parent, need to set local position
+        if empty.parent:
+            parent_idx = joint_parents[i]
+            parent_pos = Vector((joints[parent_idx, 0], joints[parent_idx, 1], joints[parent_idx, 2]))
+            local_pos = world_pos - parent_pos
+            empty.location = local_pos
+        else:
+            empty.location = world_pos
+        
+        empty.keyframe_insert(data_path="location", frame=frame_idx + 1)
+    
+    if (frame_idx + 1) % 50 == 0:
+        print(f"Animated frame {frame_idx + 1}/{num_frames}")
+
+# Now create a visual armature (bones) from the empties for reference
+# This armature won't be animated but shows the skeleton structure
+print("Creating reference armature...")
+
+bpy.ops.object.armature_add(enter_editmode=True, location=(0, 0, 0))
 armature = bpy.data.armatures.get('Armature')
 armature.name = 'SAM3D_Skeleton'
 armature_obj = bpy.context.active_object
 armature_obj.name = 'SAM3D_Skeleton'
 
-# Move to our collection
+# Move to collection
 if armature_obj.name in bpy.context.scene.collection.objects:
     bpy.context.scene.collection.objects.unlink(armature_obj)
 collection.objects.link(armature_obj)
 
 edit_bones = armature.edit_bones
-extrude_size = 0.05 * scale
 
 # Remove default bone
 default_bone = edit_bones.get('Bone')
 if default_bone:
     edit_bones.remove(default_bone)
 
-# Create all bones
+# Get first frame positions for bone structure
+bpy.context.scene.frame_set(1)
+first_joints_raw = np.array(frames[0]["joints"])
+first_joints = np.zeros_like(first_joints_raw)
+first_joints[:, 0] = first_joints_raw[:, 0] * scale
+first_joints[:, 1] = -first_joints_raw[:, 2] * scale
+first_joints[:, 2] = first_joints_raw[:, 1] * scale
+
+# Create bones
 bones_dict = {}
 for i, name in enumerate(joint_names):
     bone = edit_bones.new(name)
-    pos = Vector((rel_joints[i, 0] * scale, rel_joints[i, 1] * scale, rel_joints[i, 2] * scale))
+    pos = Vector((first_joints[i, 0], first_joints[i, 1], first_joints[i, 2]))
     bone.head = pos
-    bone.tail = Vector((pos.x, pos.y, pos.z + extrude_size))
+    
+    # Find first child to determine tail direction
+    children = [j for j, p in enumerate(joint_parents) if p == i]
+    if children:
+        child_pos = Vector((first_joints[children[0], 0], first_joints[children[0], 1], first_joints[children[0], 2]))
+        # Set tail toward child but not all the way
+        direction = child_pos - pos
+        if direction.length > 0.001:
+            bone.tail = pos + direction.normalized() * min(direction.length * 0.5, 0.1 * scale)
+        else:
+            bone.tail = pos + Vector((0, 0.05 * scale, 0))
+    else:
+        # Leaf bone - point away from parent
+        parent_idx = joint_parents[i]
+        if parent_idx >= 0:
+            parent_pos = Vector((first_joints[parent_idx, 0], first_joints[parent_idx, 1], first_joints[parent_idx, 2]))
+            direction = pos - parent_pos
+            if direction.length > 0.001:
+                bone.tail = pos + direction.normalized() * 0.03 * scale
+            else:
+                bone.tail = pos + Vector((0, 0.03 * scale, 0))
+        else:
+            bone.tail = pos + Vector((0, 0.05 * scale, 0))
+    
     bones_dict[name] = bone
 
-# Set parents from joint_parents
+# Set bone parents
 for i, parent_idx in enumerate(joint_parents):
-    if parent_idx >= 0 and parent_idx < len(joint_names) and parent_idx != i:
+    if parent_idx >= 0 and parent_idx < num_joints:
         bones_dict[joint_names[i]].parent = bones_dict[joint_names[parent_idx]]
         bones_dict[joint_names[i]].use_connect = False
 
-# Find root joint and print hierarchy info
-root_indices = [i for i, p in enumerate(joint_parents) if p == -1]
-print(f"Root joint(s): {root_indices}")
-
 bpy.ops.object.mode_set(mode='OBJECT')
 
-# Position armature at skeleton center (with coordinate transform)
-armature_obj.location = Vector((skeleton_center[0] * scale, skeleton_center[1] * scale, skeleton_center[2] * scale))
-
-# Animate the armature
+# Add bone constraints to follow empties
 bpy.ops.object.mode_set(mode='POSE')
-
-for frame_idx, frame_data in enumerate(frames):
-    bpy.context.scene.frame_set(frame_idx + 1)
+for i, name in enumerate(joint_names):
+    pose_bone = armature_obj.pose.bones[name]
     
-    # Apply coordinate correction to this frame's joints
-    joints_raw = np.array(frame_data["joints"])
-    joints = np.zeros_like(joints_raw)
-    joints[:, 0] = joints_raw[:, 0]
-    joints[:, 1] = -joints_raw[:, 2]
-    joints[:, 2] = joints_raw[:, 1]
-    
-    # Make relative to center
-    joints_rel = joints - skeleton_center
-    
-    for i, name in enumerate(joint_names):
-        pose_bone = armature_obj.pose.bones[name]
-        pos = Vector((joints_rel[i, 0] * scale, joints_rel[i, 1] * scale, joints_rel[i, 2] * scale))
-        
-        # Get rest position
-        rest_pos = Vector(pose_bone.bone.head_local)
-        
-        # Calculate offset from rest pose
-        offset = pos - rest_pos
-        pose_bone.location = offset
-        pose_bone.keyframe_insert(data_path="location", frame=frame_idx + 1)
+    # Add Copy Location constraint
+    constraint = pose_bone.constraints.new('COPY_LOCATION')
+    constraint.target = empties[name]
+    constraint.name = "Follow_Empty"
 
 bpy.ops.object.mode_set(mode='OBJECT')
 
-# Select armature for export
-armature_obj.select_set(True)
+# Select all objects for export
+for obj in bpy.context.selected_objects:
+    obj.select_set(False)
+
+for obj in collection.objects:
+    obj.select_set(True)
+
 bpy.context.view_layer.objects.active = armature_obj
 
-# Export FBX
+# Export FBX with baked animation
+print("Exporting FBX...")
 bpy.ops.export_scene.fbx(
     filepath=output_path,
     check_existing=False,
     use_selection=True,
-    object_types={'ARMATURE'},
+    object_types={'ARMATURE', 'EMPTY'},
     add_leaf_bones=False,
     bake_anim=True,
     bake_anim_use_all_actions=False,
     bake_anim_use_nla_strips=False,
+    bake_anim_use_all_bones=True,
+    bake_anim_force_startend_keying=True,
 )
 
-print(f"SUCCESS: Exported {len(frames)} frames to {output_path}")
+print(f"SUCCESS: Exported {num_frames} frames to {output_path}")
 '''
 
 
