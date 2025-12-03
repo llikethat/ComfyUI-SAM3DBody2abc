@@ -120,6 +120,50 @@ class SAM3DBodyBatchProcessor:
         
         return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
     
+    def _extract_mhr_joint_parents(self, sam_3d_model):
+        """Extract joint parent hierarchy from MHR model (127 joints)."""
+        joint_parents = None
+        
+        try:
+            # Method 1: From the model directly
+            if hasattr(sam_3d_model, 'mhr_head') and hasattr(sam_3d_model.mhr_head, 'mhr'):
+                mhr = sam_3d_model.mhr_head.mhr
+                if hasattr(mhr, 'character_torch') and hasattr(mhr.character_torch, 'skeleton'):
+                    skeleton_obj = mhr.character_torch.skeleton
+                    if hasattr(skeleton_obj, 'joint_parents'):
+                        parent_tensor = skeleton_obj.joint_parents
+                        if isinstance(parent_tensor, torch.Tensor):
+                            joint_parents = parent_tensor.cpu().numpy().astype(int).tolist()
+                            print(f"[SAM3DBody2abc] Extracted MHR joint hierarchy: {len(joint_parents)} joints")
+                            root_idx = joint_parents.index(-1) if -1 in joint_parents else 0
+                            print(f"[SAM3DBody2abc] Root joint at index: {root_idx}")
+                            return joint_parents
+        except Exception as e:
+            print(f"[SAM3DBody2abc] Method 1 (direct model access) failed: {e}")
+        
+        try:
+            # Method 2: Load from MHR model file in HuggingFace cache
+            import glob
+            
+            hf_cache_base = os.path.expanduser("~/.cache/huggingface/hub/models--facebook--sam-3d-body-dinov3")
+            if os.path.exists(hf_cache_base):
+                pattern = os.path.join(hf_cache_base, "snapshots", "*", "assets", "mhr_model.pt")
+                matches = glob.glob(pattern)
+                if matches:
+                    matches.sort(key=os.path.getmtime, reverse=True)
+                    mhr_path = matches[0]
+                    print(f"[SAM3DBody2abc] Loading MHR model from: {mhr_path}")
+                    mhr_model = torch.jit.load(mhr_path, map_location='cpu')
+                    parent_tensor = mhr_model.character_torch.skeleton.joint_parents
+                    joint_parents = parent_tensor.cpu().numpy().astype(int).tolist()
+                    print(f"[SAM3DBody2abc] Loaded MHR hierarchy: {len(joint_parents)} joints")
+                    return joint_parents
+        except Exception as e:
+            print(f"[SAM3DBody2abc] Method 2 (HF cache) failed: {e}")
+        
+        print(f"[SAM3DBody2abc] WARNING: Could not extract MHR joint hierarchy, FBX skeleton may be incorrect")
+        return None
+    
     def process_batch(
         self,
         model,
@@ -166,9 +210,8 @@ class SAM3DBodyBatchProcessor:
                 fov_estimator=None,
             )
             
-            # Use SMPL 24-joint hierarchy for export (simplified)
-            joint_parents = self.SMPL_JOINT_PARENTS
-            print(f"[SAM3DBody2abc] Using SMPL 24-joint skeleton hierarchy")
+            # Extract MHR 127-joint hierarchy from model
+            joint_parents = self._extract_mhr_joint_parents(sam_3d_model)
             
             mesh_sequence = []
             valid_count = 0

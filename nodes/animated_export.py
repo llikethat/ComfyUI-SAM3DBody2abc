@@ -19,6 +19,8 @@ class ExportAnimatedAlembic:
     This is different from per-frame export - the entire animation
     is contained in one .abc file that can be imported into Blender,
     Maya, Houdini, Cinema 4D, etc.
+    
+    Includes optional temporal smoothing to reduce jitter.
     """
     
     @classmethod
@@ -59,6 +61,13 @@ class ExportAnimatedAlembic:
                     "default": False,
                     "tooltip": "Center mesh at origin"
                 }),
+                "temporal_smoothing": ("FLOAT", {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.1,
+                    "tooltip": "Temporal smoothing strength (0=none, 1=max smoothing)"
+                }),
             }
         }
     
@@ -67,6 +76,60 @@ class ExportAnimatedAlembic:
     FUNCTION = "export_alembic"
     CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
+    
+    def _apply_temporal_smoothing(
+        self,
+        frames: List[Dict],
+        smoothing_strength: float,
+    ) -> List[Dict]:
+        """Apply Gaussian temporal smoothing to vertex positions."""
+        if smoothing_strength <= 0:
+            return frames
+        
+        num_frames = len(frames)
+        if num_frames < 3:
+            return frames
+        
+        # Determine kernel radius based on smoothing strength (1-5 frames)
+        kernel_radius = int(np.ceil(smoothing_strength * 4)) + 1
+        kernel_radius = min(kernel_radius, num_frames // 2)
+        
+        print(f"[ExportAnimatedAlembic] Applying temporal smoothing (strength={smoothing_strength}, radius={kernel_radius})")
+        
+        # Create Gaussian kernel
+        sigma = max(kernel_radius / 2.0, 0.5)
+        x = np.arange(-kernel_radius, kernel_radius + 1)
+        kernel = np.exp(-x**2 / (2 * sigma**2))
+        kernel = kernel / kernel.sum()
+        
+        # Stack all vertices
+        all_verts = [np.array(f["vertices"]) for f in frames]
+        num_verts = all_verts[0].shape[0]
+        
+        # Smooth each frame
+        smoothed_verts = []
+        for t in range(num_frames):
+            weighted_sum = np.zeros((num_verts, 3), dtype=np.float64)
+            weight_sum = 0.0
+            
+            for k in range(-kernel_radius, kernel_radius + 1):
+                src_t = t + k
+                if 0 <= src_t < num_frames:
+                    weight = kernel[k + kernel_radius]
+                    weighted_sum += all_verts[src_t] * weight
+                    weight_sum += weight
+            
+            smoothed_verts.append(weighted_sum / weight_sum)
+        
+        # Create new frames with smoothed vertices
+        smoothed_frames = []
+        for i, frame in enumerate(frames):
+            new_frame = dict(frame)
+            new_frame["vertices"] = smoothed_verts[i]
+            smoothed_frames.append(new_frame)
+        
+        print(f"[ExportAnimatedAlembic] Smoothing complete")
+        return smoothed_frames
     
     def export_alembic(
         self,
@@ -78,6 +141,7 @@ class ExportAnimatedAlembic:
         scale: float = 1.0,
         up_axis: str = "Y",
         center_mesh: bool = False,
+        temporal_smoothing: float = 0.5,
     ) -> Tuple[str, str, int]:
         """
         Export complete animation to single Alembic file.
@@ -100,6 +164,10 @@ class ExportAnimatedAlembic:
         
         if not valid_frames:
             return (output_path, "Error: No valid mesh data", 0)
+        
+        # Apply temporal smoothing to reduce jitter
+        if temporal_smoothing > 0:
+            valid_frames = self._apply_temporal_smoothing(valid_frames, temporal_smoothing)
         
         # Try native Alembic export (PyAlembic - not SQLAlchemy alembic!)
         try:
@@ -585,22 +653,8 @@ class ExportAnimatedFBX:
     Export animated skeleton to FBX format.
     Creates a SINGLE FBX file with animated skeleton across ALL frames.
     
-    Uses SMPL 24-joint skeleton hierarchy for standard biped rig.
+    Uses the MHR (Momentum Human Rig) 127-joint skeleton hierarchy.
     """
-    
-    # SMPL 24 joint names (standard biped rig)
-    SMPL_JOINT_NAMES = [
-        "pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee",
-        "spine2", "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot",
-        "neck", "left_collar", "right_collar", "head", "left_shoulder", "right_shoulder",
-        "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand"
-    ]
-    
-    # SMPL skeleton hierarchy (parent indices, -1 = root)
-    SMPL_JOINT_PARENTS = [
-        -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
-        9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21
-    ]
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -691,14 +745,42 @@ class ExportAnimatedFBX:
         if not blender_path:
             raise RuntimeError("Blender not found")
         
-        # Use SMPL 24-joint skeleton (first 24 joints from MHR data)
-        num_joints = 24
-        joint_names = self.SMPL_JOINT_NAMES
-        joint_parents = self.SMPL_JOINT_PARENTS
+        # Get MHR joint hierarchy from first frame (127 joints)
+        joint_parents = frames[0].get("joint_parents")
+        if joint_parents is None:
+            print("[ExportAnimatedFBX] WARNING: No joint_parents in data, trying to load from MHR model...")
+            # Try to load from HuggingFace cache
+            try:
+                import glob
+                hf_cache_base = os.path.expanduser("~/.cache/huggingface/hub/models--facebook--sam-3d-body-dinov3")
+                if os.path.exists(hf_cache_base):
+                    pattern = os.path.join(hf_cache_base, "snapshots", "*", "assets", "mhr_model.pt")
+                    matches = glob.glob(pattern)
+                    if matches:
+                        matches.sort(key=os.path.getmtime, reverse=True)
+                        mhr_path = matches[0]
+                        import torch
+                        mhr_model = torch.jit.load(mhr_path, map_location='cpu')
+                        parent_tensor = mhr_model.character_torch.skeleton.joint_parents
+                        joint_parents = parent_tensor.cpu().numpy().astype(int).tolist()
+                        print(f"[ExportAnimatedFBX] Loaded MHR hierarchy: {len(joint_parents)} joints")
+            except Exception as e:
+                print(f"[ExportAnimatedFBX] Failed to load MHR model: {e}")
         
-        print(f"[ExportAnimatedFBX] Exporting SMPL skeleton with {num_joints} joints")
+        if joint_parents is None:
+            # Fallback: create flat hierarchy based on actual joint count
+            num_joints = len(frames[0]["joints"])
+            joint_parents = [-1] + [0] * (num_joints - 1)
+            print(f"[ExportAnimatedFBX] Using flat hierarchy fallback: {num_joints} joints")
         
-        # Prepare data - extract only first 24 joints
+        num_joints = len(joint_parents)
+        joint_names = [f"Joint_{i:03d}" for i in range(num_joints)]
+        
+        print(f"[ExportAnimatedFBX] Exporting MHR skeleton with {num_joints} joints")
+        root_idx = joint_parents.index(-1) if -1 in joint_parents else 0
+        print(f"[ExportAnimatedFBX] Root joint at index: {root_idx}")
+        
+        # Prepare export data - Blender script handles coordinate transforms
         export_data = {
             "frames": [],
             "output_path": output_path,
@@ -706,7 +788,7 @@ class ExportAnimatedFBX:
             "scale": scale,
             "include_mesh": include_mesh,
             "joint_names": joint_names,
-            "joint_parents": joint_parents,
+            "joint_parents": joint_parents if isinstance(joint_parents, list) else list(joint_parents),
         }
         
         for frame in frames:
@@ -714,20 +796,15 @@ class ExportAnimatedFBX:
             if joints is None:
                 continue
             
-            # Extract first 24 joints (SMPL joints from MHR 127)
+            # Pass raw joint data - Blender script handles coordinate transform
             joints_array = np.array(joints)
-            if len(joints_array) > 24:
-                joints_24 = joints_array[:24]
-            else:
-                # Pad if less than 24
-                joints_24 = np.zeros((24, 3))
-                joints_24[:len(joints_array)] = joints_array
             
             frame_export = {
-                "joints": joints_24.tolist(),
+                "joints": joints_array.tolist(),
             }
             if include_mesh and frame.get("vertices") is not None:
-                frame_export["vertices"] = np.array(frame["vertices"]).tolist()
+                verts = np.array(frame["vertices"])
+                frame_export["vertices"] = verts.tolist()
                 if frame.get("faces") is not None:
                     frame_export["faces"] = np.array(frame["faces"]).tolist()
             export_data["frames"].append(frame_export)
@@ -826,15 +903,18 @@ class ExportAnimatedFBX:
         return None
     
     def _create_blender_fbx_script(self) -> str:
-        """Create Blender script for animated FBX skeleton export."""
+        """Create Blender script for animated FBX skeleton export with MHR hierarchy."""
         return '''
 import bpy
 import json
 import sys
+import numpy as np
 from mathutils import Vector, Matrix
 
 argv = sys.argv
 data_path = argv[argv.index("--") + 1]
+
+print(f"FBX export starting... loading {data_path}")
 
 with open(data_path, 'r') as f:
     data = json.load(f)
@@ -846,60 +926,83 @@ scale = data["scale"]
 joint_names = data["joint_names"]
 joint_parents = data["joint_parents"]
 
-# Clear scene
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete()
+print(f"FBX export starting... '{output_path}'")
+print(f"Joints: {len(joint_names)}, Frames: {len(frames)}")
 
-# Set FPS
+# Clean scene
+for c in bpy.data.actions:
+    bpy.data.actions.remove(c)
+for c in bpy.data.armatures:
+    bpy.data.armatures.remove(c)
+for c in bpy.data.objects:
+    bpy.data.objects.remove(c)
+for c in bpy.data.meshes:
+    bpy.data.meshes.remove(c)
+
+# Create collection
+collection = bpy.data.collections.new('SAM3D_Export')
+bpy.context.scene.collection.children.link(collection)
+
+# Set FPS and frame range
 bpy.context.scene.render.fps = int(fps)
 bpy.context.scene.frame_start = 1
 bpy.context.scene.frame_end = len(frames)
 
-# Create armature
-bpy.ops.object.armature_add()
-armature_obj = bpy.context.active_object
-armature_obj.name = "body_skeleton"
-armature = armature_obj.data
-armature.name = "body_armature"
+# Get first frame joints and apply coordinate correction
+# Original coords: x, y, z -> Blender coords: x, -z, y
+first_joints_raw = np.array(frames[0]["joints"])
+first_joints = np.zeros_like(first_joints_raw)
+first_joints[:, 0] = first_joints_raw[:, 0]  # x stays x
+first_joints[:, 1] = -first_joints_raw[:, 2]  # y = -z
+first_joints[:, 2] = first_joints_raw[:, 1]   # z = y
 
-# Enter edit mode
-bpy.ops.object.mode_set(mode='EDIT')
+# Calculate skeleton center and make positions relative
+skeleton_center = first_joints.mean(axis=0)
+rel_joints = first_joints - skeleton_center
+
+# Create armature
+bpy.ops.object.armature_add(enter_editmode=True)
+armature = bpy.data.armatures.get('Armature')
+armature.name = 'SAM3D_Skeleton'
+armature_obj = bpy.context.active_object
+armature_obj.name = 'SAM3D_Skeleton'
+
+# Move to our collection
+if armature_obj.name in bpy.context.scene.collection.objects:
+    bpy.context.scene.collection.objects.unlink(armature_obj)
+collection.objects.link(armature_obj)
+
+edit_bones = armature.edit_bones
+extrude_size = 0.05 * scale
 
 # Remove default bone
-for bone in armature.edit_bones:
-    armature.edit_bones.remove(bone)
+default_bone = edit_bones.get('Bone')
+if default_bone:
+    edit_bones.remove(default_bone)
 
-# Create bones from first frame
-first_joints = [[j * scale for j in joint] for joint in frames[0]["joints"]]
-
-bones = []
+# Create all bones
+bones_dict = {}
 for i, name in enumerate(joint_names):
-    bone = armature.edit_bones.new(name)
-    pos = Vector(first_joints[i])
+    bone = edit_bones.new(name)
+    pos = Vector((rel_joints[i, 0] * scale, rel_joints[i, 1] * scale, rel_joints[i, 2] * scale))
     bone.head = pos
-    
-    # Find children to determine bone direction
-    children = [j for j, p in enumerate(joint_parents) if p == i]
-    if children:
-        child_pos = Vector(first_joints[children[0]])
-        bone.tail = child_pos
-    else:
-        parent_idx = joint_parents[i]
-        if parent_idx >= 0:
-            parent_pos = Vector(first_joints[parent_idx])
-            direction = pos - parent_pos
-            bone.tail = pos + direction.normalized() * 0.05 * scale
-        else:
-            bone.tail = pos + Vector((0, 0.1 * scale, 0))
-    
-    bones.append(bone)
+    bone.tail = Vector((pos.x, pos.y, pos.z + extrude_size))
+    bones_dict[name] = bone
 
-# Set parents
+# Set parents from joint_parents
 for i, parent_idx in enumerate(joint_parents):
-    if parent_idx >= 0:
-        bones[i].parent = bones[parent_idx]
+    if parent_idx >= 0 and parent_idx < len(joint_names) and parent_idx != i:
+        bones_dict[joint_names[i]].parent = bones_dict[joint_names[parent_idx]]
+        bones_dict[joint_names[i]].use_connect = False
+
+# Find root joint and print hierarchy info
+root_indices = [i for i, p in enumerate(joint_parents) if p == -1]
+print(f"Root joint(s): {root_indices}")
 
 bpy.ops.object.mode_set(mode='OBJECT')
+
+# Position armature at skeleton center (with coordinate transform)
+armature_obj.location = Vector((skeleton_center[0] * scale, skeleton_center[1] * scale, skeleton_center[2] * scale))
 
 # Animate the armature
 bpy.ops.object.mode_set(mode='POSE')
@@ -907,20 +1010,26 @@ bpy.ops.object.mode_set(mode='POSE')
 for frame_idx, frame_data in enumerate(frames):
     bpy.context.scene.frame_set(frame_idx + 1)
     
-    joints = frame_data["joints"]
+    # Apply coordinate correction to this frame's joints
+    joints_raw = np.array(frame_data["joints"])
+    joints = np.zeros_like(joints_raw)
+    joints[:, 0] = joints_raw[:, 0]
+    joints[:, 1] = -joints_raw[:, 2]
+    joints[:, 2] = joints_raw[:, 1]
+    
+    # Make relative to center
+    joints_rel = joints - skeleton_center
     
     for i, name in enumerate(joint_names):
         pose_bone = armature_obj.pose.bones[name]
-        pos = Vector([j * scale for j in joints[i]])
+        pos = Vector((joints_rel[i, 0] * scale, joints_rel[i, 1] * scale, joints_rel[i, 2] * scale))
         
-        # Set bone location (relative to parent)
-        if joint_parents[i] >= 0:
-            parent_pos = Vector([j * scale for j in joints[joint_parents[i]]])
-            local_pos = pos - parent_pos
-        else:
-            local_pos = pos
+        # Get rest position
+        rest_pos = Vector(pose_bone.bone.head_local)
         
-        pose_bone.location = local_pos
+        # Calculate offset from rest pose
+        offset = pos - rest_pos
+        pose_bone.location = offset
         pose_bone.keyframe_insert(data_path="location", frame=frame_idx + 1)
 
 bpy.ops.object.mode_set(mode='OBJECT')
@@ -932,6 +1041,7 @@ bpy.context.view_layer.objects.active = armature_obj
 # Export FBX
 bpy.ops.export_scene.fbx(
     filepath=output_path,
+    check_existing=False,
     use_selection=True,
     object_types={'ARMATURE'},
     add_leaf_bones=False,

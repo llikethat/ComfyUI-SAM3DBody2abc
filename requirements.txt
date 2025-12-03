@@ -10,6 +10,7 @@ trimesh>=3.9.0
 
 # For overlay visualization (optional but recommended)
 opencv-python>=4.5.0
+pyrender>=0.1.45
 
 # For advanced mesh operations (optional)
 scipy>=1.7.0
