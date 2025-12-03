@@ -173,6 +173,7 @@ If you need more control and want to use the standard SAM3DBody "Process Image" 
 ### "Blender not found" (FBX export)
 - Install Blender: https://www.blender.org/download/
 - Add Blender to system PATH
+- Blender not loading - install the libraries using `apt install libsm6 libice6`
 
 ### Jittery animation
 - Enable temporal smoothing
