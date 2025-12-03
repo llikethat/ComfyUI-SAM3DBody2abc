@@ -67,8 +67,8 @@ MeshSequencePreview = _mesh_accumulator.MeshSequencePreview
 MeshSequenceSmooth = _mesh_accumulator.MeshSequenceSmooth
 ClearMeshSequence = _mesh_accumulator.ClearMeshSequence
 
-RenderMeshOverlay = _overlay_renderer.RenderMeshOverlay
-RenderMeshOverlayBatch = _overlay_renderer.RenderMeshOverlayBatch
+RenderMeshOverlay = _overlay_renderer.SAM3DBody2abcOverlay
+RenderMeshOverlayBatch = _overlay_renderer.SAM3DBody2abcOverlayBatch
 
 NODE_CLASS_MAPPINGS = {
     # Video/Batch Processing
