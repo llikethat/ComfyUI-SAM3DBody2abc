@@ -178,8 +178,9 @@ class SAM3DBody2abcOverlay:
                 "render_mode": (["overlay", "mesh_only", "side_by_side"], {
                     "default": "overlay"
                 }),
-                "mesh_color": (["skin", "blue", "green", "red", "white", "cyan"], {
-                    "default": "skin"
+                "mesh_color": (["skin", "blue", "green", "red", "white", "cyan", "wireframe"], {
+                    "default": "skin",
+                    "tooltip": "Color of the mesh overlay (wireframe shows edges only)"
                 }),
                 "opacity": ("FLOAT", {
                     "default": 0.5,
@@ -207,6 +208,7 @@ class SAM3DBody2abcOverlay:
         "red": (100, 100, 255),       # BGR red
         "white": (230, 230, 230),     # BGR white
         "cyan": (255, 255, 100),      # BGR cyan
+        "wireframe": (100, 255, 100), # Green wireframe
     }
     
     def render_overlay(
@@ -290,19 +292,22 @@ class SAM3DBody2abcOverlayBatch:
                 }),
             },
             "optional": {
-                "mesh_color": (["skin", "blue", "green", "red", "white", "cyan"], {
-                    "default": "skin"
+                "mesh_color": (["skin", "blue", "green", "red", "white", "cyan", "wireframe"], {
+                    "default": "skin",
+                    "tooltip": "Color of the mesh overlay (wireframe shows edges only)"
                 }),
                 "opacity": ("FLOAT", {
                     "default": 0.5,
                     "min": 0.1,
                     "max": 1.0,
-                    "step": 0.1
+                    "step": 0.1,
+                    "tooltip": "Opacity of the mesh overlay"
                 }),
                 "line_thickness": ("INT", {
                     "default": 1,
                     "min": 1,
-                    "max": 5
+                    "max": 5,
+                    "tooltip": "Thickness of wireframe lines"
                 }),
                 "temporal_smoothing": ("FLOAT", {
                     "default": 0.5,
@@ -326,6 +331,7 @@ class SAM3DBody2abcOverlayBatch:
         "red": (100, 100, 255),
         "white": (230, 230, 230),
         "cyan": (255, 255, 100),
+        "wireframe": (100, 255, 100),  # Green wireframe
     }
     
     def render_batch(
@@ -341,42 +347,71 @@ class SAM3DBody2abcOverlayBatch:
         import comfy.utils
         from scipy.ndimage import gaussian_filter1d
         
+        # Handle NaN or invalid values
+        if opacity is None or np.isnan(opacity):
+            opacity = 0.5
+        if line_thickness is None or (isinstance(line_thickness, float) and np.isnan(line_thickness)):
+            line_thickness = 1
+        line_thickness = max(1, int(line_thickness))
+        opacity = max(0.1, min(1.0, float(opacity)))
+        
         print(f"[SAM3DBody2abc] Batch overlay: {len(mesh_sequence)} meshes, {images.shape[0]} images")
         
+        # Determine render mode
+        render_mode = "wireframe" if mesh_color == "wireframe" else "overlay"
         color = self.MESH_COLORS.get(mesh_color, self.MESH_COLORS["skin"])
         
-        # Apply temporal smoothing to vertices if requested
+        # Apply temporal smoothing to vertices AND camera if requested
         if temporal_smoothing > 0 and len(mesh_sequence) > 1:
             print(f"[SAM3DBody2abc] Applying temporal smoothing (strength={temporal_smoothing})")
             
-            # Collect all vertices
+            # Collect all vertices and cameras
             all_vertices = []
+            all_cameras = []
             valid_indices = []
+            
             for i, mesh in enumerate(mesh_sequence):
                 verts = mesh.get("vertices")
+                cam = mesh.get("camera")
+                
                 if verts is not None and mesh.get("valid", True):
                     if isinstance(verts, torch.Tensor):
                         verts = verts.cpu().numpy()
                     all_vertices.append(np.array(verts))
+                    
+                    # Also collect camera
+                    if cam is not None:
+                        if isinstance(cam, torch.Tensor):
+                            cam = cam.cpu().numpy()
+                        all_cameras.append(np.array(cam).flatten())
+                    else:
+                        all_cameras.append(np.array([0.0, 0.3, 2.5]))
+                    
                     valid_indices.append(i)
                 else:
                     all_vertices.append(None)
+                    all_cameras.append(None)
             
             if len(valid_indices) > 1:
                 # Stack valid vertices: (num_valid_frames, num_verts, 3)
                 valid_verts = np.stack([all_vertices[i] for i in valid_indices])
+                valid_cams = np.stack([all_cameras[i] for i in valid_indices])
                 
                 # Calculate sigma based on smoothing strength (0.5-3.0 range)
                 sigma = 0.5 + temporal_smoothing * 2.5
                 
-                # Apply Gaussian smoothing along time axis
-                smoothed = gaussian_filter1d(valid_verts, sigma=sigma, axis=0, mode='nearest')
+                # Apply Gaussian smoothing along time axis to vertices
+                smoothed_verts = gaussian_filter1d(valid_verts, sigma=sigma, axis=0, mode='nearest')
                 
-                # Put smoothed vertices back
+                # Apply Gaussian smoothing to camera positions too
+                smoothed_cams = gaussian_filter1d(valid_cams, sigma=sigma, axis=0, mode='nearest')
+                
+                # Put smoothed data back
                 for idx, orig_idx in enumerate(valid_indices):
-                    mesh_sequence[orig_idx]["vertices"] = smoothed[idx]
+                    mesh_sequence[orig_idx]["vertices"] = smoothed_verts[idx]
+                    mesh_sequence[orig_idx]["camera"] = smoothed_cams[idx]
                 
-                print(f"[SAM3DBody2abc] Smoothing complete (sigma={sigma:.2f})")
+                print(f"[SAM3DBody2abc] Smoothing complete (sigma={sigma:.2f}, vertices + camera)")
         
         # Process each frame
         result_frames = []
@@ -431,11 +466,12 @@ class SAM3DBody2abcOverlayBatch:
                 print(f"  - Camera: {cam_t}")
                 print(f"  - Focal length: {focal_length}")
                 print(f"  - Image size: {img_bgr.shape}")
+                print(f"  - Render mode: {render_mode}, opacity: {opacity}, line_thickness: {line_thickness}")
             
             # Render
             result = render_mesh_opencv(
                 img_bgr, vertices, faces, cam_t, focal_length, 
-                color, opacity, line_thickness, debug=(i==0)
+                color, opacity, line_thickness, debug=(i==0), render_mode=render_mode
             )
             
             # Convert BGR to RGB

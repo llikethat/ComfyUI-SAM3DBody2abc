@@ -2,7 +2,7 @@
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
-![Version](https://img.shields.io/badge/version-2.0.8-blue)
+![Version](https://img.shields.io/badge/version-2.1.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 🎯 Purpose
@@ -225,6 +225,20 @@ MIT License - See [LICENSE](LICENSE)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) by Kosinkadink
 
 ## 📝 Changelog
+
+### v2.1.0 - Retargeting-Ready FBX Export
+- **Rewritten FBX Export**: Now uses constraint baking for proper skeleton animation
+- **Clean Armature Only**: Exports only the armature (no empties) - cleaner for retargeting
+- **Baked Animation**: Animation is baked directly to pose bones using Blender's NLA bake
+- **Better Hierarchy**: Improved bone direction calculation for proper bone orientation
+- **Retargeting Ready**: FBX can now be used directly with retargeting tools (Mixamo, UE5, etc.)
+
+### v2.0.9
+- **Wireframe Option**: Added 'wireframe' to mesh_color options for edge-only rendering
+- **Camera Smoothing**: Now applies temporal smoothing to camera position in addition to vertices (reduces jitter)
+- **NaN Fix**: Added handling for NaN values in opacity and line_thickness parameters
+- **Updated Workflow**: Workflow now saves overlay video as MP4 at 24fps and displays focal length
+- **Audio Passthrough**: Video save node now includes audio from source video
 
 ### v2.0.8
 - **GeoCalib Fix v2**: Fixed focal length extraction from GeoCalib Camera object (TensorWrapper)
