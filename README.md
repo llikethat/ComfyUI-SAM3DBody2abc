@@ -46,7 +46,7 @@ The existing [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3D
 ### Manual Installation
 ```bash
 cd ComfyUI/custom_nodes/
-git clone https://github.com/your-username/SAM3DBody2abc.git
+git clone https://github.com/llikethat/ComfyUI-SAM3DBody2abc.git
 cd SAM3DBody2abc
 python install.py
 ```
