@@ -1080,12 +1080,14 @@ for frame_idx, frame_data in enumerate(frames):
     
     joints_raw = np.array(frame_data["joints"])
     
-    # Apply coordinate correction: (x, y, z) -> (x, -z, y)
-    # This converts from Y-up to Blender's Z-up coordinate system
+    # Apply coordinate correction: Y-up (SAM3D) to Z-up (Blender)
+    # SAM3D: X=left/right, Y=height (negative=down), Z=depth
+    # Blender: X=right, Y=forward, Z=up
+    # Transform: X=X, Y=Z, Z=-Y (flip Y to make positive up)
     joints = np.zeros_like(joints_raw)
     joints[:, 0] = joints_raw[:, 0] * scale      # X stays X
-    joints[:, 1] = -joints_raw[:, 2] * scale     # Y = -Z (original)
-    joints[:, 2] = joints_raw[:, 1] * scale      # Z = Y (original, the height)
+    joints[:, 1] = joints_raw[:, 2] * scale      # Y = Z (depth becomes forward)
+    joints[:, 2] = -joints_raw[:, 1] * scale     # Z = -Y (flip height to positive up)
     
     for i, name in enumerate(joint_names):
         empty = empties[name]
@@ -1102,8 +1104,8 @@ print("Creating reference armature...")
 first_joints_raw = np.array(frames[0]["joints"])
 first_joints = np.zeros_like(first_joints_raw)
 first_joints[:, 0] = first_joints_raw[:, 0] * scale
-first_joints[:, 1] = -first_joints_raw[:, 2] * scale
-first_joints[:, 2] = first_joints_raw[:, 1] * scale
+first_joints[:, 1] = first_joints_raw[:, 2] * scale
+first_joints[:, 2] = -first_joints_raw[:, 1] * scale
 
 bpy.ops.object.armature_add(enter_editmode=True, location=(0, 0, 0))
 armature = bpy.data.armatures.get('Armature')

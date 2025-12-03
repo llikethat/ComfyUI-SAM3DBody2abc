@@ -304,6 +304,13 @@ class SAM3DBody2abcOverlayBatch:
                     "min": 1,
                     "max": 5
                 }),
+                "temporal_smoothing": ("FLOAT", {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.1,
+                    "tooltip": "Temporal smoothing strength (0=none, 1=maximum)"
+                }),
             }
         }
     
@@ -328,13 +335,48 @@ class SAM3DBody2abcOverlayBatch:
         mesh_color: str = "skin",
         opacity: float = 0.5,
         line_thickness: int = 1,
+        temporal_smoothing: float = 0.5,
     ):
-        """Render mesh overlays on batch of images."""
+        """Render mesh overlays on batch of images with temporal smoothing."""
         import comfy.utils
+        from scipy.ndimage import gaussian_filter1d
         
         print(f"[SAM3DBody2abc] Batch overlay: {len(mesh_sequence)} meshes, {images.shape[0]} images")
         
         color = self.MESH_COLORS.get(mesh_color, self.MESH_COLORS["skin"])
+        
+        # Apply temporal smoothing to vertices if requested
+        if temporal_smoothing > 0 and len(mesh_sequence) > 1:
+            print(f"[SAM3DBody2abc] Applying temporal smoothing (strength={temporal_smoothing})")
+            
+            # Collect all vertices
+            all_vertices = []
+            valid_indices = []
+            for i, mesh in enumerate(mesh_sequence):
+                verts = mesh.get("vertices")
+                if verts is not None and mesh.get("valid", True):
+                    if isinstance(verts, torch.Tensor):
+                        verts = verts.cpu().numpy()
+                    all_vertices.append(np.array(verts))
+                    valid_indices.append(i)
+                else:
+                    all_vertices.append(None)
+            
+            if len(valid_indices) > 1:
+                # Stack valid vertices: (num_valid_frames, num_verts, 3)
+                valid_verts = np.stack([all_vertices[i] for i in valid_indices])
+                
+                # Calculate sigma based on smoothing strength (0.5-3.0 range)
+                sigma = 0.5 + temporal_smoothing * 2.5
+                
+                # Apply Gaussian smoothing along time axis
+                smoothed = gaussian_filter1d(valid_verts, sigma=sigma, axis=0, mode='nearest')
+                
+                # Put smoothed vertices back
+                for idx, orig_idx in enumerate(valid_indices):
+                    mesh_sequence[orig_idx]["vertices"] = smoothed[idx]
+                
+                print(f"[SAM3DBody2abc] Smoothing complete (sigma={sigma:.2f})")
         
         # Process each frame
         result_frames = []
