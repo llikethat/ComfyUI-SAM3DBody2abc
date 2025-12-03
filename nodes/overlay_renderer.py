@@ -61,7 +61,7 @@ class RenderMeshOverlay:
     FUNCTION = "render_overlay"
     CATEGORY = "SAM3DBody2abc/Visualization"
     
-    # SMPL skeleton connections
+    # SMPL 24-joint skeleton connections
     SKELETON_CONNECTIONS = [
         (0, 1), (0, 2), (0, 3),  # Pelvis to hips and spine
         (1, 4), (2, 5),  # Hips to knees
@@ -74,6 +74,12 @@ class RenderMeshOverlay:
         (16, 18), (17, 19),  # Shoulders to elbows
         (18, 20), (19, 21),  # Elbows to wrists
         (20, 22), (21, 23),  # Wrists to hands
+    ]
+    
+    # SMPL joint parent indices for building skeleton from hierarchy
+    SMPL_JOINT_PARENTS = [
+        -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+        9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21
     ]
     
     def render_overlay(
@@ -144,12 +150,15 @@ class RenderMeshOverlay:
             return (0, 255, 0)
     
     def _get_2d_joints(self, mesh: Dict, W: int, H: int) -> Optional[np.ndarray]:
-        """Get 2D joint positions."""
+        """Get 2D joint positions (first 24 SMPL joints)."""
         # Try different keys
         for key in ["joints_2d", "J_2d", "keypoints_2d"]:
             if key in mesh and mesh[key] is not None:
                 joints = np.array(mesh[key])
                 if joints.shape[-1] == 2:
+                    # Take first 24 joints for SMPL skeleton
+                    if len(joints) > 24:
+                        joints = joints[:24]
                     return joints
         
         # Project 3D joints if camera available
@@ -163,6 +172,9 @@ class RenderMeshOverlay:
         
         if joints_3d is not None and camera is not None:
             joints_3d = np.array(joints_3d)
+            # Take first 24 joints for SMPL skeleton
+            if len(joints_3d) > 24:
+                joints_3d = joints_3d[:24]
             return self._project_to_2d(joints_3d, camera, W, H, focal_length)
         
         return None
@@ -310,17 +322,10 @@ class RenderMeshOverlay:
         has_cv2: bool,
         joint_parents: Optional[List[int]] = None
     ) -> np.ndarray:
-        """Render skeleton connections using joint hierarchy."""
+        """Render skeleton connections using SMPL 24-joint structure."""
         
-        # Build connections from joint_parents if available
-        if joint_parents is not None:
-            connections = []
-            for i, parent in enumerate(joint_parents):
-                if parent >= 0 and parent < len(joints_2d) and i < len(joints_2d):
-                    connections.append((parent, i))
-        else:
-            # Fallback to hardcoded SMPL connections (24 joints)
-            connections = self.SKELETON_CONNECTIONS
+        # Always use SMPL connections for 24 joints
+        connections = self.SKELETON_CONNECTIONS
         
         if has_cv2:
             import cv2

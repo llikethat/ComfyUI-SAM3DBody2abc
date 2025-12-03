@@ -585,8 +585,22 @@ class ExportAnimatedFBX:
     Export animated skeleton to FBX format.
     Creates a SINGLE FBX file with animated skeleton across ALL frames.
     
-    Uses the joint hierarchy from MHR (Momentum Human Rig) model.
+    Uses SMPL 24-joint skeleton hierarchy for standard biped rig.
     """
+    
+    # SMPL 24 joint names (standard biped rig)
+    SMPL_JOINT_NAMES = [
+        "pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee",
+        "spine2", "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot",
+        "neck", "left_collar", "right_collar", "head", "left_shoulder", "right_shoulder",
+        "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand"
+    ]
+    
+    # SMPL skeleton hierarchy (parent indices, -1 = root)
+    SMPL_JOINT_PARENTS = [
+        -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+        9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21
+    ]
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -677,20 +691,14 @@ class ExportAnimatedFBX:
         if not blender_path:
             raise RuntimeError("Blender not found")
         
-        # Get joint hierarchy from first frame (constant for all frames)
-        joint_parents = frames[0].get("joint_parents")
-        if joint_parents is None:
-            print("[ExportAnimatedFBX] Warning: No joint_parents in data, skeleton hierarchy may be incorrect")
-            # Fallback: create flat hierarchy
-            num_joints = len(frames[0]["joints"])
-            joint_parents = [-1] + [0] * (num_joints - 1)  # All joints parent to root
+        # Use SMPL 24-joint skeleton (first 24 joints from MHR data)
+        num_joints = 24
+        joint_names = self.SMPL_JOINT_NAMES
+        joint_parents = self.SMPL_JOINT_PARENTS
         
-        num_joints = len(joint_parents)
-        joint_names = [f"joint_{i:03d}" for i in range(num_joints)]
+        print(f"[ExportAnimatedFBX] Exporting SMPL skeleton with {num_joints} joints")
         
-        print(f"[ExportAnimatedFBX] Exporting skeleton with {num_joints} joints")
-        
-        # Prepare data
+        # Prepare data - extract only first 24 joints
         export_data = {
             "frames": [],
             "output_path": output_path,
@@ -698,15 +706,25 @@ class ExportAnimatedFBX:
             "scale": scale,
             "include_mesh": include_mesh,
             "joint_names": joint_names,
-            "joint_parents": joint_parents if isinstance(joint_parents, list) else joint_parents.tolist(),
+            "joint_parents": joint_parents,
         }
         
         for frame in frames:
             joints = frame.get("joints")
             if joints is None:
                 continue
+            
+            # Extract first 24 joints (SMPL joints from MHR 127)
+            joints_array = np.array(joints)
+            if len(joints_array) > 24:
+                joints_24 = joints_array[:24]
+            else:
+                # Pad if less than 24
+                joints_24 = np.zeros((24, 3))
+                joints_24[:len(joints_array)] = joints_array
+            
             frame_export = {
-                "joints": np.array(joints).tolist(),
+                "joints": joints_24.tolist(),
             }
             if include_mesh and frame.get("vertices") is not None:
                 frame_export["vertices"] = np.array(frame["vertices"]).tolist()

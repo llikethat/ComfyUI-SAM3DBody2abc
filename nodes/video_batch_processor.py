@@ -33,6 +33,9 @@ class SAM3DBodyBatchProcessor:
                 }),
             },
             "optional": {
+                "mask": ("MASK", {
+                    "tooltip": "Optional segmentation mask to guide reconstruction"
+                }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
                     "min": 0.0,
@@ -65,8 +68,8 @@ class SAM3DBodyBatchProcessor:
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING")
-    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT")
+    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status", "focal_length")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc/Video"
     
@@ -90,10 +93,38 @@ class SAM3DBodyBatchProcessor:
         
         return img_bgr
     
+    # SMPL 24 joint names for simplified skeleton export
+    SMPL_JOINT_NAMES = [
+        "pelvis", "left_hip", "right_hip", "spine1", "left_knee", "right_knee",
+        "spine2", "left_ankle", "right_ankle", "spine3", "left_foot", "right_foot",
+        "neck", "left_collar", "right_collar", "head", "left_shoulder", "right_shoulder",
+        "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand"
+    ]
+    
+    # SMPL skeleton hierarchy (parent indices, -1 = root)
+    SMPL_JOINT_PARENTS = [
+        -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+        9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21
+    ]
+    
+    def _compute_bbox_from_mask(self, mask):
+        """Compute bounding box from binary mask."""
+        rows = np.any(mask > 0.5, axis=1)
+        cols = np.any(mask > 0.5, axis=0)
+        
+        if not rows.any() or not cols.any():
+            return None
+        
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        
+        return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
+    
     def process_batch(
         self,
         model,
         images,
+        mask=None,
         bbox_threshold: float = 0.8,
         inference_type: str = "full",
         start_frame: int = 0,
@@ -112,9 +143,11 @@ class SAM3DBodyBatchProcessor:
         frame_indices = list(range(start_frame, actual_end, skip_frames))
         
         if not frame_indices:
-            return ([], images[:1], 0, "Error: No frames in range")
+            return ([], images[:1], 0, "Error: No frames in range", 0.0)
         
         print(f"[SAM3DBody2abc] Processing {len(frame_indices)} frames out of {total_frames} total")
+        if mask is not None:
+            print(f"[SAM3DBody2abc] Using provided mask")
         
         try:
             # Import SAM 3D Body modules
@@ -133,23 +166,23 @@ class SAM3DBodyBatchProcessor:
                 fov_estimator=None,
             )
             
-            # Extract joint parent hierarchy from MHR model (constant for all frames)
-            joint_parents = None
-            try:
-                if hasattr(sam_3d_model, 'mhr_head') and hasattr(sam_3d_model.mhr_head, 'mhr'):
-                    mhr = sam_3d_model.mhr_head.mhr
-                    if hasattr(mhr, 'character_torch') and hasattr(mhr.character_torch, 'skeleton'):
-                        skeleton_obj = mhr.character_torch.skeleton
-                        if hasattr(skeleton_obj, 'joint_parents'):
-                            parent_tensor = skeleton_obj.joint_parents
-                            if isinstance(parent_tensor, torch.Tensor):
-                                joint_parents = parent_tensor.cpu().numpy().tolist()
-                                print(f"[SAM3DBody2abc] Extracted joint hierarchy: {len(joint_parents)} joints")
-            except Exception as e:
-                print(f"[SAM3DBody2abc] Could not extract joint parents: {e}")
+            # Use SMPL 24-joint hierarchy for export (simplified)
+            joint_parents = self.SMPL_JOINT_PARENTS
+            print(f"[SAM3DBody2abc] Using SMPL 24-joint skeleton hierarchy")
             
             mesh_sequence = []
             valid_count = 0
+            first_focal_length = 0.0
+            
+            # Process mask if provided
+            mask_np = None
+            if mask is not None:
+                if isinstance(mask, torch.Tensor):
+                    mask_np = mask.cpu().numpy()
+                else:
+                    mask_np = np.array(mask)
+                if mask_np.ndim == 3:
+                    mask_np = mask_np[0]  # Take first mask if batch
             
             pbar = comfy.utils.ProgressBar(len(frame_indices))
             
@@ -158,6 +191,11 @@ class SAM3DBodyBatchProcessor:
                     # Get single frame and convert to BGR numpy
                     frame_tensor = images[frame_idx:frame_idx+1]
                     img_bgr = self._comfy_image_to_numpy(frame_tensor)
+                    
+                    # Compute bbox from mask if provided
+                    bboxes = None
+                    if mask_np is not None:
+                        bboxes = self._compute_bbox_from_mask(mask_np)
                     
                     # Save image to temporary file (required by SAM3DBodyEstimator)
                     with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -168,10 +206,10 @@ class SAM3DBodyBatchProcessor:
                         # Process image
                         outputs = estimator.process_one_image(
                             tmp_path,
-                            bboxes=None,
-                            masks=None,
+                            bboxes=bboxes,
+                            masks=mask_np,
                             bbox_thr=bbox_threshold,
-                            use_mask=False,
+                            use_mask=(mask_np is not None),
                             inference_type=inference_type,
                         )
                         
@@ -247,6 +285,10 @@ class SAM3DBodyBatchProcessor:
                                 print(f"[SAM3DBody2abc] First valid mesh: {vertices.shape[0]} vertices")
                                 if joints is not None:
                                     print(f"[SAM3DBody2abc] Joint data: {joints.shape[0]} joints")
+                                if focal_length is not None:
+                                    fl_val = float(np.array(focal_length).flatten()[0]) if hasattr(focal_length, '__len__') else float(focal_length)
+                                    first_focal_length = fl_val
+                                    print(f"[SAM3DBody2abc] Focal length: {fl_val:.2f}")
                     else:
                         mesh_sequence.append({
                             "frame_index": idx,
@@ -271,17 +313,17 @@ class SAM3DBodyBatchProcessor:
             status = f"Processed {len(frame_indices)} frames, {valid_count} valid meshes"
             print(f"[SAM3DBody2abc] [OK] {status}")
             
-            return (mesh_sequence, output_images, len(frame_indices), status)
+            return (mesh_sequence, output_images, len(frame_indices), status, first_focal_length)
             
         except ImportError as e:
             print(f"[SAM3DBody2abc] [ERROR] Failed to import sam_3d_body")
-            return ([], images[:1], 0, f"Error: {e}")
+            return ([], images[:1], 0, f"Error: {e}", 0.0)
             
         except Exception as e:
             print(f"[SAM3DBody2abc] [ERROR] Batch processing failed: {e}")
             import traceback
             traceback.print_exc()
-            return ([], images[:1], 0, f"Error: {e}")
+            return ([], images[:1], 0, f"Error: {e}", 0.0)
 
 
 class SAM3DBodySequenceProcess:
