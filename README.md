@@ -2,7 +2,7 @@
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
-![Version](https://img.shields.io/badge/version-2.0.6-blue)
+![Version](https://img.shields.io/badge/version-2.0.8-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 🎯 Purpose
@@ -225,6 +225,18 @@ MIT License - See [LICENSE](LICENSE)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) by Kosinkadink
 
 ## 📝 Changelog
+
+### v2.0.8
+- **GeoCalib Fix v2**: Fixed focal length extraction from GeoCalib Camera object (TensorWrapper)
+- **Camera._data Access**: Now properly accesses underlying tensor data `camera._data[..., 2]` for fx
+- **Better Debug Output**: Prints camera type and available attributes when extraction fails
+- **Multiple Fallbacks**: Tries `_data`, tensor indexing, `.fx`, and `.f` properties
+
+### v2.0.7
+- **GeoCalib Fix**: Fixed "'list' object has no attribute 'shape'" error in auto-calibration
+- **Robust Focal Extraction**: Now tries multiple methods to extract focal length from GeoCalib Camera object (camera.f, camera.fx, camera.K)
+- **Better Debugging**: Added detailed logging when focal length extraction fails to help diagnose issues
+- **Single Frame Calibration**: Simplified to use single frame instead of batch for more reliable results
 
 ### v2.0.6
 - **FOV Parameter**: Added `fov` parameter to Batch Processor (default: 55°) for manual camera FOV setting

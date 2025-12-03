@@ -235,7 +235,7 @@ class SAM3DBodyBatchProcessor:
         """
         Auto-estimate FOV using GeoCalib model.
         
-        Uses first few frames to estimate consistent FOV for the entire video.
+        Uses first frame to estimate FOV for the entire video.
         Returns: (focal_length, fov_degrees)
         """
         try:
@@ -254,45 +254,104 @@ class SAM3DBodyBatchProcessor:
         # Load GeoCalib model
         geocalib_model = GeoCalib().to(device)
         
-        # Collect frames for calibration
-        calibration_images = []
-        for idx in frame_indices:
-            # Convert ComfyUI image [H, W, C] to GeoCalib format [C, H, W]
-            img = images[idx].cpu()  # [H, W, C]
-            img = img.permute(2, 0, 1)  # [C, H, W]
-            calibration_images.append(img.to(device))
+        img_h, img_w = images.shape[1], images.shape[2]
+        img_size = max(img_h, img_w)
         
-        print(f"[SAM3DBody2abc] Calibrating with {len(calibration_images)} frames (shared intrinsics)...")
+        # Use only first frame for simplicity
+        idx = frame_indices[0]
         
-        # Calibrate with shared intrinsics across all sample frames
-        if len(calibration_images) == 1:
-            result = geocalib_model.calibrate(calibration_images[0])
-        else:
-            result = geocalib_model.calibrate(calibration_images, shared_intrinsics=True)
+        # Convert ComfyUI image [H, W, C] to GeoCalib format [C, H, W]
+        img = images[idx].cpu()  # [H, W, C]
+        img = img.permute(2, 0, 1)  # [C, H, W]
+        img = img.to(device)
         
-        # Extract focal length and calculate FOV
+        print(f"[SAM3DBody2abc] Calibrating frame {idx} with GeoCalib...")
+        
+        # Calibrate single image
+        result = geocalib_model.calibrate(img)
+        
+        # Extract focal length from camera object
+        # GeoCalib Camera stores: {w, h, fx, fy, cx, cy, ...} as a tensor
         camera = result["camera"]
+        focal_length = None
         
-        # GeoCalib returns Camera object with fx, fy
-        if hasattr(camera, 'f'):
-            # Normalized focal length (relative to image size)
-            f_normalized = float(camera.f[0].cpu().numpy())
-            img_h, img_w = images.shape[1], images.shape[2]
-            focal_length = f_normalized * max(img_h, img_w)
-        else:
-            # Try direct focal length access
-            focal_length = float(camera.fx.cpu().numpy()) if hasattr(camera, 'fx') else 500.0
+        print(f"[SAM3DBody2abc] Camera type: {type(camera)}")
+        
+        # Try to access the underlying data tensor
+        try:
+            # GeoCalib Camera is a TensorWrapper - access underlying data
+            if hasattr(camera, '_data'):
+                # _data shape is (..., 6/7/8) with [w, h, fx, fy, cx, cy, ...]
+                data = camera._data
+                if isinstance(data, torch.Tensor):
+                    # fx is at index 2
+                    focal_length = float(data[..., 2].flatten()[0].cpu().numpy())
+                    print(f"[SAM3DBody2abc] Got focal from camera._data[2]: {focal_length:.2f}")
+        except Exception as e:
+            print(f"[SAM3DBody2abc] camera._data failed: {e}")
+        
+        if focal_length is None:
+            try:
+                # Try direct tensor access (Camera might subclass Tensor)
+                if isinstance(camera, torch.Tensor):
+                    focal_length = float(camera[..., 2].flatten()[0].cpu().numpy())
+                    print(f"[SAM3DBody2abc] Got focal from camera tensor[2]: {focal_length:.2f}")
+            except Exception as e:
+                print(f"[SAM3DBody2abc] camera tensor access failed: {e}")
+        
+        if focal_length is None:
+            try:
+                # Try fx property
+                if hasattr(camera, 'fx'):
+                    fx_val = camera.fx
+                    if isinstance(fx_val, torch.Tensor):
+                        focal_length = float(fx_val.flatten()[0].cpu().numpy())
+                    else:
+                        focal_length = float(fx_val)
+                    print(f"[SAM3DBody2abc] Got focal from camera.fx: {focal_length:.2f}")
+            except Exception as e:
+                print(f"[SAM3DBody2abc] camera.fx failed: {e}")
+        
+        if focal_length is None:
+            try:
+                # Try f property (normalized)
+                if hasattr(camera, 'f'):
+                    f_val = camera.f
+                    if isinstance(f_val, torch.Tensor):
+                        f_normalized = float(f_val.flatten()[0].cpu().numpy())
+                        # Check if it's normalized (< 10) or absolute
+                        if f_normalized < 10:
+                            focal_length = f_normalized * img_size
+                            print(f"[SAM3DBody2abc] Got focal from camera.f (normalized): {f_normalized} * {img_size} = {focal_length:.2f}")
+                        else:
+                            focal_length = f_normalized
+                            print(f"[SAM3DBody2abc] Got focal from camera.f (absolute): {focal_length:.2f}")
+            except Exception as e:
+                print(f"[SAM3DBody2abc] camera.f failed: {e}")
+        
+        if focal_length is None:
+            # Last resort: inspect the object
+            print(f"[SAM3DBody2abc] Camera object attributes: {[a for a in dir(camera) if not a.startswith('_')]}")
+            if hasattr(camera, '__dict__'):
+                print(f"[SAM3DBody2abc] Camera __dict__: {camera.__dict__}")
+            # Try to print it directly
+            print(f"[SAM3DBody2abc] Camera repr: {repr(camera)}")
+            raise ValueError("Could not extract focal length from GeoCalib result")
         
         # Calculate FOV from focal length
-        img_size = max(images.shape[1], images.shape[2])
         fov_degrees = 2 * np.degrees(np.arctan(img_size / (2 * focal_length)))
         
         print(f"[SAM3DBody2abc] GeoCalib result: focal={focal_length:.2f}, fov={fov_degrees:.1f}°")
         
         # Also print gravity direction if available
         if "gravity" in result:
-            gravity = result["gravity"].cpu().numpy()
-            print(f"[SAM3DBody2abc] Estimated gravity direction: {gravity}")
+            try:
+                gravity = result["gravity"]
+                if isinstance(gravity, torch.Tensor):
+                    gravity = gravity.cpu().numpy()
+                print(f"[SAM3DBody2abc] Estimated gravity direction: {gravity}")
+            except:
+                pass
         
         return focal_length, fov_degrees
     
