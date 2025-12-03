@@ -2,7 +2,7 @@
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.6-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 🎯 Purpose
@@ -23,6 +23,7 @@ The existing [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3D
 | 🦴 **Animated FBX** | Export animated skeleton to single .fbx file |
 | 〰️ **Temporal Smoothing** | Reduce jitter between frames |
 | 🎨 **Overlay Rendering** | Visualize mesh/skeleton on images |
+| 📐 **FOV Control** | Manual FOV setting or auto-calibration with GeoCalib |
 | 🔄 **VHS Compatible** | Works with Load Video (Upload) from VideoHelperSuite |
 
 ## 📋 Requirements
@@ -136,7 +137,8 @@ If you need more control and want to use the standard SAM3DBody "Process Image" 
 
 ### FBX Skeleton
 - Creates **single file** with animated armature
-- SMPL joint hierarchy (24 joints)
+- MHR (Momentum Human Rig) joint hierarchy (127 joints)
+- Animated empties with reference armature using constraints
 - Can be retargeted to other characters in Blender/Maya
 - Requires Blender for export
 
@@ -144,6 +146,38 @@ If you need more control and want to use the standard SAM3DBody "Process Image" 
 1. **Native Alembic** (fastest) - Requires PyAlembic
 2. **Blender subprocess** - Uses Blender as export backend
 3. **OBJ sequence fallback** - Always available
+
+## 📐 FOV / Camera Calibration
+
+The SAM3DBody model uses camera focal length for accurate 3D reconstruction. By default it uses a 55° FOV assumption, but you can improve accuracy by:
+
+### Manual FOV Setting
+Set the `fov` parameter in the Batch Processor based on your camera:
+
+| Camera Type | Typical FOV |
+|-------------|-------------|
+| Smartphone (portrait) | 50-60° |
+| Smartphone (wide) | 65-80° |
+| Webcam | 55-70° |
+| GoPro/Action cam | 90-120° |
+| DSLR 50mm lens | 40-47° |
+| DSLR 35mm lens | 55-65° |
+| DSLR 24mm lens | 75-85° |
+
+### Auto-Calibration with GeoCalib
+Enable `auto_calibrate` to automatically estimate FOV using [GeoCalib](https://github.com/cvg/GeoCalib) (ECCV 2024):
+
+```bash
+# Install GeoCalib
+pip install -e "git+https://github.com/cvg/GeoCalib#egg=geocalib"
+```
+
+GeoCalib analyzes the first few frames to estimate:
+- **Focal length** (→ FOV)
+- **Gravity direction** (helps with orientation)
+- **Lens distortion** (optional)
+
+This provides more accurate 3D reconstruction and better overlay alignment.
 
 ## 🎛️ Tips
 
@@ -191,6 +225,37 @@ MIT License - See [LICENSE](LICENSE)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) by Kosinkadink
 
 ## 📝 Changelog
+
+### v2.0.6
+- **FOV Parameter**: Added `fov` parameter to Batch Processor (default: 55°) for manual camera FOV setting
+- **Auto-Calibration**: Added `auto_calibrate` option using GeoCalib (ECCV 2024) for automatic FOV estimation
+- **Focal Length Override**: Custom FOV now properly overrides model's default focal length for better 3D accuracy
+- **Documentation**: Added FOV/camera calibration guide with typical values for different cameras
+
+### v2.0.5
+- **Overlay Temporal Smoothing**: Added `temporal_smoothing` parameter to Overlay Batch node (0.0-1.0) to reduce frame-to-frame jitter using Gaussian filter
+- **FBX Coordinate Fix**: Changed coordinate transform from `(X, -Z, Y)` to `(X, Z, -Y)` so person stands upright with positive Z in Blender
+
+### v2.0.4
+- **Overlay Projection Fix**: Fixed camera projection math - now correctly subtracts camera translation and flips Y for image coordinates
+- **FBX Skeleton Simplified**: Removed empty parenting complexity - empties now animate with world positions directly for consistent animation
+
+### v2.0.3
+- **FBX Export Rewrite**: Changed from broken bone animation to animated empties approach
+  - Each joint is an empty (null object) that follows animated position
+  - Reference armature with bones constrained to follow empties
+  - Proper FBX baking of animation
+- **Overlay Debug Output**: Added detailed debug logging for first frame to diagnose projection issues
+- **Improved Face Culling**: More permissive bounds checking for partially visible faces
+
+### v2.0.2
+- **Hardcoded MHR Joint Hierarchy**: Added anatomical fallback for 127-joint MHR skeleton when model extraction fails
+- **Coordinate Transform Fix**: Fixed Blender coordinate conversion (x=x, y=-z, z=y)
+- **Temporal Smoothing**: Added Gaussian kernel smoothing for exports
+
+### v2.0.1
+- **Overlay Renderer**: Switched to OpenCV-based rendering for better compatibility
+- **Joint Hierarchy Extraction**: Added automatic extraction from SAM3DBody model
 
 ### v2.0.0
 - Complete rewrite for better integration with existing SAM3DBody node

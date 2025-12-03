@@ -65,6 +65,17 @@ class SAM3DBodyBatchProcessor:
                     "max": 30,
                     "tooltip": "Process every Nth frame (1=all frames)"
                 }),
+                "fov": ("FLOAT", {
+                    "default": 55.0,
+                    "min": 20.0,
+                    "max": 150.0,
+                    "step": 1.0,
+                    "tooltip": "Camera field of view in degrees (55=default, 70=webcam, 90+=action cam)"
+                }),
+                "auto_calibrate": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Auto-estimate FOV using GeoCalib (requires geocalib package)"
+                }),
             }
         }
     
@@ -203,6 +214,88 @@ class SAM3DBodyBatchProcessor:
         
         return joint_parents
     
+    def _fov_to_focal_length(self, fov_degrees: float, img_size: int) -> float:
+        """
+        Convert field of view (degrees) to focal length (pixels).
+        
+        Formula: focal_length = img_size / (2 * tan(fov/2))
+        
+        Common FOV values:
+        - Smartphone: 50-65°
+        - Webcam: 55-70°
+        - GoPro/Action cam: 70-120°
+        - DSLR 50mm: 40-50°
+        - DSLR 35mm: 55-65°
+        """
+        fov_radians = np.radians(fov_degrees)
+        focal_length = img_size / (2 * np.tan(fov_radians / 2))
+        return float(focal_length)
+    
+    def _auto_calibrate_fov(self, images: torch.Tensor, frame_indices: List[int]) -> Tuple[float, float]:
+        """
+        Auto-estimate FOV using GeoCalib model.
+        
+        Uses first few frames to estimate consistent FOV for the entire video.
+        Returns: (focal_length, fov_degrees)
+        """
+        try:
+            from geocalib import GeoCalib
+        except ImportError:
+            raise ImportError(
+                "GeoCalib not installed. Install with:\n"
+                "  pip install -e 'git+https://github.com/cvg/GeoCalib#egg=geocalib'\n"
+                "Or use torch.hub:\n"
+                "  model = torch.hub.load('cvg/GeoCalib', 'GeoCalib', trust_repo=True)"
+            )
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[SAM3DBody2abc] Loading GeoCalib model on {device}...")
+        
+        # Load GeoCalib model
+        geocalib_model = GeoCalib().to(device)
+        
+        # Collect frames for calibration
+        calibration_images = []
+        for idx in frame_indices:
+            # Convert ComfyUI image [H, W, C] to GeoCalib format [C, H, W]
+            img = images[idx].cpu()  # [H, W, C]
+            img = img.permute(2, 0, 1)  # [C, H, W]
+            calibration_images.append(img.to(device))
+        
+        print(f"[SAM3DBody2abc] Calibrating with {len(calibration_images)} frames (shared intrinsics)...")
+        
+        # Calibrate with shared intrinsics across all sample frames
+        if len(calibration_images) == 1:
+            result = geocalib_model.calibrate(calibration_images[0])
+        else:
+            result = geocalib_model.calibrate(calibration_images, shared_intrinsics=True)
+        
+        # Extract focal length and calculate FOV
+        camera = result["camera"]
+        
+        # GeoCalib returns Camera object with fx, fy
+        if hasattr(camera, 'f'):
+            # Normalized focal length (relative to image size)
+            f_normalized = float(camera.f[0].cpu().numpy())
+            img_h, img_w = images.shape[1], images.shape[2]
+            focal_length = f_normalized * max(img_h, img_w)
+        else:
+            # Try direct focal length access
+            focal_length = float(camera.fx.cpu().numpy()) if hasattr(camera, 'fx') else 500.0
+        
+        # Calculate FOV from focal length
+        img_size = max(images.shape[1], images.shape[2])
+        fov_degrees = 2 * np.degrees(np.arctan(img_size / (2 * focal_length)))
+        
+        print(f"[SAM3DBody2abc] GeoCalib result: focal={focal_length:.2f}, fov={fov_degrees:.1f}°")
+        
+        # Also print gravity direction if available
+        if "gravity" in result:
+            gravity = result["gravity"].cpu().numpy()
+            print(f"[SAM3DBody2abc] Estimated gravity direction: {gravity}")
+        
+        return focal_length, fov_degrees
+    
     def process_batch(
         self,
         model,
@@ -213,6 +306,8 @@ class SAM3DBodyBatchProcessor:
         start_frame: int = 0,
         end_frame: int = -1,
         skip_frames: int = 1,
+        fov: float = 55.0,
+        auto_calibrate: bool = False,
     ):
         """Process video frames through SAM3DBody."""
         import comfy.utils
@@ -229,6 +324,30 @@ class SAM3DBodyBatchProcessor:
             return ([], images[:1], 0, "Error: No frames in range", 0.0)
         
         print(f"[SAM3DBody2abc] Processing {len(frame_indices)} frames out of {total_frames} total")
+        if mask is not None:
+            print(f"[SAM3DBody2abc] Using provided mask")
+        
+        # Get image size for focal length calculation
+        img_h, img_w = images.shape[1], images.shape[2]
+        img_size = max(img_h, img_w)
+        
+        # Calculate focal length from FOV or auto-calibrate
+        custom_focal_length = None
+        estimated_fov = fov
+        
+        if auto_calibrate:
+            # Try to use GeoCalib for automatic FOV estimation
+            try:
+                custom_focal_length, estimated_fov = self._auto_calibrate_fov(images, frame_indices[:min(5, len(frame_indices))])
+                print(f"[SAM3DBody2abc] Auto-calibrated FOV: {estimated_fov:.1f}° → focal length: {custom_focal_length:.2f}")
+            except Exception as e:
+                print(f"[SAM3DBody2abc] Auto-calibration failed: {e}")
+                print(f"[SAM3DBody2abc] Falling back to manual FOV: {fov}°")
+                custom_focal_length = self._fov_to_focal_length(fov, img_size)
+        else:
+            # Use manual FOV
+            custom_focal_length = self._fov_to_focal_length(fov, img_size)
+            print(f"[SAM3DBody2abc] Using FOV: {fov}° → focal length: {custom_focal_length:.2f}")
         if mask is not None:
             print(f"[SAM3DBody2abc] Using provided mask")
         
@@ -254,7 +373,8 @@ class SAM3DBodyBatchProcessor:
             
             mesh_sequence = []
             valid_count = 0
-            first_focal_length = 0.0
+            # Use custom focal length if we calculated one, otherwise 0 to be updated later
+            first_focal_length = custom_focal_length if custom_focal_length else 0.0
             
             # Process mask if provided
             mask_np = None
@@ -333,11 +453,15 @@ class SAM3DBodyBatchProcessor:
                             if isinstance(camera, torch.Tensor):
                                 camera = camera.cpu().numpy()
                         
-                        # Extract focal length
+                        # Extract focal length - prefer our custom FOV-based calculation
                         focal_length = output.get("focal_length", None)
                         if focal_length is not None:
                             if isinstance(focal_length, torch.Tensor):
                                 focal_length = focal_length.cpu().numpy()
+                        
+                        # Override with custom focal length if we calculated one from FOV
+                        if custom_focal_length is not None:
+                            focal_length = custom_focal_length
                         
                         mesh_data = {
                             "frame_index": idx,

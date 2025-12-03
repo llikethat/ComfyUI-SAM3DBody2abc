@@ -34,6 +34,16 @@ scipy>=1.7.0
 # standard installation locations or in PATH.
 #
 # Blender download: https://www.blender.org/download/
+#
+# ============================================================
+# OPTIONAL: Auto FOV Calibration
+# ============================================================
+# GeoCalib (ECCV 2024) for automatic camera FOV estimation.
+# Provides better 3D reconstruction accuracy.
+#
+# To install:
+#   pip install -e "git+https://github.com/cvg/GeoCalib#egg=geocalib"
+#
 # ============================================================
 
 # Required ComfyUI custom nodes (install separately):
