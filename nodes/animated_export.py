@@ -768,10 +768,10 @@ class ExportAnimatedFBX:
                 print(f"[ExportAnimatedFBX] Failed to load MHR model: {e}")
         
         if joint_parents is None:
-            # Fallback: create flat hierarchy based on actual joint count
+            # Use anatomically-correct MHR skeleton hierarchy
             num_joints = len(frames[0]["joints"])
-            joint_parents = [-1] + [0] * (num_joints - 1)
-            print(f"[ExportAnimatedFBX] Using flat hierarchy fallback: {num_joints} joints")
+            joint_parents = self._get_mhr_joint_parents(num_joints)
+            print(f"[ExportAnimatedFBX] Using MHR anatomical hierarchy: {num_joints} joints")
         
         num_joints = len(joint_parents)
         joint_names = [f"Joint_{i:03d}" for i in range(num_joints)]
@@ -868,6 +868,110 @@ class ExportAnimatedFBX:
             json.dump(skeleton_data, f, indent=2)
         
         return (json_path, f"Exported {len(frames)} frames as skeleton JSON (FBX requires Blender)", len(frames))
+    
+    def _get_mhr_joint_parents(self, num_joints: int) -> List[int]:
+        """
+        Get anatomically-correct joint parent hierarchy for MHR skeleton.
+        
+        MHR70 joint mapping (first 70 joints):
+        0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear
+        5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow
+        9: left_hip, 10: right_hip, 11: left_knee, 12: right_knee
+        13: left_ankle, 14: right_ankle, 15-17: left foot, 18-20: right foot
+        21-41: right hand (wrist at 41), 42-62: left hand (wrist at 62)
+        63-68: additional arm points, 69: neck
+        70+: additional keypoints (face, etc.)
+        
+        Hierarchy uses left_hip (9) as root connecting upper and lower body.
+        """
+        # Base hierarchy for first 70 joints (MHR70)
+        mhr70_parents = [
+            69,   # 0: nose -> neck
+            0,    # 1: left_eye -> nose
+            0,    # 2: right_eye -> nose
+            1,    # 3: left_ear -> left_eye
+            2,    # 4: right_ear -> right_eye
+            69,   # 5: left_shoulder -> neck
+            69,   # 6: right_shoulder -> neck
+            5,    # 7: left_elbow -> left_shoulder
+            6,    # 8: right_elbow -> right_shoulder
+            -1,   # 9: left_hip -> ROOT
+            9,    # 10: right_hip -> left_hip (pelvis connection)
+            9,    # 11: left_knee -> left_hip
+            10,   # 12: right_knee -> right_hip
+            11,   # 13: left_ankle -> left_knee
+            12,   # 14: right_ankle -> right_knee
+            13,   # 15: left_big_toe -> left_ankle
+            13,   # 16: left_small_toe -> left_ankle
+            13,   # 17: left_heel -> left_ankle
+            14,   # 18: right_big_toe -> right_ankle
+            14,   # 19: right_small_toe -> right_ankle
+            14,   # 20: right_heel -> right_ankle
+            # Right hand finger chain (21-41)
+            22,   # 21: right_thumb_tip -> 22
+            23,   # 22: right_thumb_first -> 23
+            24,   # 23: right_thumb_second -> 24
+            41,   # 24: right_thumb_third -> wrist
+            26,   # 25: right_index_tip -> 26
+            27,   # 26: right_index_first -> 27
+            28,   # 27: right_index_second -> 28
+            41,   # 28: right_index_third -> wrist
+            30,   # 29: right_middle_tip -> 30
+            31,   # 30: right_middle_first -> 31
+            32,   # 31: right_middle_second -> 32
+            41,   # 32: right_middle_third -> wrist
+            34,   # 33: right_ring_tip -> 34
+            35,   # 34: right_ring_first -> 35
+            36,   # 35: right_ring_second -> 36
+            41,   # 36: right_ring_third -> wrist
+            38,   # 37: right_pinky_tip -> 38
+            39,   # 38: right_pinky_first -> 39
+            40,   # 39: right_pinky_second -> 40
+            41,   # 40: right_pinky_third -> wrist
+            8,    # 41: right_wrist -> right_elbow
+            # Left hand finger chain (42-62)
+            43,   # 42: left_thumb_tip -> 43
+            44,   # 43: left_thumb_first -> 44
+            45,   # 44: left_thumb_second -> 45
+            62,   # 45: left_thumb_third -> wrist
+            47,   # 46: left_index_tip -> 47
+            48,   # 47: left_index_first -> 48
+            49,   # 48: left_index_second -> 49
+            62,   # 49: left_index_third -> wrist
+            51,   # 50: left_middle_tip -> 51
+            52,   # 51: left_middle_first -> 52
+            53,   # 52: left_middle_second -> 53
+            62,   # 53: left_middle_third -> wrist
+            55,   # 54: left_ring_tip -> 55
+            56,   # 55: left_ring_first -> 56
+            57,   # 56: left_ring_second -> 57
+            62,   # 57: left_ring_third -> wrist
+            59,   # 58: left_pinky_tip -> 59
+            60,   # 59: left_pinky_first -> 60
+            61,   # 60: left_pinky_second -> 61
+            62,   # 61: left_pinky_third -> wrist
+            7,    # 62: left_wrist -> left_elbow
+            # Additional arm joints (63-68)
+            7,    # 63: left_olecranon -> left_elbow
+            8,    # 64: right_olecranon -> right_elbow
+            7,    # 65: left_cubital_fossa -> left_elbow
+            8,    # 66: right_cubital_fossa -> right_elbow
+            5,    # 67: left_acromion -> left_shoulder
+            6,    # 68: right_acromion -> right_shoulder
+            # Neck connects upper body to hips
+            9,    # 69: neck -> left_hip (connects upper/lower body)
+        ]
+        
+        if num_joints <= 70:
+            return mhr70_parents[:num_joints]
+        
+        # For 127 joints, additional joints (70-126) are likely face keypoints
+        # Connect them to the nose (0) or neck (69)
+        joint_parents = mhr70_parents.copy()
+        for i in range(70, num_joints):
+            joint_parents.append(0)  # Face keypoints -> nose
+        
+        return joint_parents
     
     def _find_blender(self) -> Optional[str]:
         """Find Blender executable."""

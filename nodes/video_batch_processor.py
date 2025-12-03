@@ -161,8 +161,47 @@ class SAM3DBodyBatchProcessor:
         except Exception as e:
             print(f"[SAM3DBody2abc] Method 2 (HF cache) failed: {e}")
         
-        print(f"[SAM3DBody2abc] WARNING: Could not extract MHR joint hierarchy, FBX skeleton may be incorrect")
-        return None
+        # Method 3: Use anatomical fallback (hardcoded MHR hierarchy)
+        print(f"[SAM3DBody2abc] Using anatomical MHR joint hierarchy fallback")
+        return self._get_mhr_joint_parents_fallback(127)
+    
+    def _get_mhr_joint_parents_fallback(self, num_joints: int):
+        """
+        Anatomically-correct MHR joint hierarchy fallback.
+        Uses left_hip (9) as root connecting upper and lower body.
+        """
+        mhr70_parents = [
+            69, 0, 0, 1, 2,           # 0-4: head
+            69, 69, 5, 6,             # 5-8: shoulders, elbows
+            -1, 9, 9, 10,             # 9-12: hips (root), knees
+            11, 12,                   # 13-14: ankles
+            13, 13, 13,               # 15-17: left foot
+            14, 14, 14,               # 18-20: right foot
+            # Right hand (21-41)
+            22, 23, 24, 41,           # thumb
+            26, 27, 28, 41,           # index
+            30, 31, 32, 41,           # middle
+            34, 35, 36, 41,           # ring
+            38, 39, 40, 41, 8,        # pinky + wrist
+            # Left hand (42-62)
+            43, 44, 45, 62,           # thumb
+            47, 48, 49, 62,           # index
+            51, 52, 53, 62,           # middle
+            55, 56, 57, 62,           # ring
+            59, 60, 61, 62, 7,        # pinky + wrist
+            # Additional (63-69)
+            7, 8, 7, 8, 5, 6, 9,      # olecranon, cubital, acromion, neck
+        ]
+        
+        if num_joints <= 70:
+            return mhr70_parents[:num_joints]
+        
+        # Extend for 127 joints (additional face keypoints -> nose)
+        joint_parents = mhr70_parents.copy()
+        for _ in range(70, num_joints):
+            joint_parents.append(0)
+        
+        return joint_parents
     
     def process_batch(
         self,
