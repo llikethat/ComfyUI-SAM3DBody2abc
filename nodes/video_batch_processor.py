@@ -67,14 +67,35 @@ class SAM3DBodyBatchProcessor:
                 }),
                 "fov": ("FLOAT", {
                     "default": 55.0,
-                    "min": 20.0,
+                    "min": 0.0,
                     "max": 150.0,
                     "step": 1.0,
-                    "tooltip": "Camera field of view in degrees (55=default, 70=webcam, 90+=action cam)"
+                    "tooltip": "Camera FOV in degrees. Set to 0 to use focal length instead."
+                }),
+                "focal_length_mm": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 1000.0,
+                    "step": 1.0,
+                    "tooltip": "Lens focal length in mm (e.g. 50mm, 35mm, 85mm). Requires sensor_width_mm."
+                }),
+                "sensor_width_mm": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 100.0,
+                    "step": 0.1,
+                    "tooltip": "Sensor width in mm. Full-frame=36, APS-C=23.5, MFT=17.3, Super35=24.9"
+                }),
+                "focal_length_px": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 10000.0,
+                    "step": 1.0,
+                    "tooltip": "Focal length in PIXELS (advanced). Overrides mm calculation if >0."
                 }),
                 "auto_calibrate": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Auto-estimate FOV using GeoCalib (requires geocalib package)"
+                    "tooltip": "Auto-estimate FOV using GeoCalib (requires geocalib package). Overrides all other options."
                 }),
             }
         }
@@ -231,6 +252,40 @@ class SAM3DBodyBatchProcessor:
         focal_length = img_size / (2 * np.tan(fov_radians / 2))
         return float(focal_length)
     
+    def _focal_length_to_fov(self, focal_length: float, img_size: int) -> float:
+        """
+        Convert focal length (pixels) to field of view (degrees).
+        
+        Formula: fov = 2 * atan(img_size / (2 * focal_length))
+        
+        Note: focal_length is in PIXELS, not mm!
+        The relationship to physical focal length is:
+          focal_px = focal_mm * (sensor_width_px / sensor_width_mm)
+        """
+        fov_radians = 2 * np.arctan(img_size / (2 * focal_length))
+        fov_degrees = np.degrees(fov_radians)
+        return float(fov_degrees)
+    
+    def _focal_mm_to_px(self, focal_mm: float, sensor_width_mm: float, image_width_px: int) -> float:
+        """
+        Convert physical focal length (mm) to pixel focal length.
+        
+        Formula: focal_px = focal_mm * (image_width_px / sensor_width_mm)
+        
+        Common sensor widths:
+        - Full Frame (35mm): 36.0 mm
+        - APS-C Canon: 22.3 mm
+        - APS-C Nikon/Sony: 23.5 mm
+        - APS-C Fuji: 23.5 mm
+        - Micro Four Thirds: 17.3 mm
+        - 1" sensor: 13.2 mm
+        - Super 35 (cinema): 24.89 mm
+        - RED Komodo: 27.03 mm
+        - ARRI Alexa: 28.17 mm
+        """
+        focal_px = focal_mm * (image_width_px / sensor_width_mm)
+        return float(focal_px)
+    
     def _auto_calibrate_fov(self, images: torch.Tensor, frame_indices: List[int]) -> Tuple[float, float]:
         """
         Auto-estimate FOV using GeoCalib model.
@@ -366,6 +421,9 @@ class SAM3DBodyBatchProcessor:
         end_frame: int = -1,
         skip_frames: int = 1,
         fov: float = 55.0,
+        focal_length_mm: float = 0.0,
+        sensor_width_mm: float = 0.0,
+        focal_length_px: float = 0.0,
         auto_calibrate: bool = False,
     ):
         """Process video frames through SAM3DBody."""
@@ -390,7 +448,7 @@ class SAM3DBodyBatchProcessor:
         img_h, img_w = images.shape[1], images.shape[2]
         img_size = max(img_h, img_w)
         
-        # Calculate focal length from FOV or auto-calibrate
+        # Calculate focal length - priority: auto_calibrate > focal_length_px > (mm + sensor) > fov
         custom_focal_length = None
         estimated_fov = fov
         
@@ -398,17 +456,33 @@ class SAM3DBodyBatchProcessor:
             # Try to use GeoCalib for automatic FOV estimation
             try:
                 custom_focal_length, estimated_fov = self._auto_calibrate_fov(images, frame_indices[:min(5, len(frame_indices))])
-                print(f"[SAM3DBody2abc] Auto-calibrated FOV: {estimated_fov:.1f}° → focal length: {custom_focal_length:.2f}")
+                print(f"[SAM3DBody2abc] Auto-calibrated: focal={custom_focal_length:.2f}px, FOV={estimated_fov:.1f}°")
             except Exception as e:
                 print(f"[SAM3DBody2abc] Auto-calibration failed: {e}")
-                print(f"[SAM3DBody2abc] Falling back to manual FOV: {fov}°")
+                auto_calibrate = False
+        
+        if not auto_calibrate:
+            if focal_length_px > 0:
+                # Direct pixel focal length (highest priority manual option)
+                custom_focal_length = focal_length_px
+                estimated_fov = self._focal_length_to_fov(focal_length_px, img_size)
+                print(f"[SAM3DBody2abc] Using focal_length_px: {focal_length_px:.2f}px → FOV={estimated_fov:.1f}°")
+            elif focal_length_mm > 0 and sensor_width_mm > 0:
+                # Convert mm to pixels using sensor size
+                custom_focal_length = self._focal_mm_to_px(focal_length_mm, sensor_width_mm, img_w)
+                estimated_fov = self._focal_length_to_fov(custom_focal_length, img_size)
+                print(f"[SAM3DBody2abc] Using {focal_length_mm:.1f}mm lens on {sensor_width_mm:.1f}mm sensor")
+                print(f"[SAM3DBody2abc] Calculated: focal={custom_focal_length:.2f}px, FOV={estimated_fov:.1f}°")
+            elif fov > 0:
+                # Use FOV to calculate focal length
                 custom_focal_length = self._fov_to_focal_length(fov, img_size)
-        else:
-            # Use manual FOV
-            custom_focal_length = self._fov_to_focal_length(fov, img_size)
-            print(f"[SAM3DBody2abc] Using FOV: {fov}° → focal length: {custom_focal_length:.2f}")
-        if mask is not None:
-            print(f"[SAM3DBody2abc] Using provided mask")
+                estimated_fov = fov
+                print(f"[SAM3DBody2abc] Using FOV: {fov:.1f}° → focal={custom_focal_length:.2f}px")
+            else:
+                # Default FOV
+                custom_focal_length = self._fov_to_focal_length(55.0, img_size)
+                estimated_fov = 55.0
+                print(f"[SAM3DBody2abc] Using default: FOV=55° → focal={custom_focal_length:.2f}px")
         
         try:
             # Import SAM 3D Body modules

@@ -151,7 +151,7 @@ If you need more control and want to use the standard SAM3DBody "Process Image" 
 
 The SAM3DBody model uses camera focal length for accurate 3D reconstruction. By default it uses a 55° FOV assumption, but you can improve accuracy by:
 
-### Manual FOV Setting
+### Option 1: Manual FOV Setting
 Set the `fov` parameter in the Batch Processor based on your camera:
 
 | Camera Type | Typical FOV |
@@ -164,7 +164,34 @@ Set the `fov` parameter in the Batch Processor based on your camera:
 | DSLR 35mm lens | 55-65° |
 | DSLR 24mm lens | 75-85° |
 
-### Auto-Calibration with GeoCalib
+### Option 2: Focal Length + Sensor Size (NEW in v2.1.0) - Recommended for DSLR/Cinema
+If you know your lens focal length and camera sensor size:
+
+1. Set `focal_length_mm` to your lens focal length (e.g., 50, 35, 85)
+2. Set `sensor_width_mm` to your camera's sensor width:
+
+| Camera/Sensor Type | Sensor Width (mm) |
+|-------------------|-------------------|
+| Full Frame (35mm) | 36.0 |
+| APS-C Canon | 22.3 |
+| APS-C Nikon/Sony/Fuji | 23.5 |
+| Micro Four Thirds | 17.3 |
+| Super 35 (Cinema) | 24.89 |
+| RED Komodo | 27.03 |
+| ARRI Alexa | 28.17 |
+| 1" Sensor | 13.2 |
+| iPhone 15 Pro Main | 9.8 |
+
+**Example**: 50mm lens on Full Frame → `focal_length_mm=50`, `sensor_width_mm=36`
+
+The node calculates: `focal_px = focal_mm × (image_width / sensor_width)`
+
+### Option 3: Direct Pixel Focal Length
+If you already have focal length in pixels from metadata or calibration:
+- Set `focal_length_px` directly
+- This overrides the mm calculation
+
+### Option 4: Auto-Calibration with GeoCalib
 Enable `auto_calibrate` to automatically estimate FOV using [GeoCalib](https://github.com/cvg/GeoCalib) (ECCV 2024):
 
 ```bash
@@ -178,6 +205,13 @@ GeoCalib analyzes the first few frames to estimate:
 - **Lens distortion** (optional)
 
 This provides more accurate 3D reconstruction and better overlay alignment.
+
+### Priority Order
+When multiple options are set:
+1. `auto_calibrate` (highest - uses GeoCalib)
+2. `focal_length_px` (direct pixel value)
+3. `focal_length_mm` + `sensor_width_mm` (DSLR/Cinema)
+4. `fov` (lowest - simple FOV angle)
 
 ## 🎛️ Tips
 
@@ -226,12 +260,18 @@ MIT License - See [LICENSE](LICENSE)
 
 ## 📝 Changelog
 
-### v2.1.0 - Retargeting-Ready FBX Export
-- **Rewritten FBX Export**: Now uses constraint baking for proper skeleton animation
-- **Clean Armature Only**: Exports only the armature (no empties) - cleaner for retargeting
-- **Baked Animation**: Animation is baked directly to pose bones using Blender's NLA bake
-- **Better Hierarchy**: Improved bone direction calculation for proper bone orientation
-- **Retargeting Ready**: FBX can now be used directly with retargeting tools (Mixamo, UE5, etc.)
+### v2.1.0 - DSLR/Cinema Camera Support & Improved FBX Export
+- **NEW: Focal Length + Sensor Size Input** - For DSLR/Cinema cameras:
+  - `focal_length_mm`: Lens focal length in mm (e.g., 50, 35, 85)
+  - `sensor_width_mm`: Camera sensor width in mm (e.g., 36 for Full Frame, 23.5 for APS-C)
+  - Auto-calculates pixel focal length: `focal_px = focal_mm × (image_width / sensor_width)`
+- **NEW: Direct Pixel Focal Length** - `focal_length_px` for pre-calculated values
+- **Priority Order**: auto_calibrate > focal_length_px > (focal_length_mm + sensor_width_mm) > fov
+- **Improved FBX Export**: 
+  - Uses hierarchical empties with proper parent-child relationships
+  - Local transform animation (relative to parent)
+  - Bone visualization as edge meshes
+  - Better compatibility with retargeting tools
 
 ### v2.0.9
 - **Wireframe Option**: Added 'wireframe' to mesh_color options for edge-only rendering
