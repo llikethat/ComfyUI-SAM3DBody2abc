@@ -2,7 +2,7 @@
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
-![Version](https://img.shields.io/badge/version-2.2.0-blue)
+![Version](https://img.shields.io/badge/version-2.2.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 🎯 Purpose
@@ -280,6 +280,20 @@ MIT License - See [LICENSE](LICENSE)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) by Kosinkadink
 
 ## 📝 Changelog
+
+### v2.2.2 - Fixed Maya FBX Export (Proper Joints)
+- **FIXED**: FBX now exports as proper Maya joints instead of locators
+  - Removed constraint-based approach that was creating empty objects
+  - Uses direct bone animation with proper armature export
+  - Only exports ARMATURE type, no empties
+- **Improved Export**: Added debug output showing exported bone count
+
+### v2.2.1 - Meta Official Renderer Support
+- **NEW: Meta Renderer Option** - Added `use_meta_renderer` toggle to batch overlay
+  - When enabled (default), uses Meta's official `visualize_sample_together` function
+  - Produces more accurate overlay matching Meta's web demo
+  - Falls back to OpenCV renderer if Meta's renderer is not available
+- **Better Compatibility**: Improved rendering to match SAM3DBody's official output
 
 ### v2.2.0 - Multi-Application FBX Export & GPU Optimization
 - **NEW: Target Application Selection** - FBX export now supports:

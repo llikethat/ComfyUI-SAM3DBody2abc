@@ -1020,16 +1020,14 @@ class ExportAnimatedFBX:
     def _create_blender_fbx_script(self, target_app: str = "maya") -> str:
         """Create Blender script for animated FBX skeleton export.
         
-        Args:
-            target_app: Target application - 'maya', 'blender', or 'houdini'
+        Creates proper armature with bones that export as Maya joints.
         """
         return '''
 import bpy
 import json
 import sys
 import numpy as np
-from mathutils import Vector, Matrix, Quaternion, Euler
-import math
+from mathutils import Vector, Matrix
 
 argv = sys.argv
 data_path = argv[argv.index("--") + 1]
@@ -1052,19 +1050,18 @@ num_frames = len(frames)
 
 print(f"FBX export: {num_joints} joints, {num_frames} frames, target: {target_app}")
 
-# Clean scene
-for c in bpy.data.actions:
-    bpy.data.actions.remove(c)
-for c in bpy.data.armatures:
-    bpy.data.armatures.remove(c)
-for c in bpy.data.objects:
-    bpy.data.objects.remove(c)
-for c in bpy.data.meshes:
-    bpy.data.meshes.remove(c)
+# Clean scene completely
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete()
 
-# Create collection
-collection = bpy.data.collections.new('SAM3D_Export')
-bpy.context.scene.collection.children.link(collection)
+for block in bpy.data.actions:
+    bpy.data.actions.remove(block)
+for block in bpy.data.armatures:
+    bpy.data.armatures.remove(block)
+for block in bpy.data.meshes:
+    bpy.data.meshes.remove(block)
+for block in bpy.data.objects:
+    bpy.data.objects.remove(block)
 
 # Set FPS and frame range
 bpy.context.scene.render.fps = int(fps)
@@ -1074,9 +1071,9 @@ bpy.context.scene.frame_end = num_frames
 def transform_coords(joints_raw, scale):
     """Transform SAM3D coords to Blender/Maya coords."""
     joints = np.zeros_like(joints_raw)
-    joints[:, 0] = joints_raw[:, 0] * scale      # X stays X
-    joints[:, 1] = joints_raw[:, 2] * scale      # Y = Z (depth becomes forward)
-    joints[:, 2] = -joints_raw[:, 1] * scale     # Z = -Y (flip height to positive up)
+    joints[:, 0] = joints_raw[:, 0] * scale
+    joints[:, 1] = joints_raw[:, 2] * scale  
+    joints[:, 2] = -joints_raw[:, 1] * scale
     return joints
 
 # Transform all frames
@@ -1088,141 +1085,129 @@ for frame_data in frames:
 
 rest_joints = all_frames_joints[0]
 
-# Build child map
+# Build hierarchy info
 children_map = {i: [] for i in range(num_joints)}
 for i, parent_idx in enumerate(joint_parents):
     if parent_idx >= 0:
         children_map[parent_idx].append(i)
 
-# Find roots
 root_indices = [i for i, p in enumerate(joint_parents) if p == -1]
-print(f"Root joints: {[joint_names[i] for i in root_indices]}")
+print(f"Root joints: {root_indices}")
 
-# Create armature (works for Maya, Blender, Houdini)
-print("Creating armature...")
-bpy.ops.object.armature_add(enter_editmode=True, location=(0, 0, 0))
-armature = bpy.data.armatures.get('Armature')
-armature.name = 'SAM3D_Skeleton'
-armature_obj = bpy.context.active_object
-armature_obj.name = 'SAM3D_Skeleton'
+# Create armature
+print("Creating armature with bones...")
+armature_data = bpy.data.armatures.new('SAM3D_Skeleton')
+armature_obj = bpy.data.objects.new('SAM3D_Skeleton', armature_data)
+bpy.context.collection.objects.link(armature_obj)
+bpy.context.view_layer.objects.active = armature_obj
 
-if armature_obj.name in bpy.context.scene.collection.objects:
-    bpy.context.scene.collection.objects.unlink(armature_obj)
-collection.objects.link(armature_obj)
+# Enter edit mode to create bones
+bpy.ops.object.mode_set(mode='EDIT')
 
-edit_bones = armature.edit_bones
-
-# Remove default bone
-default_bone = edit_bones.get('Bone')
-if default_bone:
-    edit_bones.remove(default_bone)
-
-# Create bones with proper orientation
 bones_dict = {}
-bone_rest_dirs = {}  # Store rest pose bone directions
+bone_length = 0.05 * scale  # Default bone length
 
 for i, name in enumerate(joint_names):
-    bone = edit_bones.new(name)
-    head_pos = Vector((rest_joints[i, 0], rest_joints[i, 1], rest_joints[i, 2]))
-    bone.head = head_pos
+    bone = armature_data.edit_bones.new(name)
+    pos = Vector((rest_joints[i, 0], rest_joints[i, 1], rest_joints[i, 2]))
+    bone.head = pos
     
+    # Set tail - point toward first child or extend from parent
     children = children_map[i]
     parent_idx = joint_parents[i]
     
     if children:
-        # Point toward first child
-        child_idx = children[0]
-        child_pos = Vector((rest_joints[child_idx, 0], rest_joints[child_idx, 1], rest_joints[child_idx, 2]))
-        direction = child_pos - head_pos
+        child_pos = Vector((rest_joints[children[0], 0], rest_joints[children[0], 1], rest_joints[children[0], 2]))
+        direction = child_pos - pos
         if direction.length > 0.001:
-            bone.tail = child_pos
-            bone_rest_dirs[i] = direction.normalized()
+            bone.tail = pos + direction.normalized() * min(direction.length, bone_length)
         else:
-            bone.tail = head_pos + Vector((0, 0.05 * scale, 0))
-            bone_rest_dirs[i] = Vector((0, 1, 0))
+            bone.tail = pos + Vector((0, bone_length, 0))
     elif parent_idx >= 0:
-        # Leaf bone - continue parent direction
         parent_pos = Vector((rest_joints[parent_idx, 0], rest_joints[parent_idx, 1], rest_joints[parent_idx, 2]))
-        direction = head_pos - parent_pos
+        direction = pos - parent_pos
         if direction.length > 0.001:
-            bone.tail = head_pos + direction.normalized() * 0.03 * scale
-            bone_rest_dirs[i] = direction.normalized()
+            bone.tail = pos + direction.normalized() * bone_length * 0.5
         else:
-            bone.tail = head_pos + Vector((0, 0.03 * scale, 0))
-            bone_rest_dirs[i] = Vector((0, 1, 0))
+            bone.tail = pos + Vector((0, bone_length * 0.5, 0))
     else:
-        # Root with no children
-        bone.tail = head_pos + Vector((0, 0, 0.05 * scale))
-        bone_rest_dirs[i] = Vector((0, 0, 1))
+        bone.tail = pos + Vector((0, bone_length, 0))
     
     bones_dict[name] = bone
 
 # Set parent relationships
 for i, parent_idx in enumerate(joint_parents):
-    if parent_idx >= 0 and parent_idx < num_joints:
-        bones_dict[joint_names[i]].parent = bones_dict[joint_names[parent_idx]]
-        bones_dict[joint_names[i]].use_connect = False
+    if 0 <= parent_idx < num_joints:
+        child_bone = bones_dict[joint_names[i]]
+        parent_bone = bones_dict[joint_names[parent_idx]]
+        child_bone.parent = parent_bone
+        child_bone.use_connect = False
 
 bpy.ops.object.mode_set(mode='OBJECT')
 
-# Store rest pose matrices
-rest_matrices = {}
+# Store rest pose world matrices
+bpy.context.view_layer.update()
+rest_world_positions = {}
 for bone in armature_obj.data.bones:
-    rest_matrices[bone.name] = bone.matrix_local.copy()
+    rest_world_positions[bone.name] = armature_obj.matrix_world @ bone.head_local
 
-# Animate using rotation + location
-print("Animating skeleton with rotations...")
+print(f"Created {len(armature_data.bones)} bones")
+
+# Animate bones
+print("Keyframing bone positions...")
 bpy.ops.object.mode_set(mode='POSE')
 
-# Set rotation mode
-for pose_bone in armature_obj.pose.bones:
-    pose_bone.rotation_mode = 'QUATERNION'
+# Create action for animation
+action = bpy.data.actions.new('SAM3D_Animation')
+armature_obj.animation_data_create()
+armature_obj.animation_data.action = action
 
 for frame_idx, joints in enumerate(all_frames_joints):
     bpy.context.scene.frame_set(frame_idx + 1)
     
     for i, name in enumerate(joint_names):
         pose_bone = armature_obj.pose.bones[name]
-        current_pos = Vector((joints[i, 0], joints[i, 1], joints[i, 2]))
-        rest_pos = Vector((rest_joints[i, 0], rest_joints[i, 1], rest_joints[i, 2]))
         
-        # Root bones: animate location
+        # Target world position
+        target_pos = Vector((joints[i, 0], joints[i, 1], joints[i, 2]))
+        
+        # Rest world position
+        rest_pos = rest_world_positions[name]
+        
+        # Calculate offset in world space
+        world_offset = target_pos - rest_pos
+        
+        # Convert to bone local space
+        # For root bones, this is simpler
         if joint_parents[i] == -1:
-            pose_bone.location = current_pos - rest_pos
-            pose_bone.keyframe_insert(data_path="location", frame=frame_idx + 1)
+            pose_bone.location = world_offset
+        else:
+            # For child bones, we need to account for parent transform
+            # Simplified: just apply offset (works for location-based animation)
+            bone_matrix = pose_bone.bone.matrix_local
+            local_offset = bone_matrix.inverted().to_3x3() @ world_offset
+            pose_bone.location = local_offset
         
-        # Calculate rotation from direction change
-        children = children_map[i]
-        if children and i in bone_rest_dirs:
-            child_idx = children[0]
-            current_child = Vector((joints[child_idx, 0], joints[child_idx, 1], joints[child_idx, 2]))
-            current_dir = (current_child - current_pos)
-            
-            if current_dir.length > 0.001:
-                current_dir = current_dir.normalized()
-                rest_dir = bone_rest_dirs[i]
-                
-                # Calculate rotation difference
-                rotation = rest_dir.rotation_difference(current_dir)
-                
-                # Apply in bone local space
-                pose_bone.rotation_quaternion = rotation
-                pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame_idx + 1)
+        pose_bone.keyframe_insert(data_path="location", frame=frame_idx + 1)
     
-    if (frame_idx + 1) % 50 == 0:
-        print(f"Frame {frame_idx + 1}/{num_frames}")
+    if (frame_idx + 1) % 100 == 0:
+        print(f"  Frame {frame_idx + 1}/{num_frames}")
 
 bpy.ops.object.mode_set(mode='OBJECT')
+print("Animation keyframing complete")
 
-# Select armature
+# Verify we only have the armature
+print(f"Scene objects: {[obj.name for obj in bpy.context.scene.objects]}")
+print(f"Object types: {[obj.type for obj in bpy.context.scene.objects]}")
+
+# Select only armature for export
 bpy.ops.object.select_all(action='DESELECT')
 armature_obj.select_set(True)
 bpy.context.view_layer.objects.active = armature_obj
 
-# Export FBX with settings optimized for target app
+# Export FBX
 print(f"Exporting FBX for {target_app}...")
 
-# Common settings
 export_settings = {
     "filepath": output_path,
     "check_existing": False,
@@ -1236,7 +1221,6 @@ export_settings = {
     "bake_anim_simplify_factor": 0.0,
 }
 
-# Target-specific settings
 if target_app == "maya":
     export_settings["use_space_transform"] = True
     export_settings["axis_forward"] = '-Z'
@@ -1249,7 +1233,7 @@ elif target_app == "houdini":
     export_settings["axis_up"] = 'Y'
     export_settings["primary_bone_axis"] = 'Y'
     export_settings["secondary_bone_axis"] = 'X'
-else:  # blender
+else:
     export_settings["use_space_transform"] = True
     export_settings["axis_forward"] = '-Y'
     export_settings["axis_up"] = 'Z'
@@ -1259,9 +1243,8 @@ else:  # blender
 bpy.ops.export_scene.fbx(**export_settings)
 
 print(f"SUCCESS: Exported {num_frames} frames to {output_path}")
+print(f"Armature '{armature_obj.name}' has {len(armature_obj.data.bones)} bones")
 '''
-
-
 class ExportAnimatedMesh:
     """
     Combined export node - exports both Alembic geometry and FBX skeleton.

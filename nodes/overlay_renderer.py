@@ -316,6 +316,10 @@ class SAM3DBody2abcOverlayBatch:
                     "step": 0.1,
                     "tooltip": "Temporal smoothing strength (0=none, 1=maximum)"
                 }),
+                "use_meta_renderer": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Use Meta's official renderer (more accurate). Falls back to OpenCV if unavailable."
+                }),
             }
         }
     
@@ -342,6 +346,7 @@ class SAM3DBody2abcOverlayBatch:
         opacity: float = 0.5,
         line_thickness: int = 1,
         temporal_smoothing: float = 0.5,
+        use_meta_renderer: bool = True,
     ):
         """Render mesh overlays on batch of images with temporal smoothing."""
         import comfy.utils
@@ -356,6 +361,22 @@ class SAM3DBody2abcOverlayBatch:
         opacity = max(0.1, min(1.0, float(opacity)))
         
         print(f"[SAM3DBody2abc] Batch overlay: {len(mesh_sequence)} meshes, {images.shape[0]} images")
+        
+        # Try to use Meta's official renderer
+        meta_renderer = None
+        if use_meta_renderer:
+            try:
+                from tools.vis_utils import visualize_sample_together
+                meta_renderer = visualize_sample_together
+                print("[SAM3DBody2abc] Using Meta's official renderer (visualize_sample_together)")
+            except ImportError:
+                try:
+                    from sam_3d_body.tools.vis_utils import visualize_sample_together
+                    meta_renderer = visualize_sample_together
+                    print("[SAM3DBody2abc] Using Meta's official renderer (sam_3d_body)")
+                except ImportError:
+                    print("[SAM3DBody2abc] Meta renderer not available, using OpenCV renderer")
+                    meta_renderer = None
         
         # Determine render mode
         render_mode = "wireframe" if mesh_color == "wireframe" else "overlay"
@@ -467,12 +488,32 @@ class SAM3DBody2abcOverlayBatch:
                 print(f"  - Focal length: {focal_length}")
                 print(f"  - Image size: {img_bgr.shape}")
                 print(f"  - Render mode: {render_mode}, opacity: {opacity}, line_thickness: {line_thickness}")
+                print(f"  - Using Meta renderer: {meta_renderer is not None}")
             
-            # Render
-            result = render_mesh_opencv(
-                img_bgr, vertices, faces, cam_t, focal_length, 
-                color, opacity, line_thickness, debug=(i==0), render_mode=render_mode
-            )
+            # Render using appropriate method
+            if meta_renderer is not None and render_mode != "wireframe":
+                try:
+                    # Prepare output dict for Meta's renderer
+                    output_dict = [{
+                        "pred_vertices": vertices,
+                        "pred_cam_t": cam_t if cam_t is not None else np.array([0.0, 0.3, 2.5]),
+                        "focal_length": focal_length if focal_length is not None else max(img_bgr.shape[:2]),
+                    }]
+                    result = meta_renderer(img_bgr, output_dict, faces)
+                    if isinstance(result, np.ndarray):
+                        result = result.astype(np.uint8)
+                except Exception as e:
+                    if i == 0:
+                        print(f"[SAM3DBody2abc] Meta renderer failed: {e}, falling back to OpenCV")
+                    result = render_mesh_opencv(
+                        img_bgr, vertices, faces, cam_t, focal_length, 
+                        color, opacity, line_thickness, debug=(i==0), render_mode=render_mode
+                    )
+            else:
+                result = render_mesh_opencv(
+                    img_bgr, vertices, faces, cam_t, focal_length, 
+                    color, opacity, line_thickness, debug=(i==0), render_mode=render_mode
+                )
             
             # Convert BGR to RGB
             result_rgb = result[..., ::-1].copy()
