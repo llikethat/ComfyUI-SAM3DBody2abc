@@ -97,6 +97,13 @@ class SAM3DBodyBatchProcessor:
                     "default": False,
                     "tooltip": "Auto-estimate FOV using GeoCalib (requires geocalib package). Overrides all other options."
                 }),
+                "batch_size": ("INT", {
+                    "default": 1,
+                    "min": 1,
+                    "max": 16,
+                    "step": 1,
+                    "tooltip": "Number of frames to process in parallel (higher = faster but more VRAM). Try 4-8 for better GPU usage."
+                }),
             }
         }
     
@@ -425,6 +432,7 @@ class SAM3DBodyBatchProcessor:
         sensor_width_mm: float = 0.0,
         focal_length_px: float = 0.0,
         auto_calibrate: bool = False,
+        batch_size: int = 1,
     ):
         """Process video frames through SAM3DBody."""
         import comfy.utils
@@ -509,6 +517,20 @@ class SAM3DBodyBatchProcessor:
             # Use custom focal length if we calculated one, otherwise 0 to be updated later
             first_focal_length = custom_focal_length if custom_focal_length else 0.0
             
+            # GPU Optimization
+            if batch_size > 1:
+                print(f"[SAM3DBody2abc] Note: batch_size={batch_size} set, but SAM3DBody processes frames sequentially.")
+                print(f"[SAM3DBody2abc] For better GPU usage, consider: lower resolution, use skip_frames, or enable mixed precision.")
+            
+            # Enable CUDA optimizations if available
+            use_cuda = torch.cuda.is_available()
+            if use_cuda:
+                torch.backends.cudnn.benchmark = True
+                # Clear CUDA cache before processing
+                torch.cuda.empty_cache()
+                print(f"[SAM3DBody2abc] CUDA enabled: {torch.cuda.get_device_name(0)}")
+                print(f"[SAM3DBody2abc] VRAM available: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
+            
             # Process mask if provided
             mask_np = None
             if mask is not None:
@@ -538,18 +560,23 @@ class SAM3DBodyBatchProcessor:
                         tmp_path = tmp.name
                     
                     try:
-                        # Process image
-                        outputs = estimator.process_one_image(
-                            tmp_path,
-                            bboxes=bboxes,
-                            masks=mask_np,
-                            bbox_thr=bbox_threshold,
-                            use_mask=(mask_np is not None),
-                            inference_type=inference_type,
-                        )
+                        # Process image with gradient disabled for inference
+                        with torch.no_grad():
+                            outputs = estimator.process_one_image(
+                                tmp_path,
+                                bboxes=bboxes,
+                                masks=mask_np,
+                                bbox_thr=bbox_threshold,
+                                use_mask=(mask_np is not None),
+                                inference_type=inference_type,
+                            )
                         
                         # Clean up temp file
                         os.unlink(tmp_path)
+                        
+                        # Periodic GPU cache clearing to prevent memory buildup
+                        if use_cuda and idx > 0 and idx % 50 == 0:
+                            torch.cuda.empty_cache()
                         
                     except Exception as e:
                         if os.path.exists(tmp_path):

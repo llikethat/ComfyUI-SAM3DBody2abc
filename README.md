@@ -2,7 +2,7 @@
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
-![Version](https://img.shields.io/badge/version-2.1.0-blue)
+![Version](https://img.shields.io/badge/version-2.2.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 🎯 Purpose
@@ -213,6 +213,27 @@ When multiple options are set:
 3. `focal_length_mm` + `sensor_width_mm` (DSLR/Cinema)
 4. `fov` (lowest - simple FOV angle)
 
+## 🎬 FBX Export Target Application
+
+The FBX export node now supports different target applications:
+
+| Target | Axis | Description |
+|--------|------|-------------|
+| `maya` | Y-up | Optimized for Maya - proper joint hierarchy with rotation animation |
+| `blender` | Z-up | Optimized for Blender - armature with bone transforms |
+| `houdini` | Y-up | Optimized for Houdini - joint hierarchy similar to Maya |
+
+### Maya Import Tips
+1. Import FBX with "Animation" checked
+2. The skeleton will have proper joint rotations
+3. Use the skeleton for retargeting with HumanIK or similar
+
+### Why Rotation Animation?
+Previous versions used location-based animation which caused issues in Maya. The new export:
+- Calculates bone rotations from joint position changes
+- Properly handles parent-child relationships
+- Results in clean, retarget-ready skeletons
+
 ## 🎛️ Tips
 
 ### Processing Speed
@@ -259,6 +280,22 @@ MIT License - See [LICENSE](LICENSE)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) by Kosinkadink
 
 ## 📝 Changelog
+
+### v2.2.0 - Multi-Application FBX Export & GPU Optimization
+- **NEW: Target Application Selection** - FBX export now supports:
+  - `maya`: Optimized for Maya (Y-up, proper joint hierarchy with rotations)
+  - `blender`: Optimized for Blender (Z-up, armature)
+  - `houdini`: Optimized for Houdini (Y-up, joints)
+- **Improved FBX Export**: Proper rotation-based animation instead of just locations
+  - Creates armature with bones pointing toward children
+  - Animates rotations calculated from joint position changes
+  - Better compatibility with retargeting tools
+- **GPU Optimization Improvements**:
+  - Added `batch_size` parameter (hint for future parallel processing)
+  - Enabled CUDA cuDNN benchmark mode
+  - Added periodic VRAM cache clearing (every 50 frames)
+  - Wrapped inference in `torch.no_grad()` for memory efficiency
+  - Console now shows CUDA device name and VRAM available
 
 ### v2.1.0 - DSLR/Cinema Camera Support & Improved FBX Export
 - **NEW: Focal Length + Sensor Size Input** - For DSLR/Cinema cameras:
