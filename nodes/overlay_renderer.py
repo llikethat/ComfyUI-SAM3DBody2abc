@@ -364,19 +364,71 @@ class SAM3DBody2abcOverlayBatch:
         
         # Try to use Meta's official renderer
         meta_renderer = None
+        
         if use_meta_renderer:
+            # First check if pyrender is available (required for Meta's renderer)
             try:
-                from tools.vis_utils import visualize_sample_together
-                meta_renderer = visualize_sample_together
-                print("[SAM3DBody2abc] Using Meta's official renderer (visualize_sample_together)")
+                import pyrender
+                pyrender_available = True
+                print(f"[SAM3DBody2abc] pyrender {pyrender.__version__} available")
             except ImportError:
-                try:
-                    from sam_3d_body.tools.vis_utils import visualize_sample_together
-                    meta_renderer = visualize_sample_together
-                    print("[SAM3DBody2abc] Using Meta's official renderer (sam_3d_body)")
-                except ImportError:
-                    print("[SAM3DBody2abc] Meta renderer not available, using OpenCV renderer")
-                    meta_renderer = None
+                pyrender_available = False
+                print("[SAM3DBody2abc] pyrender not installed - Meta renderer requires it")
+                print("[SAM3DBody2abc] Install with: pip install pyrender")
+            
+            if pyrender_available:
+                # Try multiple import paths
+                import sys
+                import os
+                
+                # Add potential paths where ComfyUI-SAM3DBody might be
+                comfyui_paths = [
+                    os.path.join(os.path.dirname(__file__), "..", "..", "ComfyUI-SAM3DBody"),
+                    os.path.join(os.path.dirname(__file__), "..", "..", "ComfyUI-SAM3DBody", "sam_3d_body"),
+                ]
+                
+                for path in comfyui_paths:
+                    abs_path = os.path.abspath(path)
+                    if os.path.exists(abs_path) and abs_path not in sys.path:
+                        sys.path.insert(0, abs_path)
+                        print(f"[SAM3DBody2abc] Added to path: {abs_path}")
+                
+                import_paths = [
+                    "tools.vis_utils",
+                    "sam_3d_body.tools.vis_utils",
+                ]
+                
+                for import_path in import_paths:
+                    try:
+                        module = __import__(import_path, fromlist=['visualize_sample_together'])
+                        meta_renderer = getattr(module, 'visualize_sample_together')
+                        print(f"[SAM3DBody2abc] Using Meta's official renderer from {import_path}")
+                        break
+                    except (ImportError, AttributeError) as e:
+                        continue
+                
+                if meta_renderer is None:
+                    # Try direct file import as last resort
+                    try:
+                        import importlib.util
+                        for base_path in comfyui_paths:
+                            vis_utils_path = os.path.join(os.path.abspath(base_path), "tools", "vis_utils.py")
+                            if os.path.exists(vis_utils_path):
+                                spec = importlib.util.spec_from_file_location("vis_utils", vis_utils_path)
+                                vis_utils = importlib.util.module_from_spec(spec)
+                                spec.loader.exec_module(vis_utils)
+                                meta_renderer = vis_utils.visualize_sample_together
+                                print(f"[SAM3DBody2abc] Using Meta's renderer from {vis_utils_path}")
+                                break
+                    except Exception as e:
+                        print(f"[SAM3DBody2abc] Direct import failed: {e}")
+                
+                if meta_renderer is None:
+                    print("[SAM3DBody2abc] Meta renderer not found in ComfyUI-SAM3DBody")
+                    print("[SAM3DBody2abc] Ensure ComfyUI-SAM3DBody is installed in custom_nodes")
+            
+            if meta_renderer is None:
+                print("[SAM3DBody2abc] Falling back to OpenCV renderer")
         
         # Determine render mode
         render_mode = "wireframe" if mesh_color == "wireframe" else "overlay"

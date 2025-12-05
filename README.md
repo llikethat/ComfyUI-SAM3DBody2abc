@@ -2,7 +2,7 @@
 
 **Extension for ComfyUI-SAM3DBody that adds video batch processing and animated export to Alembic (.abc) and FBX formats.**
 
-![Version](https://img.shields.io/badge/version-2.2.2-blue)
+![Version](https://img.shields.io/badge/version-2.2.3-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 🎯 Purpose
@@ -280,6 +280,13 @@ MIT License - See [LICENSE](LICENSE)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) by Kosinkadink
 
 ## 📝 Changelog
+
+### v2.2.3 - Improved Meta Renderer Detection
+- **Better Import**: Now searches multiple paths to find Meta's `visualize_sample_together`
+- **pyrender Check**: Explicitly checks if pyrender is installed before attempting import
+- **Helpful Messages**: Shows what's missing and how to fix it:
+  - If pyrender missing: "Install with: pip install pyrender"
+  - If vis_utils not found: "Ensure ComfyUI-SAM3DBody is installed in custom_nodes"
 
 ### v2.2.2 - Fixed Maya FBX Export (Proper Joints)
 - **FIXED**: FBX now exports as proper Maya joints instead of locators
