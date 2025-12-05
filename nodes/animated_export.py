@@ -10,6 +10,10 @@ import json
 from typing import Dict, List, Tuple, Any, Optional
 import folder_paths
 
+# Global cache for Blender path to avoid repeated searches
+_BLENDER_PATH_CACHE = None
+_BLENDER_SEARCHED = False
+
 
 class ExportAnimatedAlembic:
     """
@@ -435,7 +439,12 @@ class ExportAnimatedAlembic:
         return None
     
     def _find_blender(self) -> Optional[str]:
-        """Find Blender executable."""
+        """Find Blender executable (uses global cache)."""
+        global _BLENDER_PATH_CACHE, _BLENDER_SEARCHED
+        
+        if _BLENDER_SEARCHED:
+            return _BLENDER_PATH_CACHE
+        
         import shutil
         import glob
         
@@ -470,8 +479,10 @@ class ExportAnimatedAlembic:
                 for pattern in sam3d_blender_patterns:
                     matches = glob.glob(pattern)
                     if matches:
-                        print(f"[SAM3DBody2abc] Found Blender: {matches[0]}")
                         locations.extend(matches)
+                        break
+                if len(locations) > 4:  # Found something beyond defaults
+                    break
         except Exception as e:
             print(f"[SAM3DBody2abc] Error searching for Blender: {e}")
         
@@ -479,10 +490,14 @@ class ExportAnimatedAlembic:
         for version in ["4.2", "4.1", "4.0", "3.6"]:
             locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")
         
+        _BLENDER_SEARCHED = True
         for loc in locations:
             if loc and os.path.exists(loc):
+                _BLENDER_PATH_CACHE = loc
+                print(f"[SAM3DBody2abc] Found Blender: {loc}")
                 return loc
         
+        _BLENDER_PATH_CACHE = None
         return None
     
     def _create_blender_alembic_script(self) -> str:
@@ -985,7 +1000,12 @@ class ExportAnimatedFBX:
         return joint_parents
     
     def _find_blender(self) -> Optional[str]:
-        """Find Blender executable."""
+        """Find Blender executable (uses global cache)."""
+        global _BLENDER_PATH_CACHE, _BLENDER_SEARCHED
+        
+        if _BLENDER_SEARCHED:
+            return _BLENDER_PATH_CACHE
+        
         import shutil
         import glob
         
@@ -1005,16 +1025,23 @@ class ExportAnimatedFBX:
             ]
             for pattern in sam3d_blender_patterns:
                 matches = glob.glob(pattern)
-                locations.extend(matches)
+                if matches:
+                    locations.extend(matches)
+                    break
         except:
             pass
         
         for version in ["4.2", "4.1", "4.0", "3.6"]:
             locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")
         
+        _BLENDER_SEARCHED = True
         for loc in locations:
             if loc and os.path.exists(loc):
+                _BLENDER_PATH_CACHE = loc
+                print(f"[SAM3DBody2abc] Found Blender: {loc}")
                 return loc
+        
+        _BLENDER_PATH_CACHE = None
         return None
     
     def _create_blender_fbx_script(self, target_app: str = "maya") -> str:

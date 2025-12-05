@@ -2,15 +2,14 @@
 # SPDX-License-Identifier: MIT
 """
 Overlay renderer for SAM3DBody2abc.
-Uses Meta's rendering approach with pyrender or OpenCV fallback.
+Uses Meta's exact rendering approach.
 """
 
 import os
 import sys
 
-# Set OpenGL platform BEFORE any imports - try osmesa for headless servers
+# Try osmesa for headless rendering
 if "PYOPENGL_PLATFORM" not in os.environ:
-    # Try osmesa first (software renderer, no display needed)
     os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 
 import numpy as np
@@ -26,7 +25,7 @@ def render_with_pyrender(
     cam_t: np.ndarray,
     focal_length: float,
 ) -> Optional[np.ndarray]:
-    """Render using pyrender with Meta's camera model."""
+    """Render using pyrender with Meta's exact approach."""
     try:
         import trimesh
         import pyrender
@@ -37,10 +36,8 @@ def render_with_pyrender(
     try:
         h, w = img_bgr.shape[:2]
         
-        # Create mesh and apply Meta's transforms
+        # Create mesh and apply Meta's 180° X rotation
         mesh = trimesh.Trimesh(vertices=vertices.copy(), faces=faces.copy())
-        
-        # Apply 180° rotation around X axis (Meta's transform)
         rot = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
         mesh.apply_transform(rot)
         
@@ -49,7 +46,7 @@ def render_with_pyrender(
         material = pyrender.MetallicRoughnessMaterial(
             metallicFactor=0.0,
             alphaMode="OPAQUE",
-            baseColorFactor=(LIGHT_BLUE[2], LIGHT_BLUE[1], LIGHT_BLUE[0], 1.0),  # BGR
+            baseColorFactor=(LIGHT_BLUE[2], LIGHT_BLUE[1], LIGHT_BLUE[0], 1.0),
         )
         
         mesh_pyrender = pyrender.Mesh.from_trimesh(mesh, material=material)
@@ -72,7 +69,7 @@ def render_with_pyrender(
         )
         scene.add(camera, pose=camera_pose)
         
-        # Lighting (Raymond lights from Meta)
+        # Raymond lights (from Meta)
         thetas = np.pi * np.array([1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0])
         phis = np.pi * np.array([0.0, 2.0 / 3.0, 4.0 / 3.0])
         for phi, theta in zip(phis, thetas):
@@ -117,63 +114,58 @@ def render_wireframe_opencv(
     faces: np.ndarray,
     cam_t: np.ndarray,
     focal_length: float,
-    color: Tuple[int, int, int] = (166, 189, 219),  # Light blue in BGR
+    color: Tuple[int, int, int] = (166, 189, 219),  # Light blue BGR
     line_thickness: int = 1,
     debug: bool = False,
 ) -> np.ndarray:
     """
-    Wireframe render using OpenCV, matching Meta's camera model exactly.
+    Wireframe render using OpenCV, matching Meta's camera model.
     
-    Meta's pipeline:
-    1. Rotate mesh 180° around X axis
-    2. Camera at position [-cam_t[0], cam_t[1], cam_t[2]]
-    3. Standard pinhole projection
+    Key insight: The focal length from SAM3DBody is computed for the
+    MODEL's processing size, not the display image size. We need to
+    scale it appropriately.
     """
+    import trimesh
+    
     h, w = img_bgr.shape[:2]
     
-    # Step 1: Apply 180° rotation around X axis (same as Meta)
-    # This negates Y and Z coordinates
-    verts = vertices.copy()
-    verts[:, 1] = -verts[:, 1]
-    verts[:, 2] = -verts[:, 2]
+    # Create mesh and apply 180° X rotation (same as Meta)
+    mesh = trimesh.Trimesh(vertices=vertices.copy(), faces=faces.copy())
+    rot = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+    mesh.apply_transform(rot)
+    verts = np.array(mesh.vertices)
     
-    # Step 2: Camera translation (flip X like Meta)
-    camera_pos = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+    # Camera translation (flip X like Meta)
+    camera_translation = cam_t.copy()
+    camera_translation[0] *= -1.0
     
-    # Transform vertices to camera space
-    # Camera is at camera_pos, looking at origin
-    # In camera space: verts_cam = verts - camera_pos
-    verts_cam = verts - camera_pos
+    # Transform to camera space
+    verts_cam = verts - camera_translation
     
-    if debug:
-        print(f"  [Wireframe] Vertices after 180° X rotation: Y=[{verts[:, 1].min():.3f}, {verts[:, 1].max():.3f}]")
-        print(f"  [Wireframe] Camera position: {camera_pos}")
-        print(f"  [Wireframe] Vertices in camera space Z: [{verts_cam[:, 2].min():.3f}, {verts_cam[:, 2].max():.3f}]")
-    
-    # Step 3: Perspective projection
-    # In pyrender/OpenGL, camera looks down -Z axis
-    # So we need Z to be negative for visible points
-    # For projection, we use -Z as depth
-    z = verts_cam[:, 2]
-    
-    # Valid points are those with positive depth (in front of camera)
-    # After our transforms, visible points should have negative Z in camera space
-    # But we use -Z for depth calculation
-    depth = -z
+    # Depth is -Z (camera looks down -Z in OpenGL)
+    depth = -verts_cam[:, 2]
     valid = depth > 0.01
-    depth_safe = np.where(valid, depth, 0.01)
+    depth_safe = np.maximum(depth, 0.01)
     
-    # Standard pinhole projection
+    # Project using OpenGL/pyrender convention
+    # x_screen = fx * X / depth + cx
+    # y_screen = (h - 1) - (fy * Y / depth + cy)  # Flip Y for image coords
     cx, cy = w / 2.0, h / 2.0
+    
     pts_2d = np.zeros((len(verts), 2))
     pts_2d[:, 0] = verts_cam[:, 0] * focal_length / depth_safe + cx
-    pts_2d[:, 1] = verts_cam[:, 1] * focal_length / depth_safe + cy
+    # Y is flipped in OpenGL viewport transform
+    pts_2d[:, 1] = (h - 1) - (verts_cam[:, 1] * focal_length / depth_safe + cy)
     
     if debug:
+        print(f"  [Wireframe] Rotated mesh Y range: [{verts[:, 1].min():.3f}, {verts[:, 1].max():.3f}]")
+        print(f"  [Wireframe] Camera translation: {camera_translation}")
+        print(f"  [Wireframe] Camera-space Y range: [{verts_cam[:, 1].min():.3f}, {verts_cam[:, 1].max():.3f}]")
         print(f"  [Wireframe] Depth range: [{depth[valid].min():.3f}, {depth[valid].max():.3f}]")
+        print(f"  [Wireframe] Focal length: {focal_length:.1f}")
+        print(f"  [Wireframe] Image size: {w}x{h}")
         print(f"  [Wireframe] 2D X range: [{pts_2d[valid, 0].min():.1f}, {pts_2d[valid, 0].max():.1f}]")
         print(f"  [Wireframe] 2D Y range: [{pts_2d[valid, 1].min():.1f}, {pts_2d[valid, 1].max():.1f}]")
-        print(f"  [Wireframe] Image size: {w}x{h}")
     
     # Draw wireframe with depth sorting
     result = img_bgr.copy()
@@ -191,6 +183,7 @@ def render_wireframe_opencv(
     
     # Draw edges
     edges_drawn = set()
+    in_frame_count = 0
     for _, face in face_depths:
         for i in range(3):
             v1, v2 = face[i], face[(i + 1) % 3]
@@ -202,14 +195,83 @@ def render_wireframe_opencv(
             p1 = tuple(pts_2d_int[v1])
             p2 = tuple(pts_2d_int[v2])
             
-            # Check if points are within reasonable bounds
-            margin = 1000
-            if (-margin <= p1[0] < w + margin and -margin <= p1[1] < h + margin and
-                -margin <= p2[0] < w + margin and -margin <= p2[1] < h + margin):
+            # Check if line is at least partially in frame
+            if ((0 <= p1[0] < w or 0 <= p2[0] < w) and
+                (0 <= p1[1] < h or 0 <= p2[1] < h)):
                 cv2.line(result, p1, p2, color, line_thickness, cv2.LINE_AA)
+                in_frame_count += 1
     
     if debug:
-        print(f"  [Wireframe] Drew {len(edges_drawn)} edges")
+        print(f"  [Wireframe] Drew {len(edges_drawn)} edges ({in_frame_count} in frame)")
+    
+    return result
+
+
+def render_filled_opencv(
+    img_bgr: np.ndarray,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    cam_t: np.ndarray,
+    focal_length: float,
+    color: Tuple[int, int, int] = (166, 189, 219),  # Light blue BGR
+    opacity: float = 0.5,
+    debug: bool = False,
+) -> np.ndarray:
+    """
+    Filled mesh render using OpenCV (z-buffered triangles).
+    Slower than wireframe but looks better when pyrender unavailable.
+    """
+    import trimesh
+    
+    h, w = img_bgr.shape[:2]
+    
+    # Create mesh and apply 180° X rotation
+    mesh = trimesh.Trimesh(vertices=vertices.copy(), faces=faces.copy())
+    rot = trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+    mesh.apply_transform(rot)
+    verts = np.array(mesh.vertices)
+    
+    # Camera translation (flip X)
+    camera_translation = cam_t.copy()
+    camera_translation[0] *= -1.0
+    
+    # Transform to camera space
+    verts_cam = verts - camera_translation
+    
+    # Project
+    depth = -verts_cam[:, 2]
+    valid = depth > 0.01
+    depth_safe = np.maximum(depth, 0.01)
+    
+    cx, cy = w / 2.0, h / 2.0
+    pts_2d = np.zeros((len(verts), 2))
+    pts_2d[:, 0] = verts_cam[:, 0] * focal_length / depth_safe + cx
+    pts_2d[:, 1] = (h - 1) - (verts_cam[:, 1] * focal_length / depth_safe + cy)
+    
+    # Create overlay
+    overlay = img_bgr.copy()
+    pts_2d_int = pts_2d.astype(np.int32)
+    
+    # Calculate face depths and sort
+    face_data = []
+    for face in faces:
+        if valid[face[0]] and valid[face[1]] and valid[face[2]]:
+            avg_depth = (depth[face[0]] + depth[face[1]] + depth[face[2]]) / 3
+            pts = pts_2d_int[face]
+            face_data.append((avg_depth, pts))
+    
+    # Sort far to near
+    face_data.sort(key=lambda x: -x[0])
+    
+    # Draw filled triangles
+    for _, pts in face_data:
+        cv2.fillPoly(overlay, [pts], color)
+    
+    # Blend with original
+    result = cv2.addWeighted(img_bgr, 1 - opacity, overlay, opacity, 0)
+    
+    if debug:
+        print(f"  [Filled] Drew {len(face_data)} triangles")
     
     return result
 
@@ -225,9 +287,9 @@ class SAM3DBody2abcOverlay:
                 "image": ("IMAGE", {"tooltip": "Image to overlay mesh on"}),
             },
             "optional": {
-                "render_mode": (["solid", "wireframe"], {
+                "render_mode": (["solid", "filled", "wireframe"], {
                     "default": "solid",
-                    "tooltip": "solid uses pyrender (requires display), wireframe uses OpenCV"
+                    "tooltip": "solid=pyrender (best), filled=OpenCV triangles, wireframe=OpenCV lines"
                 }),
             }
         }
@@ -251,7 +313,9 @@ class SAM3DBody2abcOverlay:
         # Extract mesh data
         vertices = mesh_data.get("vertices") or mesh_data.get("verts") or mesh_data.get("pred_vertices")
         faces = mesh_data.get("faces")
-        cam_t = mesh_data.get("camera") or mesh_data.get("cam_t") or mesh_data.get("pred_cam_t")
+        cam_t = mesh_data.get("camera")
+        if cam_t is None:
+            cam_t = mesh_data.get("pred_cam_t")
         focal_length = mesh_data.get("focal_length")
         
         if vertices is None or faces is None:
@@ -288,8 +352,10 @@ class SAM3DBody2abcOverlay:
         if render_mode == "solid":
             result = render_with_pyrender(img_bgr, vertices, faces, cam_t, focal_length)
             if result is None:
-                print("[SAM3DBody2abc] Pyrender failed, using wireframe")
-                result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=True)
+                print("[SAM3DBody2abc] Pyrender failed, using filled")
+                result = render_filled_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=True)
+        elif render_mode == "filled":
+            result = render_filled_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=True)
         else:
             result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=True)
         
@@ -311,9 +377,9 @@ class SAM3DBody2abcOverlayBatch:
                 "images": ("IMAGE", {"tooltip": "Batch of images"}),
             },
             "optional": {
-                "render_mode": (["solid", "wireframe"], {
+                "render_mode": (["solid", "filled", "wireframe"], {
                     "default": "solid",
-                    "tooltip": "solid uses pyrender, wireframe uses OpenCV"
+                    "tooltip": "solid=pyrender (best), filled=OpenCV triangles, wireframe=OpenCV lines"
                 }),
                 "temporal_smoothing": ("FLOAT", {
                     "default": 0.5,
@@ -346,14 +412,13 @@ class SAM3DBody2abcOverlayBatch:
         if render_mode == "solid":
             try:
                 import pyrender
-                # Try creating a small test renderer
                 test_renderer = pyrender.OffscreenRenderer(64, 64)
                 test_renderer.delete()
                 pyrender_works = True
-                print(f"[SAM3DBody2abc] Pyrender OK (osmesa)")
+                print(f"[SAM3DBody2abc] Pyrender OK")
             except Exception as e:
                 print(f"[SAM3DBody2abc] Pyrender failed: {e}")
-                print("[SAM3DBody2abc] Using wireframe fallback")
+                print("[SAM3DBody2abc] Using filled fallback")
         
         # Apply temporal smoothing
         if temporal_smoothing > 0 and len(mesh_sequence) > 1:
@@ -444,7 +509,9 @@ class SAM3DBody2abcOverlayBatch:
             if render_mode == "solid" and pyrender_works:
                 result = render_with_pyrender(img_bgr, vertices, faces, cam_t, focal_length)
                 if result is None:
-                    result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=(i==0))
+                    result = render_filled_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=(i==0))
+            elif render_mode == "filled" or (render_mode == "solid" and not pyrender_works):
+                result = render_filled_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=(i==0))
             else:
                 result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length, debug=(i==0))
             

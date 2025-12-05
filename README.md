@@ -1,6 +1,6 @@
 # ComfyUI-SAM3DBody2abc
 
-![Version](https://img.shields.io/badge/version-2.3.2-blue)
+![Version](https://img.shields.io/badge/version-2.3.3-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) that adds:
@@ -193,6 +193,12 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 5. Save result with VideoHelperSuite
 
 ## 📝 Changelog
+
+### v2.3.3 - Fixed Projection & Cleanup
+- **FIXED**: OpenGL viewport Y-flip in wireframe projection - mesh now renders correctly
+- **ADDED**: "filled" render mode - draws filled triangles with z-buffering (better than wireframe when pyrender unavailable)
+- **FIXED**: "Found Blender" message no longer prints 9+ times (now cached)
+- **REMOVED**: Joint hierarchy fallback message is normal (127 joints = MHR format)
 
 ### v2.3.2 - Bug Fixes & Cinema Cameras
 - **FIXED**: Numpy array truth value error in overlay renderer
