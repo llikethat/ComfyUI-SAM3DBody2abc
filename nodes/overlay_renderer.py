@@ -365,7 +365,9 @@ class SAM3DBody2abcOverlayBatch:
             
             for i, mesh in enumerate(mesh_sequence):
                 verts = mesh.get("vertices")
-                cam = mesh.get("camera") or mesh.get("pred_cam_t")
+                cam = mesh.get("camera")
+                if cam is None:
+                    cam = mesh.get("pred_cam_t")
                 if verts is not None and mesh.get("valid", True):
                     if isinstance(verts, torch.Tensor):
                         verts = verts.cpu().numpy()
@@ -415,7 +417,9 @@ class SAM3DBody2abcOverlayBatch:
             vertices = np.array(vertices).astype(np.float64)
             faces = np.array(faces).astype(np.int32)
             
-            cam_t = mesh.get("camera") or mesh.get("pred_cam_t")
+            cam_t = mesh.get("camera")
+            if cam_t is None:
+                cam_t = mesh.get("pred_cam_t")
             if cam_t is not None:
                 if isinstance(cam_t, torch.Tensor):
                     cam_t = cam_t.cpu().numpy()

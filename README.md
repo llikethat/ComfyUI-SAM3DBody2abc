@@ -1,6 +1,6 @@
 # ComfyUI-SAM3DBody2abc
 
-![Version](https://img.shields.io/badge/version-2.3.1-blue)
+![Version](https://img.shields.io/badge/version-2.3.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) that adds:
@@ -13,13 +13,21 @@ Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3
 ## 📦 Installation
 
 1. Install [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) first
-2. Clone this repository into `custom_nodes`:
+
+2. Install system dependencies (for headless rendering):
+```bash
+apt-get update && apt-get install -y libosmesa6-dev libgl1-mesa-glx libglvnd-dev freeglut3-dev
+```
+
+3. Clone this repository into `custom_nodes`:
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/your-repo/ComfyUI-SAM3DBody2abc
+git clone https://github.com/llikethat/ComfyUI-SAM3DBody2abc
 ```
-3. Install requirements:
+
+4. Install Python requirements:
 ```bash
+cd ComfyUI-SAM3DBody2abc
 pip install -r requirements.txt
 ```
 
@@ -76,25 +84,43 @@ The extension calculates: `focal_px = focal_mm × (image_width_px / sensor_width
 
 #### Common Sensor Sizes
 
-| Camera Type | Sensor Width |
-|-------------|--------------|
-| **Full Frame** (Sony A7, Canon R5, Nikon Z) | 36.0 mm |
-| **APS-C Sony/Nikon/Fuji** | 23.5 mm |
-| **APS-C Canon** | 22.3 mm |
-| **Micro Four Thirds** (Panasonic, Olympus) | 17.3 mm |
-| **Super 35 Cinema** | 24.89 mm |
-| **RED Komodo** | 27.03 mm |
-| **ARRI Alexa Mini** | 28.17 mm |
-| **Blackmagic Pocket 6K** | 23.10 mm |
-| **iPhone 15 Pro (Main)** | 9.8 mm |
-| **iPhone 15 Pro (Ultra Wide)** | 9.8 mm |
+| Camera Type | Sensor Width | Notes |
+|-------------|--------------|-------|
+| **Full Frame** (Sony A7, Canon R5, Nikon Z) | 36.0 mm | |
+| **APS-C Sony/Nikon/Fuji** | 23.5 mm | |
+| **APS-C Canon** | 22.3 mm | |
+| **Micro Four Thirds** (Panasonic, Olympus) | 17.3 mm | |
 
-#### Example: Sony A7 IV with 50mm Lens
+**Cinema Cameras:**
+
+| Camera | Sensor Width | Notes |
+|--------|--------------|-------|
+| **Sony Venice 2** (Full Frame 8.6K) | 36.2 mm | Full Frame mode |
+| **Sony Venice 2** (Super 35 5.8K) | 24.9 mm | Super 35 mode |
+| **ARRI Alexa 35** (Super 35 4.6K) | 28.25 mm | Super 35 mode |
+| **ARRI Alexa 35** (Open Gate) | 34.98 mm | Large Format mode |
+| **ARRI Alexa Mini** | 28.17 mm | |
+| **RED Komodo** | 27.03 mm | Super 35 |
+| **RED V-Raptor** | 40.96 mm | Vista Vision |
+| **Blackmagic Pocket 6K** | 23.10 mm | Super 35 |
+| **Blackmagic URSA Mini Pro 12K** | 27.03 mm | Super 35 |
+| **Canon C70** | 26.2 mm | Super 35 DGO |
+| **Super 35 (standard)** | 24.89 mm | Generic |
+
+**Smartphone Cameras:**
+
+| Device | Sensor Width | Notes |
+|--------|--------------|-------|
+| **iPhone 15 Pro** (Main 48MP) | 9.8 mm | 24mm equivalent |
+| **iPhone 15 Pro** (Ultra Wide) | 9.8 mm | 13mm equivalent |
+| **Samsung Galaxy S24 Ultra** (Main) | 9.56 mm | |
+
+#### Example: Sony Venice 2 with 50mm Lens (Full Frame mode)
 ```
 focal_length_mm: 50
-sensor_width_mm: 36.0
+sensor_width_mm: 36.2
 ```
-For a 1920px wide image: `focal_px = 50 × (1920 / 36) = 2667px`
+For a 1920px wide image: `focal_px = 50 × (1920 / 36.2) = 2652px`
 
 ### Priority 4: Simple FOV
 Set `fov` in degrees (default: 55°). Good for quick tests.
@@ -105,17 +131,25 @@ The overlay renderer supports two modes:
 
 | Mode | Description | Requirements |
 |------|-------------|--------------|
-| **solid** | 3D rendered mesh with lighting (Meta's approach) | pyrender, osmesa |
+| **solid** | 3D rendered mesh with lighting (Meta's approach) | pyrender, OSMesa |
 | **wireframe** | Fast wireframe using OpenCV | None (always works) |
 
 ### For Solid Rendering on Headless Servers
-```bash
-# Install OSMesa for software rendering
-apt-get install libosmesa6-dev
 
-# Install PyOpenGL
+Install OSMesa and required libraries:
+```bash
+# System packages
+apt-get update && apt-get install -y \
+    libosmesa6-dev \
+    libgl1-mesa-glx \
+    libglvnd-dev \
+    freeglut3-dev
+
+# Python packages
 pip install PyOpenGL PyOpenGL_accelerate
 ```
+
+**Note:** The "No FOV estimator... Using the default FOV!" message is from SAM3DBody's internal logging and is expected - our extension correctly passes the calibrated focal length to the model.
 
 ## 〰️ Temporal Smoothing
 
@@ -160,6 +194,13 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 
 ## 📝 Changelog
 
+### v2.3.2 - Bug Fixes & Cinema Cameras
+- **FIXED**: Numpy array truth value error in overlay renderer
+- **ADDED**: Sony Venice 2 sensor sizes (Full Frame & Super 35)
+- **ADDED**: ARRI Alexa 35 sensor sizes (Super 35 & Open Gate)
+- **ADDED**: More cinema cameras (RED V-Raptor, Canon C70, BMPCC 12K)
+- **IMPROVED**: README with apt install commands for OSMesa
+
 ### v2.3.1 - Fixed Overlay Rendering
 - **FIXED**: Pyrender now uses `osmesa` for headless servers (no display needed)
 - **FIXED**: Wireframe projection matches Meta's camera model exactly
@@ -203,18 +244,28 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 - GeoCalib (for auto FOV calibration)
 - ComfyUI-VideoHelperSuite (for video input/output)
 
+### System Dependencies (for headless rendering)
+```bash
+apt-get install -y libosmesa6-dev libgl1-mesa-glx libglvnd-dev freeglut3-dev
+```
+
 ## 🐛 Troubleshooting
 
-### "Cannot connect to None" error
-This means pyrender can't find a display. Solutions:
-1. Use `render_mode: wireframe` (always works)
-2. Install OSMesa: `apt-get install libosmesa6-dev`
-3. Set environment: `export PYOPENGL_PLATFORM=osmesa`
+### "Cannot connect to None" or "OSMesaCreateContextAttribs" error
+This means OSMesa is not properly installed. Solutions:
+1. Install system packages: `apt-get install -y libosmesa6-dev libgl1-mesa-glx`
+2. Use `render_mode: wireframe` (always works without OpenGL)
+
+### "The truth value of an array..." error
+Update to v2.3.2 which fixes this numpy array handling issue.
 
 ### Mesh overlay doesn't align with person
 1. Check your FOV/focal length settings
 2. Try `auto_calibrate: True` if GeoCalib is installed
 3. For DSLR footage, use correct `sensor_width_mm`
+
+### "No FOV estimator... Using the default FOV!" message
+This is normal! It's from SAM3DBody's internal logging. Check the line above it - if you see `[SAM3DBody2abc] Focal length: XXX` with your calibrated value, the focal length IS being used correctly.
 
 ### Alembic export fails
 1. Ensure Blender is installed (bundled with ComfyUI-SAM3DBody)
