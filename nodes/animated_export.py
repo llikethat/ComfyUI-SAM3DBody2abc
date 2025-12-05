@@ -49,6 +49,10 @@ class ExportAnimatedAlembic:
                     "multiline": False,
                     "tooltip": "Leave empty for ComfyUI output folder"
                 }),
+                "world_space": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Apply camera transform to match overlay render (recommended for Maya)"
+                }),
                 "include_joints": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include joint positions as point cloud"
@@ -63,7 +67,7 @@ class ExportAnimatedAlembic:
                 "up_axis": (["Y", "Z"], {"default": "Y"}),
                 "center_mesh": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Center mesh at origin"
+                    "tooltip": "Center mesh at origin (ignores world_space)"
                 }),
                 "temporal_smoothing": ("FLOAT", {
                     "default": 0.5,
@@ -141,6 +145,7 @@ class ExportAnimatedAlembic:
         filename: str = "body_animation",
         fps: float = 24.0,
         output_dir: str = "",
+        world_space: bool = True,
         include_joints: bool = True,
         scale: float = 1.0,
         up_axis: str = "Y",
@@ -149,6 +154,10 @@ class ExportAnimatedAlembic:
     ) -> Tuple[str, str, int]:
         """
         Export complete animation to single Alembic file.
+        
+        If world_space=True, applies the same transforms as the overlay renderer:
+        - 180° rotation around X axis
+        - This makes the mesh appear correctly oriented in Maya/Houdini
         """
         # Setup output path
         if not output_dir:
@@ -168,6 +177,66 @@ class ExportAnimatedAlembic:
         
         if not valid_frames:
             return (output_path, "Error: No valid mesh data", 0)
+        
+        # Apply world_space transform (same as overlay renderer)
+        if world_space and not center_mesh:
+            print("[ExportAnimatedAlembic] Applying world-space transform (rotation + translation)")
+            
+            # Get reference camera from first frame (for relative positioning)
+            ref_cam = valid_frames[0].get("camera")
+            if ref_cam is not None:
+                if hasattr(ref_cam, 'cpu'):
+                    ref_cam = ref_cam.cpu().numpy()
+                ref_cam = np.array(ref_cam).flatten()
+            else:
+                ref_cam = np.array([0.0, 0.0, 0.0])
+            
+            # Also check last frame's camera for comparison
+            last_cam = valid_frames[-1].get("camera")
+            if last_cam is not None:
+                if hasattr(last_cam, 'cpu'):
+                    last_cam = last_cam.cpu().numpy()
+                last_cam = np.array(last_cam).flatten()
+                print(f"[ExportAnimatedAlembic] Camera frame 0: {ref_cam}")
+                print(f"[ExportAnimatedAlembic] Camera frame {len(valid_frames)-1}: {last_cam}")
+                print(f"[ExportAnimatedAlembic] Camera delta: {last_cam - ref_cam}")
+            
+            for i, frame in enumerate(valid_frames):
+                verts = np.array(frame["vertices"])
+                
+                # Get camera translation for this frame
+                cam_t = frame.get("camera")
+                offset = np.array([0.0, 0.0, 0.0])
+                
+                if cam_t is not None:
+                    if hasattr(cam_t, 'cpu'):
+                        cam_t = cam_t.cpu().numpy()
+                    cam_t = np.array(cam_t).flatten()
+                    
+                    # Calculate offset relative to first frame
+                    # cam_t[0] is flipped in Meta's convention
+                    camera_trans = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+                    ref_trans = np.array([-ref_cam[0], ref_cam[1], ref_cam[2]])
+                    offset = camera_trans - ref_trans
+                
+                # Step 1: Apply 180° rotation around X axis (negate Y and Z)
+                verts[:, 1] = -verts[:, 1]
+                verts[:, 2] = -verts[:, 2]
+                
+                # Step 2: Apply camera translation offset (also rotated 180° around X)
+                # In rotated space: X stays same, Y and Z are negated
+                rotated_offset = np.array([offset[0], -offset[1], -offset[2]])
+                verts = verts - rotated_offset
+                
+                frame["vertices"] = verts
+                
+                # Also transform joints if present
+                if frame.get("joints") is not None:
+                    joints = np.array(frame["joints"])
+                    joints[:, 1] = -joints[:, 1]
+                    joints[:, 2] = -joints[:, 2]
+                    joints = joints - rotated_offset
+                    frame["joints"] = joints
         
         # Apply temporal smoothing to reduce jitter
         if temporal_smoothing > 0:

@@ -1,6 +1,6 @@
 # ComfyUI-SAM3DBody2abc
 
-![Version](https://img.shields.io/badge/version-2.3.3-blue)
+![Version](https://img.shields.io/badge/version-2.3.5-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) that adds:
@@ -175,8 +175,74 @@ The Alembic exporter creates industry-standard `.abc` files compatible with:
 | Parameter | Description |
 |-----------|-------------|
 | `fps` | Animation frame rate (default: 30) |
+| `world_space` | Apply 180° X rotation to match overlay (default: True) |
 | `include_uvs` | Include UV coordinates if available |
 | `include_normals` | Include vertex normals |
+
+## 🎬 Maya Import Guide
+
+### Camera Translation Values Explained
+
+The `cam_t` values from SAM3DBody represent the camera position in meters:
+
+```
+cam_t = [X, Y, Z]
+         ↑  ↑  ↑
+         |  |  └── Depth (distance from camera to subject)
+         |  └───── Vertical (camera height above pelvis)
+         └──────── Horizontal (left/right offset)
+```
+
+Example: `cam_t = [-0.075, 1.535, 1.208]`
+- Camera is 7.5cm to the left of center
+- Camera is 1.53m above the mesh origin (pelvis)
+- Subject is 1.21m from camera
+
+### Alembic Import with Correct Alignment
+
+**With `world_space: True` (default, recommended):**
+The mesh is pre-transformed to match the overlay render. Just import and it should look correct.
+
+**With `world_space: False`:**
+You'll need to rotate the mesh -180° around X axis in Maya.
+
+### Setting Up Matching Camera in Maya
+
+1. **Create Camera:**
+   ```python
+   # Maya Python
+   import maya.cmds as cmds
+   
+   cam = cmds.camera(name='sam3d_camera')[0]
+   ```
+
+2. **Set Focal Length:**
+   ```python
+   # focal_length from SAM3DBody is in PIXELS
+   # Convert to Maya's mm assuming 36mm sensor (full frame)
+   focal_px = 686.2  # from console output
+   image_width = 640  # your image width
+   sensor_width_mm = 36.0
+   
+   focal_mm = focal_px * sensor_width_mm / image_width
+   cmds.setAttr(cam + '.focalLength', focal_mm)
+   ```
+
+3. **Set Film Back (sensor size):**
+   ```python
+   cmds.setAttr(cam + '.horizontalFilmAperture', 1.417)  # 36mm in inches
+   cmds.setAttr(cam + '.verticalFilmAperture', 0.945)    # 24mm in inches
+   ```
+
+### Quick Maya Settings
+
+| Setting | Value |
+|---------|-------|
+| World Space Export | `True` (recommended) |
+| Scale | `1.0` (meters) or `100` (cm for Maya) |
+| Up Axis | `Y` for Maya |
+| Maya Film Back | 36mm × 24mm (Full Frame) |
+| Focal Length Formula | `focal_px × 36 / image_width` mm |
 
 ## 🔄 Workflow Example
 
@@ -193,6 +259,17 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 5. Save result with VideoHelperSuite
 
 ## 📝 Changelog
+
+### v2.3.5 - World-Space Translation Fix
+- **FIXED**: Character now translates in world-space when moving (uses cam_t delta)
+- **ADDED**: Debug output showing camera delta between first and last frame
+- **FIXED**: Offset transformation now correctly rotated with mesh
+
+### v2.3.4 - Maya Alignment & World Space Export
+- **ADDED**: `world_space` option in Alembic export (default: True)
+- **ADDED**: Bakes 180° X rotation into mesh so it matches overlay in Maya
+- **ADDED**: Maya import guide with camera setup instructions
+- **ADDED**: Explanation of cam_t values (X, Y, Z in meters)
 
 ### v2.3.3 - Fixed Projection & Cleanup
 - **FIXED**: OpenGL viewport Y-flip in wireframe projection - mesh now renders correctly
