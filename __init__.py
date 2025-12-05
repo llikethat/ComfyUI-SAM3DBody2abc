@@ -1,12 +1,11 @@
 """
 SAM3DBody2abc
 Extension for ComfyUI-SAM3DBody that adds video batch processing
-and animated export to Alembic (.abc) and FBX formats.
+and animated export to Alembic (.abc) format.
 
 This extension works WITH the existing ComfyUI-SAM3DBody node, extending it with:
 - Video/image sequence batch processing
-- Animated Alembic geometry export (full timeline, not per-frame)
-- Animated FBX skeleton export (full timeline, not per-frame)
+- Animated Alembic geometry export (full timeline)
 - Real-time mesh overlay visualization on video frames
 
 Prerequisites:
@@ -15,7 +14,7 @@ Prerequisites:
 
 Author: Custom Extension
 License: MIT
-Version: 2.0.0
+Version: 2.3.0
 """
 
 import os
@@ -57,8 +56,6 @@ SAM3DBodyBatchProcessor = _video_batch.SAM3DBodyBatchProcessor
 SAM3DBodySequenceProcess = _video_batch.SAM3DBodySequenceProcess
 
 ExportAnimatedAlembic = _animated_export.ExportAnimatedAlembic
-ExportAnimatedFBX = _animated_export.ExportAnimatedFBX
-ExportAnimatedMesh = _animated_export.ExportAnimatedMesh
 ExportOBJSequence = _animated_export.ExportOBJSequence
 
 MeshSequenceAccumulator = _mesh_accumulator.MeshSequenceAccumulator
@@ -75,10 +72,8 @@ NODE_CLASS_MAPPINGS = {
     "SAM3DBody2abc_BatchProcessor": SAM3DBodyBatchProcessor,
     "SAM3DBody2abc_SequenceProcess": SAM3DBodySequenceProcess,
     
-    # Animated Export
+    # Animated Export (Alembic only - FBX removed due to issues)
     "SAM3DBody2abc_ExportAlembic": ExportAnimatedAlembic,
-    "SAM3DBody2abc_ExportFBX": ExportAnimatedFBX,
-    "SAM3DBody2abc_ExportMesh": ExportAnimatedMesh,
     "SAM3DBody2abc_ExportOBJSequence": ExportOBJSequence,
     
     # Mesh Sequence Management
@@ -100,8 +95,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     
     # Animated Export
     "SAM3DBody2abc_ExportAlembic": "📦 SAM3DBody2abc Export Alembic (.abc)",
-    "SAM3DBody2abc_ExportFBX": "🦴 SAM3DBody2abc Export FBX Skeleton",
-    "SAM3DBody2abc_ExportMesh": "💾 SAM3DBody2abc Export All Formats",
     "SAM3DBody2abc_ExportOBJSequence": "📁 SAM3DBody2abc Export OBJ Sequence",
     
     # Mesh Sequence Management
@@ -117,10 +110,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 # Custom type for mesh sequences
-# Note: Uses SAM3D_MODEL and SAM3D_MESH types from ComfyUI-SAM3DBody
 MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
-__version__ = "2.2.3"
+__version__ = "2.3.0"
 __author__ = "Custom Extension"

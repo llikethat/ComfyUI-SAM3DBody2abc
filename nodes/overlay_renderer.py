@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """
 Overlay renderer for SAM3DBody2abc.
-Renders mesh overlay on images using OpenCV (matching pyrender logic).
+Uses ComfyUI-SAM3DBody's renderer or pyrender for accurate overlay.
 """
 
 import numpy as np
@@ -11,187 +11,188 @@ import cv2
 from typing import Dict, List, Optional, Tuple, Any
 
 
-def render_mesh_opencv(
+def get_sam3dbody_renderer():
+    """Try to get the renderer from ComfyUI-SAM3DBody."""
+    import sys
+    import os
+    
+    # Search paths for ComfyUI-SAM3DBody
+    search_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "ComfyUI-SAM3DBody"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "ComfyUI-SAM3DBody", "sam_3d_body"),
+    ]
+    
+    for path in search_paths:
+        abs_path = os.path.abspath(path)
+        if os.path.exists(abs_path) and abs_path not in sys.path:
+            sys.path.insert(0, abs_path)
+    
+    # Try to import the renderer
+    try:
+        from sam_3d_body.visualization.renderer import Renderer
+        return Renderer
+    except ImportError:
+        pass
+    
+    try:
+        from visualization.renderer import Renderer
+        return Renderer
+    except ImportError:
+        pass
+    
+    return None
+
+
+def render_with_pyrender(
     img_bgr: np.ndarray,
     vertices: np.ndarray,
     faces: np.ndarray,
-    cam_t: Optional[np.ndarray],
-    focal_length: Optional[float],
-    color: Tuple[int, int, int],
-    opacity: float,
-    line_thickness: int,
-    debug: bool = False,
-    render_mode: str = "overlay",
+    cam_t: np.ndarray,
+    focal_length: float,
 ) -> np.ndarray:
-    """
-    Render mesh using OpenCV with projection matching pyrender.
-    
-    Based on original SAM3DBody renderer.py:
-    1. Mesh rotated 180° around X axis
-    2. Camera at position cam_t (with X negated)
-    3. Mesh is at origin, so mesh position relative to camera = -camera_translation
-    4. Y is flipped for image coordinates (OpenGL Y-up to image Y-down)
-    """
+    """Render mesh using pyrender (Meta's approach)."""
+    try:
+        import pyrender
+        import trimesh
+    except ImportError:
+        return None
     
     h, w = img_bgr.shape[:2]
     
-    # Default camera params
-    if focal_length is None or focal_length <= 0:
-        focal_length = max(h, w)
-    if cam_t is None:
-        cam_t = np.array([0.0, 0.3, 2.5])
+    # Create mesh
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    mesh_color = np.array([0.7, 0.7, 0.9, 0.6])  # Light blue with transparency
+    material = pyrender.MetallicRoughnessMaterial(
+        metallicFactor=0.0,
+        alphaMode='BLEND',
+        baseColorFactor=mesh_color
+    )
+    mesh_pyrender = pyrender.Mesh.from_trimesh(mesh, material=material)
     
-    cam_t = np.array(cam_t).flatten()
-    if len(cam_t) < 3:
-        cam_t = np.array([0.0, 0.3, 2.5])
+    # Create scene
+    scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0], ambient_light=[0.3, 0.3, 0.3])
+    scene.add(mesh_pyrender)
     
-    # Step 1: Apply 180° X rotation to vertices (flip Y and Z)
+    # Camera setup (matching SAM3DBody's approach)
+    camera = pyrender.IntrinsicsCamera(
+        fx=focal_length, fy=focal_length,
+        cx=w / 2, cy=h / 2,
+        znear=0.01, zfar=100.0
+    )
+    
+    # Camera pose - SAM3DBody uses specific transform
+    camera_translation = cam_t.copy()
+    camera_translation[0] *= -1.0  # Flip X
+    
+    camera_pose = np.eye(4)
+    camera_pose[:3, 3] = camera_translation
+    # Rotate 180 degrees around X axis
+    camera_pose[1, 1] = -1.0
+    camera_pose[2, 2] = -1.0
+    
+    scene.add(camera, pose=camera_pose)
+    
+    # Light
+    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
+    scene.add(light, pose=camera_pose)
+    
+    # Render
+    try:
+        renderer = pyrender.OffscreenRenderer(w, h)
+        color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+        renderer.delete()
+    except Exception as e:
+        print(f"[SAM3DBody2abc] Pyrender failed: {e}")
+        return None
+    
+    # Composite onto image
+    color_rgb = color[:, :, :3]
+    alpha = color[:, :, 3:4] / 255.0
+    
+    img_rgb = img_bgr[:, :, ::-1].astype(np.float32)
+    result = img_rgb * (1 - alpha) + color_rgb.astype(np.float32) * alpha
+    result_bgr = result[:, :, ::-1].astype(np.uint8)
+    
+    return result_bgr
+
+
+def render_wireframe_opencv(
+    img_bgr: np.ndarray,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    cam_t: np.ndarray,
+    focal_length: float,
+    color: Tuple[int, int, int] = (100, 255, 100),
+    line_thickness: int = 1,
+) -> np.ndarray:
+    """Simple wireframe render using OpenCV (fallback)."""
+    h, w = img_bgr.shape[:2]
+    
+    # Project vertices to 2D using SAM3DBody's camera model
     verts = vertices.copy()
+    
+    # Apply 180° rotation around X (flip Y and Z)
     verts[:, 1] = -verts[:, 1]
     verts[:, 2] = -verts[:, 2]
     
-    # Step 2: Transform to camera space
-    # In pyrender: camera_translation[0] *= -1.0
-    # Camera is at position [-cam_t[0], cam_t[1], cam_t[2]]
-    # Mesh is at origin, so in camera space: mesh_pos = -camera_pos
-    # verts_cam = verts - camera_translation
-    camera_translation = np.array([-cam_t[0], cam_t[1], cam_t[2]])
-    verts_cam = verts - camera_translation
+    # Camera translation (flip X)
+    camera_trans = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+    verts_cam = verts - camera_trans
     
-    if debug:
-        print(f"  - Original vertices range: X=[{vertices[:, 0].min():.3f}, {vertices[:, 0].max():.3f}], "
-              f"Y=[{vertices[:, 1].min():.3f}, {vertices[:, 1].max():.3f}], "
-              f"Z=[{vertices[:, 2].min():.3f}, {vertices[:, 2].max():.3f}]")
-        print(f"  - Camera translation: {camera_translation}")
-        print(f"  - Camera-space Z range: [{verts_cam[:, 2].min():.3f}, {verts_cam[:, 2].max():.3f}]")
-    
-    # Step 3: Perspective projection
-    # In OpenGL (pyrender), camera looks down -Z, so Z is negative for visible objects
-    # We project using -Z to get positive depth values
-    z = -verts_cam[:, 2:3]  # Negate Z for OpenGL convention
-    
-    # Filter vertices that are behind camera (z <= 0 means behind)
-    valid_z = z > 0.01
-    z_safe = np.where(valid_z, z, 0.01)
+    # Project
+    z = -verts_cam[:, 2]  # Negate for OpenGL convention
+    valid = z > 0.01
+    z_safe = np.maximum(z, 0.01)
     
     cx, cy = w / 2.0, h / 2.0
-    
     pts_2d = np.zeros((len(verts), 2))
-    # Standard projection: x = fx * X/Z + cx
-    # Flip Y for image coordinates (OpenGL Y-up to image Y-down)
-    pts_2d[:, 0] = verts_cam[:, 0] * focal_length / z_safe.flatten() + cx
-    pts_2d[:, 1] = -verts_cam[:, 1] * focal_length / z_safe.flatten() + cy  # Flip Y
+    pts_2d[:, 0] = verts_cam[:, 0] * focal_length / z_safe + cx
+    pts_2d[:, 1] = -verts_cam[:, 1] * focal_length / z_safe + cy
     
-    if debug:
-        print(f"  - Focal length: {focal_length}, center: ({cx:.1f}, {cy:.1f})")
-        print(f"  - Depth (-Z) range: [{z.min():.3f}, {z.max():.3f}]")
-        print(f"  - 2D points X range: [{pts_2d[:, 0].min():.1f}, {pts_2d[:, 0].max():.1f}]")
-        print(f"  - 2D points Y range: [{pts_2d[:, 1].min():.1f}, {pts_2d[:, 1].max():.1f}]")
-        in_frame = ((pts_2d[:, 0] >= 0) & (pts_2d[:, 0] < w) & 
-                    (pts_2d[:, 1] >= 0) & (pts_2d[:, 1] < h) &
-                    valid_z.flatten())
-        print(f"  - Points in frame: {in_frame.sum()}/{len(pts_2d)}")
+    # Draw wireframe
+    result = img_bgr.copy()
+    pts_2d_int = pts_2d.astype(np.int32)
     
-    # Create mesh overlay
-    if render_mode == "mesh_only":
-        mesh_img = np.zeros_like(img_bgr)
-    else:
-        mesh_img = img_bgr.copy()
-    
-    # Sort faces by depth (far to near for proper occlusion)
-    face_depths = []
+    # Draw edges
+    edges_drawn = set()
     for face in faces:
-        avg_z = (z_safe[face[0]] + z_safe[face[1]] + z_safe[face[2]]) / 3
-        face_depths.append(avg_z[0])
-    
-    sorted_indices = np.argsort(face_depths)[::-1]  # Far to near
-    
-    # Draw filled faces with transparency
-    overlay = mesh_img.copy()
-    faces_drawn = 0
-    
-    for idx in sorted_indices:
-        face = faces[idx]
-        
-        # Skip if any vertex is behind camera
-        if not (valid_z[face[0]] and valid_z[face[1]] and valid_z[face[2]]):
-            continue
-        
-        pts = pts_2d[face].astype(np.int32)
-        
-        # Check if face is at least partially visible
-        if (np.any(pts[:, 0] >= -w) and np.any(pts[:, 0] < 2*w) and 
-            np.any(pts[:, 1] >= -h) and np.any(pts[:, 1] < 2*h)):
-            cv2.fillPoly(overlay, [pts], color)
-            faces_drawn += 1
-    
-    if debug:
-        print(f"  - Faces drawn: {faces_drawn}/{len(faces)}")
-    
-    # Blend with original
-    mesh_img = cv2.addWeighted(overlay, opacity, mesh_img, 1 - opacity, 0)
-    
-    # Draw edges for definition (only front faces)
-    edge_color = tuple(max(0, int(c * 0.6)) for c in color)
-    num_edge_faces = max(1, len(sorted_indices) // 3)
-    
-    for idx in sorted_indices[:num_edge_faces]:
-        face = faces[idx]
-        
-        if not (valid_z[face[0]] and valid_z[face[1]] and valid_z[face[2]]):
-            continue
+        for i in range(3):
+            v1, v2 = face[i], face[(i + 1) % 3]
+            edge = tuple(sorted([v1, v2]))
+            if edge in edges_drawn:
+                continue
+            edges_drawn.add(edge)
             
-        pts = pts_2d[face].astype(np.int32)
-        
-        for j in range(3):
-            p1 = tuple(pts[j])
-            p2 = tuple(pts[(j + 1) % 3])
-            if ((-w <= p1[0] < 2*w) and (-h <= p1[1] < 2*h) and
-                (-w <= p2[0] < 2*w) and (-h <= p2[1] < 2*h)):
-                cv2.line(mesh_img, p1, p2, edge_color, line_thickness, cv2.LINE_AA)
-    
-    if render_mode == "side_by_side":
-        result = np.hstack([img_bgr, mesh_img])
-    else:
-        result = mesh_img
+            if valid[v1] and valid[v2]:
+                p1 = tuple(pts_2d_int[v1])
+                p2 = tuple(pts_2d_int[v2])
+                if (0 <= p1[0] < w and 0 <= p1[1] < h and
+                    0 <= p2[0] < w and 0 <= p2[1] < h):
+                    cv2.line(result, p1, p2, color, line_thickness, cv2.LINE_AA)
     
     return result
 
 
 class SAM3DBody2abcOverlay:
-    """
-    Render 3D mesh overlay on single image.
-    """
+    """Render mesh overlay on single image."""
     
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "mesh_data": ("SAM3D_MESH", {
-                    "tooltip": "Single frame mesh data from SAM3DBody Process node"
-                }),
-                "image": ("IMAGE", {
-                    "tooltip": "Input image to overlay mesh on"
-                }),
+                "mesh_data": ("MESH_DATA", {"tooltip": "Single mesh from SAM3DBody"}),
+                "image": ("IMAGE", {"tooltip": "Image to overlay mesh on"}),
             },
             "optional": {
-                "render_mode": (["overlay", "mesh_only", "side_by_side"], {
-                    "default": "overlay"
-                }),
-                "mesh_color": (["skin", "blue", "green", "red", "white", "cyan", "wireframe"], {
-                    "default": "skin",
-                    "tooltip": "Color of the mesh overlay (wireframe shows edges only)"
+                "render_mode": (["solid", "wireframe"], {
+                    "default": "solid",
+                    "tooltip": "solid uses pyrender, wireframe uses OpenCV"
                 }),
                 "opacity": ("FLOAT", {
                     "default": 0.5,
                     "min": 0.1,
                     "max": 1.0,
-                    "step": 0.1
-                }),
-                "line_thickness": ("INT", {
-                    "default": 1,
-                    "min": 1,
-                    "max": 5
+                    "step": 0.1,
                 }),
             }
         }
@@ -201,30 +202,14 @@ class SAM3DBody2abcOverlay:
     FUNCTION = "render_overlay"
     CATEGORY = "SAM3DBody2abc/Visualization"
     
-    MESH_COLORS = {
-        "skin": (200, 180, 255),      # BGR for skin tone
-        "blue": (255, 150, 50),       # BGR blue
-        "green": (100, 200, 100),     # BGR green
-        "red": (100, 100, 255),       # BGR red
-        "white": (230, 230, 230),     # BGR white
-        "cyan": (255, 255, 100),      # BGR cyan
-        "wireframe": (100, 255, 100), # Green wireframe
-    }
-    
     def render_overlay(
         self,
         mesh_data: Dict,
         image: torch.Tensor,
-        render_mode: str = "overlay",
-        mesh_color: str = "skin",
+        render_mode: str = "solid",
         opacity: float = 0.5,
-        line_thickness: int = 1,
     ):
-        """Render mesh overlay on image."""
-        
-        print(f"[SAM3DBody2abc] Rendering overlay: mode={render_mode}, color={mesh_color}")
-        
-        # Convert image to numpy BGR
+        # Convert image
         img_np = image[0].cpu().numpy()
         img_np = (img_np * 255).astype(np.uint8)
         img_bgr = img_np[..., ::-1].copy()
@@ -236,7 +221,6 @@ class SAM3DBody2abcOverlay:
         focal_length = mesh_data.get("focal_length")
         
         if vertices is None or faces is None:
-            print("[SAM3DBody2abc] WARNING: No mesh data for overlay")
             return (image,)
         
         # Convert to numpy
@@ -246,29 +230,31 @@ class SAM3DBody2abcOverlay:
             faces = faces.cpu().numpy()
         if cam_t is not None and isinstance(cam_t, torch.Tensor):
             cam_t = cam_t.cpu().numpy()
-        if focal_length is not None:
-            if isinstance(focal_length, torch.Tensor):
-                focal_length = focal_length.cpu().numpy()
-            focal_length = float(np.array(focal_length).flatten()[0])
         
         vertices = np.array(vertices)
         faces = np.array(faces).astype(np.int32)
         
-        print(f"[SAM3DBody2abc] Mesh: {len(vertices)} verts, {len(faces)} faces")
-        print(f"[SAM3DBody2abc] Camera: {cam_t}, focal: {focal_length}")
+        if cam_t is None:
+            cam_t = np.array([0.0, 0.3, 2.5])
+        else:
+            cam_t = np.array(cam_t).flatten()
         
-        # Get mesh color
-        color = self.MESH_COLORS.get(mesh_color, self.MESH_COLORS["skin"])
+        h, w = img_bgr.shape[:2]
+        if focal_length is None:
+            focal_length = max(h, w)
+        else:
+            focal_length = float(np.array(focal_length).flatten()[0])
         
-        # Render mesh
-        result = render_mesh_opencv(
-            img_bgr, vertices, faces, cam_t, focal_length, 
-            color, opacity, line_thickness, debug=True, render_mode=render_mode
-        )
+        # Render
+        if render_mode == "solid":
+            result = render_with_pyrender(img_bgr, vertices, faces, cam_t, focal_length)
+            if result is None:
+                print("[SAM3DBody2abc] Pyrender failed, using wireframe")
+                result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length)
+        else:
+            result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length)
         
-        print("[SAM3DBody2abc] [OK] Rendered overlay")
-        
-        # Convert back to ComfyUI format
+        # Convert back
         result_rgb = result[..., ::-1].copy()
         result_tensor = torch.from_numpy(result_rgb.astype(np.float32) / 255.0).unsqueeze(0)
         
@@ -276,49 +262,25 @@ class SAM3DBody2abcOverlay:
 
 
 class SAM3DBody2abcOverlayBatch:
-    """
-    Render mesh overlay on batch of images.
-    """
+    """Render mesh overlay on batch of images."""
     
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "mesh_sequence": ("MESH_SEQUENCE", {
-                    "tooltip": "Sequence of mesh data from batch processor"
-                }),
-                "images": ("IMAGE", {
-                    "tooltip": "Batch of input images"
-                }),
+                "mesh_sequence": ("MESH_SEQUENCE", {"tooltip": "Sequence of mesh data"}),
+                "images": ("IMAGE", {"tooltip": "Batch of images"}),
             },
             "optional": {
-                "mesh_color": (["skin", "blue", "green", "red", "white", "cyan", "wireframe"], {
-                    "default": "skin",
-                    "tooltip": "Color of the mesh overlay (wireframe shows edges only)"
-                }),
-                "opacity": ("FLOAT", {
-                    "default": 0.5,
-                    "min": 0.1,
-                    "max": 1.0,
-                    "step": 0.1,
-                    "tooltip": "Opacity of the mesh overlay"
-                }),
-                "line_thickness": ("INT", {
-                    "default": 1,
-                    "min": 1,
-                    "max": 5,
-                    "tooltip": "Thickness of wireframe lines"
+                "render_mode": (["solid", "wireframe"], {
+                    "default": "solid",
+                    "tooltip": "solid uses pyrender (accurate), wireframe uses OpenCV (fast)"
                 }),
                 "temporal_smoothing": ("FLOAT", {
                     "default": 0.5,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.1,
-                    "tooltip": "Temporal smoothing strength (0=none, 1=maximum)"
-                }),
-                "use_meta_renderer": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Use Meta's official renderer (more accurate). Falls back to OpenCV if unavailable."
                 }),
             }
         }
@@ -328,186 +290,81 @@ class SAM3DBody2abcOverlayBatch:
     FUNCTION = "render_batch"
     CATEGORY = "SAM3DBody2abc/Visualization"
     
-    MESH_COLORS = {
-        "skin": (200, 180, 255),
-        "blue": (255, 150, 50),
-        "green": (100, 200, 100),
-        "red": (100, 100, 255),
-        "white": (230, 230, 230),
-        "cyan": (255, 255, 100),
-        "wireframe": (100, 255, 100),  # Green wireframe
-    }
-    
     def render_batch(
         self,
         mesh_sequence: List[Dict],
         images: torch.Tensor,
-        mesh_color: str = "skin",
-        opacity: float = 0.5,
-        line_thickness: int = 1,
+        render_mode: str = "solid",
         temporal_smoothing: float = 0.5,
-        use_meta_renderer: bool = True,
     ):
-        """Render mesh overlays on batch of images with temporal smoothing."""
         import comfy.utils
-        from scipy.ndimage import gaussian_filter1d
-        
-        # Handle NaN or invalid values
-        if opacity is None or np.isnan(opacity):
-            opacity = 0.5
-        if line_thickness is None or (isinstance(line_thickness, float) and np.isnan(line_thickness)):
-            line_thickness = 1
-        line_thickness = max(1, int(line_thickness))
-        opacity = max(0.1, min(1.0, float(opacity)))
         
         print(f"[SAM3DBody2abc] Batch overlay: {len(mesh_sequence)} meshes, {images.shape[0]} images")
+        print(f"[SAM3DBody2abc] Render mode: {render_mode}")
         
-        # Try to use Meta's official renderer
-        meta_renderer = None
-        
-        if use_meta_renderer:
-            # First check if pyrender is available (required for Meta's renderer)
+        # Check pyrender
+        pyrender_available = False
+        if render_mode == "solid":
             try:
                 import pyrender
                 pyrender_available = True
-                print(f"[SAM3DBody2abc] pyrender {pyrender.__version__} available")
+                print(f"[SAM3DBody2abc] pyrender available")
             except ImportError:
-                pyrender_available = False
-                print("[SAM3DBody2abc] pyrender not installed - Meta renderer requires it")
-                print("[SAM3DBody2abc] Install with: pip install pyrender")
-            
-            if pyrender_available:
-                # Try multiple import paths
-                import sys
-                import os
-                
-                # Add potential paths where ComfyUI-SAM3DBody might be
-                comfyui_paths = [
-                    os.path.join(os.path.dirname(__file__), "..", "..", "ComfyUI-SAM3DBody"),
-                    os.path.join(os.path.dirname(__file__), "..", "..", "ComfyUI-SAM3DBody", "sam_3d_body"),
-                ]
-                
-                for path in comfyui_paths:
-                    abs_path = os.path.abspath(path)
-                    if os.path.exists(abs_path) and abs_path not in sys.path:
-                        sys.path.insert(0, abs_path)
-                        print(f"[SAM3DBody2abc] Added to path: {abs_path}")
-                
-                import_paths = [
-                    "tools.vis_utils",
-                    "sam_3d_body.tools.vis_utils",
-                ]
-                
-                for import_path in import_paths:
-                    try:
-                        module = __import__(import_path, fromlist=['visualize_sample_together'])
-                        meta_renderer = getattr(module, 'visualize_sample_together')
-                        print(f"[SAM3DBody2abc] Using Meta's official renderer from {import_path}")
-                        break
-                    except (ImportError, AttributeError) as e:
-                        continue
-                
-                if meta_renderer is None:
-                    # Try direct file import as last resort
-                    try:
-                        import importlib.util
-                        for base_path in comfyui_paths:
-                            vis_utils_path = os.path.join(os.path.abspath(base_path), "tools", "vis_utils.py")
-                            if os.path.exists(vis_utils_path):
-                                spec = importlib.util.spec_from_file_location("vis_utils", vis_utils_path)
-                                vis_utils = importlib.util.module_from_spec(spec)
-                                spec.loader.exec_module(vis_utils)
-                                meta_renderer = vis_utils.visualize_sample_together
-                                print(f"[SAM3DBody2abc] Using Meta's renderer from {vis_utils_path}")
-                                break
-                    except Exception as e:
-                        print(f"[SAM3DBody2abc] Direct import failed: {e}")
-                
-                if meta_renderer is None:
-                    print("[SAM3DBody2abc] Meta renderer not found in ComfyUI-SAM3DBody")
-                    print("[SAM3DBody2abc] Ensure ComfyUI-SAM3DBody is installed in custom_nodes")
-            
-            if meta_renderer is None:
-                print("[SAM3DBody2abc] Falling back to OpenCV renderer")
+                print("[SAM3DBody2abc] pyrender not installed, using wireframe")
+                render_mode = "wireframe"
         
-        # Determine render mode
-        render_mode = "wireframe" if mesh_color == "wireframe" else "overlay"
-        color = self.MESH_COLORS.get(mesh_color, self.MESH_COLORS["skin"])
-        
-        # Apply temporal smoothing to vertices AND camera if requested
+        # Apply temporal smoothing
         if temporal_smoothing > 0 and len(mesh_sequence) > 1:
-            print(f"[SAM3DBody2abc] Applying temporal smoothing (strength={temporal_smoothing})")
+            from scipy.ndimage import gaussian_filter1d
             
-            # Collect all vertices and cameras
-            all_vertices = []
-            all_cameras = []
+            valid_verts = []
+            valid_cams = []
             valid_indices = []
             
             for i, mesh in enumerate(mesh_sequence):
                 verts = mesh.get("vertices")
                 cam = mesh.get("camera")
-                
                 if verts is not None and mesh.get("valid", True):
                     if isinstance(verts, torch.Tensor):
                         verts = verts.cpu().numpy()
-                    all_vertices.append(np.array(verts))
-                    
-                    # Also collect camera
-                    if cam is not None:
-                        if isinstance(cam, torch.Tensor):
-                            cam = cam.cpu().numpy()
-                        all_cameras.append(np.array(cam).flatten())
-                    else:
-                        all_cameras.append(np.array([0.0, 0.3, 2.5]))
-                    
+                    if cam is not None and isinstance(cam, torch.Tensor):
+                        cam = cam.cpu().numpy()
+                    valid_verts.append(np.array(verts))
+                    valid_cams.append(np.array(cam).flatten() if cam is not None else np.array([0, 0.3, 2.5]))
                     valid_indices.append(i)
-                else:
-                    all_vertices.append(None)
-                    all_cameras.append(None)
             
-            if len(valid_indices) > 1:
-                # Stack valid vertices: (num_valid_frames, num_verts, 3)
-                valid_verts = np.stack([all_vertices[i] for i in valid_indices])
-                valid_cams = np.stack([all_cameras[i] for i in valid_indices])
+            if len(valid_verts) > 2:
+                valid_verts = np.array(valid_verts)
+                valid_cams = np.array(valid_cams)
                 
-                # Calculate sigma based on smoothing strength (0.5-3.0 range)
                 sigma = 0.5 + temporal_smoothing * 2.5
-                
-                # Apply Gaussian smoothing along time axis to vertices
                 smoothed_verts = gaussian_filter1d(valid_verts, sigma=sigma, axis=0, mode='nearest')
-                
-                # Apply Gaussian smoothing to camera positions too
                 smoothed_cams = gaussian_filter1d(valid_cams, sigma=sigma, axis=0, mode='nearest')
                 
-                # Put smoothed data back
                 for idx, orig_idx in enumerate(valid_indices):
                     mesh_sequence[orig_idx]["vertices"] = smoothed_verts[idx]
                     mesh_sequence[orig_idx]["camera"] = smoothed_cams[idx]
                 
-                print(f"[SAM3DBody2abc] Smoothing complete (sigma={sigma:.2f}, vertices + camera)")
+                print(f"[SAM3DBody2abc] Smoothing applied (sigma={sigma:.2f})")
         
-        # Process each frame
+        # Process frames
         result_frames = []
         pbar = comfy.utils.ProgressBar(len(mesh_sequence))
         
         for i, mesh in enumerate(mesh_sequence):
-            # Get corresponding image
             img_idx = min(i, images.shape[0] - 1)
             img_np = images[img_idx].cpu().numpy()
             img_np = (img_np * 255).astype(np.uint8)
             img_bgr = img_np[..., ::-1].copy()
             
-            # Check if valid mesh
             vertices = mesh.get("vertices")
             faces = mesh.get("faces")
             
             if vertices is None or faces is None or not mesh.get("valid", True):
-                # No mesh, just use original image
                 result_frames.append(img_np)
                 pbar.update(1)
                 continue
             
-            # Convert to numpy
             if isinstance(vertices, torch.Tensor):
                 vertices = vertices.cpu().numpy()
             if isinstance(faces, torch.Tensor):
@@ -516,78 +373,40 @@ class SAM3DBody2abcOverlayBatch:
             vertices = np.array(vertices)
             faces = np.array(faces).astype(np.int32)
             
-            # Get camera params
             cam_t = mesh.get("camera")
             if cam_t is not None:
                 if isinstance(cam_t, torch.Tensor):
                     cam_t = cam_t.cpu().numpy()
                 cam_t = np.array(cam_t).flatten()
+            else:
+                cam_t = np.array([0.0, 0.3, 2.5])
             
             focal_length = mesh.get("focal_length")
-            if focal_length is not None:
+            h, w = img_bgr.shape[:2]
+            if focal_length is None:
+                focal_length = max(h, w)
+            else:
                 if isinstance(focal_length, torch.Tensor):
                     focal_length = focal_length.cpu().numpy()
                 focal_length = float(np.array(focal_length).flatten()[0])
             
             # Debug first frame
             if i == 0:
-                print(f"[SAM3DBody2abc] Frame 0 debug:")
-                print(f"  - Vertices shape: {vertices.shape}")
-                print(f"  - Vertices range: X=[{vertices[:, 0].min():.3f}, {vertices[:, 0].max():.3f}], "
-                      f"Y=[{vertices[:, 1].min():.3f}, {vertices[:, 1].max():.3f}], "
-                      f"Z=[{vertices[:, 2].min():.3f}, {vertices[:, 2].max():.3f}]")
-                print(f"  - Camera: {cam_t}")
-                print(f"  - Focal length: {focal_length}")
-                print(f"  - Image size: {img_bgr.shape}")
-                print(f"  - Render mode: {render_mode}, opacity: {opacity}, line_thickness: {line_thickness}")
-                print(f"  - Using Meta renderer: {meta_renderer is not None}")
+                print(f"[SAM3DBody2abc] Frame 0: verts={vertices.shape}, cam_t={cam_t}, focal={focal_length}")
             
-            # Render using appropriate method
-            if meta_renderer is not None and render_mode != "wireframe":
-                try:
-                    # Prepare output dict for Meta's renderer
-                    output_dict = [{
-                        "pred_vertices": vertices,
-                        "pred_cam_t": cam_t if cam_t is not None else np.array([0.0, 0.3, 2.5]),
-                        "focal_length": focal_length if focal_length is not None else max(img_bgr.shape[:2]),
-                    }]
-                    result = meta_renderer(img_bgr, output_dict, faces)
-                    if isinstance(result, np.ndarray):
-                        result = result.astype(np.uint8)
-                except Exception as e:
-                    if i == 0:
-                        print(f"[SAM3DBody2abc] Meta renderer failed: {e}, falling back to OpenCV")
-                    result = render_mesh_opencv(
-                        img_bgr, vertices, faces, cam_t, focal_length, 
-                        color, opacity, line_thickness, debug=(i==0), render_mode=render_mode
-                    )
+            # Render
+            if render_mode == "solid" and pyrender_available:
+                result = render_with_pyrender(img_bgr, vertices, faces, cam_t, focal_length)
+                if result is None:
+                    result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length)
             else:
-                result = render_mesh_opencv(
-                    img_bgr, vertices, faces, cam_t, focal_length, 
-                    color, opacity, line_thickness, debug=(i==0), render_mode=render_mode
-                )
+                result = render_wireframe_opencv(img_bgr, vertices, faces, cam_t, focal_length)
             
-            # Convert BGR to RGB
             result_rgb = result[..., ::-1].copy()
             result_frames.append(result_rgb)
             pbar.update(1)
         
-        # Stack frames
-        result_tensor = torch.from_numpy(
-            np.stack(result_frames).astype(np.float32) / 255.0
-        )
+        result_tensor = torch.from_numpy(np.stack(result_frames).astype(np.float32) / 255.0)
+        print(f"[SAM3DBody2abc] Rendered {len(result_frames)} frames")
         
-        print(f"[SAM3DBody2abc] [OK] Rendered {len(result_frames)} frames")
         return (result_tensor,)
-
-
-# Node registration
-NODE_CLASS_MAPPINGS = {
-    "SAM3DBody2abc_Overlay": SAM3DBody2abcOverlay,
-    "SAM3DBody2abc_OverlayBatch": SAM3DBody2abcOverlayBatch,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "SAM3DBody2abc_Overlay": "🎨 SAM3DBody2abc Overlay",
-    "SAM3DBody2abc_OverlayBatch": "🎨 SAM3DBody2abc Overlay Batch",
-}
