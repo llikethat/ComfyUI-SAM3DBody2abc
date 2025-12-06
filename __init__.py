@@ -14,7 +14,7 @@ Prerequisites:
 
 Author: Custom Extension
 License: MIT
-Version: 2.3.5
+Version: 2.3.6
 """
 
 import os
@@ -63,6 +63,7 @@ MeshSequenceFromSAM3DBody = _mesh_accumulator.MeshSequenceFromSAM3DBody
 MeshSequencePreview = _mesh_accumulator.MeshSequencePreview
 MeshSequenceSmooth = _mesh_accumulator.MeshSequenceSmooth
 ClearMeshSequence = _mesh_accumulator.ClearMeshSequence
+MayaCameraScript = _mesh_accumulator.MayaCameraScript
 
 RenderMeshOverlay = _overlay_renderer.SAM3DBody2abcOverlay
 RenderMeshOverlayBatch = _overlay_renderer.SAM3DBody2abcOverlayBatch
@@ -82,6 +83,7 @@ NODE_CLASS_MAPPINGS = {
     "SAM3DBody2abc_Preview": MeshSequencePreview,
     "SAM3DBody2abc_Smooth": MeshSequenceSmooth,
     "SAM3DBody2abc_Clear": ClearMeshSequence,
+    "SAM3DBody2abc_MayaCamera": MayaCameraScript,
     
     # Overlay Rendering
     "SAM3DBody2abc_Overlay": RenderMeshOverlay,
@@ -103,6 +105,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SAM3DBody2abc_Preview": "👁️ SAM3DBody2abc Preview",
     "SAM3DBody2abc_Smooth": "〰️ SAM3DBody2abc Smooth",
     "SAM3DBody2abc_Clear": "🗑️ SAM3DBody2abc Clear",
+    "SAM3DBody2abc_MayaCamera": "🎥 SAM3DBody2abc Maya Camera Script",
     
     # Overlay Rendering
     "SAM3DBody2abc_Overlay": "🎨 SAM3DBody2abc Overlay",
@@ -114,5 +117,5 @@ MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
-__version__ = "2.3.5"
+__version__ = "2.3.6"
 __author__ = "Custom Extension"

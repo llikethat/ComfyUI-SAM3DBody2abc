@@ -1,6 +1,6 @@
 # ComfyUI-SAM3DBody2abc
 
-![Version](https://img.shields.io/badge/version-2.3.5-blue)
+![Version](https://img.shields.io/badge/version-2.3.6-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) that adds:
@@ -244,6 +244,66 @@ You'll need to rotate the mesh -180° around X axis in Maya.
 | Maya Film Back | 36mm × 24mm (Full Frame) |
 | Focal Length Formula | `focal_px × 36 / image_width` mm |
 
+### Static Camera Shot (Camera Fixed, Character Moving)
+
+When your real-world camera is static and the character moves through frame:
+
+**Console output example:**
+```
+Camera frame 0: [-0.017, 1.117, 3.179]
+Camera frame 46: [-0.034, 1.177, 2.612]
+Camera delta: [-0.017, 0.060, -0.567]
+```
+
+This means:
+- Character moved ~57cm **closer** to camera (Z delta = -0.567)
+- Character moved ~6cm **up** (Y delta = 0.060)
+- Character moved ~1.7cm **right** in frame (X delta = -0.017)
+
+**Maya Setup for Static Camera:**
+
+```python
+import maya.cmds as cmds
+
+# Your values from console output:
+focal_px = 686.2  # from [SAM3DBody2abc] Focal length: xxx
+image_width = 640  # your video width in pixels
+image_height = 360  # your video height in pixels
+
+# Create camera at ORIGIN (static camera)
+cam, cam_shape = cmds.camera(name='sam3d_camera')
+
+# Convert focal length: pixels → mm (assuming 36mm sensor)
+sensor_width_mm = 36.0
+focal_mm = focal_px * sensor_width_mm / image_width
+cmds.setAttr(cam_shape + '.focalLength', focal_mm)
+
+# Set film back to match your video aspect ratio
+aspect = image_width / image_height
+sensor_height_mm = sensor_width_mm / aspect
+cmds.setAttr(cam_shape + '.horizontalFilmAperture', sensor_width_mm / 25.4)  # mm to inches
+cmds.setAttr(cam_shape + '.verticalFilmAperture', sensor_height_mm / 25.4)
+
+# Camera stays at origin - mesh will move relative to it
+cmds.setAttr(cam + '.translateX', 0)
+cmds.setAttr(cam + '.translateY', 0)
+cmds.setAttr(cam + '.translateZ', 0)
+
+# Point camera down -Z axis (default in Maya)
+cmds.setAttr(cam + '.rotateX', 0)
+cmds.setAttr(cam + '.rotateY', 0)
+cmds.setAttr(cam + '.rotateZ', 0)
+
+print(f"Focal length: {focal_mm:.1f}mm")
+print(f"Film back: {sensor_width_mm:.1f}mm x {sensor_height_mm:.1f}mm")
+```
+
+**For your specific values (640x360 video, focal=686.2px):**
+```
+Focal Length = 686.2 × 36 / 640 = 38.6mm
+Film Back = 36mm × 20.25mm (16:9 aspect)
+```
+
 ## 🔄 Workflow Example
 
 ```
@@ -259,6 +319,12 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 5. Save result with VideoHelperSuite
 
 ## 📝 Changelog
+
+### v2.3.6 - Maya Camera Script Node
+- **ADDED**: New `🎥 Maya Camera Script` node - generates Python script with your solve values
+- **ADDED**: Script includes focal length, film back, resolution, camera delta info
+- **UPDATED**: Workflow now includes Maya Camera Script node with ShowText output
+- Copy the generated script directly into Maya's Script Editor!
 
 ### v2.3.5 - World-Space Translation Fix
 - **FIXED**: Character now translates in world-space when moving (uses cam_t delta)
