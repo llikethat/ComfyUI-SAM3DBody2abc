@@ -53,6 +53,10 @@ class ExportAnimatedAlembic:
                     "default": True,
                     "tooltip": "Apply camera transform to match overlay render (recommended for Maya)"
                 }),
+                "static_camera": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "For static camera shots (sports, surveillance). Places all characters in absolute world positions."
+                }),
                 "include_joints": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include joint positions as point cloud"
@@ -146,6 +150,7 @@ class ExportAnimatedAlembic:
         fps: float = 24.0,
         output_dir: str = "",
         world_space: bool = True,
+        static_camera: bool = False,
         include_joints: bool = True,
         scale: float = 1.0,
         up_axis: str = "Y",
@@ -157,7 +162,12 @@ class ExportAnimatedAlembic:
         
         If world_space=True, applies the same transforms as the overlay renderer:
         - 180° rotation around X axis
-        - This makes the mesh appear correctly oriented in Maya/Houdini
+        - Camera-relative translation for character movement
+        
+        If static_camera=True (for sports/surveillance):
+        - Places each character at their absolute world position
+        - All characters share the same world coordinate system
+        - Camera is effectively at origin
         """
         # Setup output path
         if not output_dir:
@@ -180,63 +190,110 @@ class ExportAnimatedAlembic:
         
         # Apply world_space transform (same as overlay renderer)
         if world_space and not center_mesh:
-            print("[ExportAnimatedAlembic] Applying world-space transform (rotation + translation)")
-            
-            # Get reference camera from first frame (for relative positioning)
-            ref_cam = valid_frames[0].get("camera")
-            if ref_cam is not None:
-                if hasattr(ref_cam, 'cpu'):
-                    ref_cam = ref_cam.cpu().numpy()
-                ref_cam = np.array(ref_cam).flatten()
-            else:
-                ref_cam = np.array([0.0, 0.0, 0.0])
-            
-            # Also check last frame's camera for comparison
-            last_cam = valid_frames[-1].get("camera")
-            if last_cam is not None:
-                if hasattr(last_cam, 'cpu'):
-                    last_cam = last_cam.cpu().numpy()
-                last_cam = np.array(last_cam).flatten()
-                print(f"[ExportAnimatedAlembic] Camera frame 0: {ref_cam}")
-                print(f"[ExportAnimatedAlembic] Camera frame {len(valid_frames)-1}: {last_cam}")
-                print(f"[ExportAnimatedAlembic] Camera delta: {last_cam - ref_cam}")
-            
-            for i, frame in enumerate(valid_frames):
-                verts = np.array(frame["vertices"])
+            if static_camera:
+                # STATIC CAMERA MODE: For sports, surveillance, wide shots
+                # Each character is placed at their absolute world position
+                # Camera is at origin, characters move in world space
+                print("[ExportAnimatedAlembic] Static camera mode - placing characters at absolute positions")
                 
-                # Get camera translation for this frame
-                cam_t = frame.get("camera")
-                offset = np.array([0.0, 0.0, 0.0])
-                
-                if cam_t is not None:
-                    if hasattr(cam_t, 'cpu'):
-                        cam_t = cam_t.cpu().numpy()
-                    cam_t = np.array(cam_t).flatten()
+                for i, frame in enumerate(valid_frames):
+                    verts = np.array(frame["vertices"])
                     
-                    # Calculate offset relative to first frame
-                    # cam_t[0] is flipped in Meta's convention
-                    camera_trans = np.array([-cam_t[0], cam_t[1], cam_t[2]])
-                    ref_trans = np.array([-ref_cam[0], ref_cam[1], ref_cam[2]])
-                    offset = camera_trans - ref_trans
+                    # Get camera translation for this frame
+                    cam_t = frame.get("camera")
+                    
+                    if cam_t is not None:
+                        if hasattr(cam_t, 'cpu'):
+                            cam_t = cam_t.cpu().numpy()
+                        cam_t = np.array(cam_t).flatten()
+                        
+                        # cam_t = [x, y, z] means camera at (x, y, z) relative to person
+                        # So person is at (-x, -y, -z) relative to camera
+                        # With camera at origin, person position = -cam_t (with X flip)
+                        person_pos = np.array([cam_t[0], -cam_t[1], -cam_t[2]])
+                    else:
+                        person_pos = np.array([0.0, 0.0, 0.0])
+                    
+                    # Step 1: Apply 180° rotation around X axis (negate Y and Z)
+                    verts[:, 1] = -verts[:, 1]
+                    verts[:, 2] = -verts[:, 2]
+                    
+                    # Step 2: Translate to world position
+                    verts = verts + person_pos
+                    
+                    frame["vertices"] = verts
+                    
+                    # Also transform joints if present
+                    if frame.get("joints") is not None:
+                        joints = np.array(frame["joints"])
+                        joints[:, 1] = -joints[:, 1]
+                        joints[:, 2] = -joints[:, 2]
+                        joints = joints + person_pos
+                        frame["joints"] = joints
+                    
+                    if i == 0:
+                        person_idx = frame.get("person_index", 0)
+                        print(f"[ExportAnimatedAlembic] Person {person_idx} frame 0 position: {person_pos}")
+            else:
+                # TRACKING CAMERA MODE: Camera follows the subject
+                # First frame is reference, subsequent frames show relative movement
+                print("[ExportAnimatedAlembic] Tracking camera mode - relative to first frame")
                 
-                # Step 1: Apply 180° rotation around X axis (negate Y and Z)
-                verts[:, 1] = -verts[:, 1]
-                verts[:, 2] = -verts[:, 2]
+                # Get reference camera from first frame (for relative positioning)
+                ref_cam = valid_frames[0].get("camera")
+                if ref_cam is not None:
+                    if hasattr(ref_cam, 'cpu'):
+                        ref_cam = ref_cam.cpu().numpy()
+                    ref_cam = np.array(ref_cam).flatten()
+                else:
+                    ref_cam = np.array([0.0, 0.0, 0.0])
                 
-                # Step 2: Apply camera translation offset (also rotated 180° around X)
-                # In rotated space: X stays same, Y and Z are negated
-                rotated_offset = np.array([offset[0], -offset[1], -offset[2]])
-                verts = verts - rotated_offset
+                # Also check last frame's camera for comparison
+                last_cam = valid_frames[-1].get("camera")
+                if last_cam is not None:
+                    if hasattr(last_cam, 'cpu'):
+                        last_cam = last_cam.cpu().numpy()
+                    last_cam = np.array(last_cam).flatten()
+                    print(f"[ExportAnimatedAlembic] Camera frame 0: {ref_cam}")
+                    print(f"[ExportAnimatedAlembic] Camera frame {len(valid_frames)-1}: {last_cam}")
+                    print(f"[ExportAnimatedAlembic] Camera delta: {last_cam - ref_cam}")
                 
-                frame["vertices"] = verts
-                
-                # Also transform joints if present
-                if frame.get("joints") is not None:
-                    joints = np.array(frame["joints"])
-                    joints[:, 1] = -joints[:, 1]
-                    joints[:, 2] = -joints[:, 2]
-                    joints = joints - rotated_offset
-                    frame["joints"] = joints
+                for i, frame in enumerate(valid_frames):
+                    verts = np.array(frame["vertices"])
+                    
+                    # Get camera translation for this frame
+                    cam_t = frame.get("camera")
+                    offset = np.array([0.0, 0.0, 0.0])
+                    
+                    if cam_t is not None:
+                        if hasattr(cam_t, 'cpu'):
+                            cam_t = cam_t.cpu().numpy()
+                        cam_t = np.array(cam_t).flatten()
+                        
+                        # Calculate offset relative to first frame
+                        # cam_t[0] is flipped in Meta's convention
+                        camera_trans = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+                        ref_trans = np.array([-ref_cam[0], ref_cam[1], ref_cam[2]])
+                        offset = camera_trans - ref_trans
+                    
+                    # Step 1: Apply 180° rotation around X axis (negate Y and Z)
+                    verts[:, 1] = -verts[:, 1]
+                    verts[:, 2] = -verts[:, 2]
+                    
+                    # Step 2: Apply camera translation offset (also rotated 180° around X)
+                    # In rotated space: X stays same, Y and Z are negated
+                    rotated_offset = np.array([offset[0], -offset[1], -offset[2]])
+                    verts = verts - rotated_offset
+                    
+                    frame["vertices"] = verts
+                    
+                    # Also transform joints if present
+                    if frame.get("joints") is not None:
+                        joints = np.array(frame["joints"])
+                        joints[:, 1] = -joints[:, 1]
+                        joints[:, 2] = -joints[:, 2]
+                        joints = joints - rotated_offset
+                        frame["joints"] = joints
         
         # Apply temporal smoothing to reduce jitter
         if temporal_smoothing > 0:

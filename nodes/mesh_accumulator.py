@@ -374,17 +374,8 @@ class MayaCameraScript:
                 "mesh_sequence": ("MESH_SEQUENCE",),
             },
             "optional": {
-                "image_width": ("INT", {
-                    "default": 1920,
-                    "min": 1,
-                    "max": 8192,
-                    "tooltip": "Width of source video in pixels"
-                }),
-                "image_height": ("INT", {
-                    "default": 1080,
-                    "min": 1,
-                    "max": 8192,
-                    "tooltip": "Height of source video in pixels"
+                "images": ("IMAGE", {
+                    "tooltip": "Connect to get resolution automatically from video frames"
                 }),
                 "sensor_width_mm": ("FLOAT", {
                     "default": 36.0,
@@ -411,12 +402,25 @@ class MayaCameraScript:
     def generate_script(
         self,
         mesh_sequence: List[Dict],
-        image_width: int = 1920,
-        image_height: int = 1080,
+        images: torch.Tensor = None,
         sensor_width_mm: float = 36.0,
         scale: float = 1.0,
     ) -> Tuple[str]:
         """Generate Maya Python script for camera setup."""
+        
+        # Get resolution from images if provided
+        if images is not None:
+            # images shape: [N, H, W, C]
+            image_height = images.shape[1]
+            image_width = images.shape[2]
+        else:
+            # Fallback - try to get from mesh_sequence metadata
+            image_width = 1920
+            image_height = 1080
+            for frame in mesh_sequence:
+                if frame.get("image_size"):
+                    image_width, image_height = frame["image_size"]
+                    break
         
         # Get data from first valid frame
         focal_px = None

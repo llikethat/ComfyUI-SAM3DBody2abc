@@ -14,7 +14,7 @@ Prerequisites:
 
 Author: Custom Extension
 License: MIT
-Version: 2.3.6
+Version: 2.3.9
 """
 
 import os
@@ -117,5 +117,5 @@ MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
-__version__ = "2.3.6"
+__version__ = "2.3.9"
 __author__ = "Custom Extension"

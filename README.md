@@ -1,6 +1,6 @@
 # ComfyUI-SAM3DBody2abc
 
-![Version](https://img.shields.io/badge/version-2.3.6-blue)
+![Version](https://img.shields.io/badge/version-2.3.9-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) that adds:
@@ -304,6 +304,68 @@ Focal Length = 686.2 × 36 / 640 = 38.6mm
 Film Back = 36mm × 20.25mm (16:9 aspect)
 ```
 
+## 👥 Multi-Character Tracking with SAM3
+
+For videos with multiple people (sports, group scenes), use [ComfyUI-SAM3](https://github.com/neverbiasu/ComfyUI-SAM3) to select specific characters before processing.
+
+### Installation
+
+```bash
+# Install ComfyUI-SAM3 in your custom_nodes folder
+cd ComfyUI/custom_nodes
+git clone https://github.com/neverbiasu/ComfyUI-SAM3
+cd ComfyUI-SAM3
+pip install -r requirements.txt
+```
+
+### Workflow: Select Character → 3D Mesh → Export
+
+```
+[Load Video] → [LoadSAM3Model] → [SAM3VideoSegmentation]
+                                   ↓ (click/text prompt)
+                           [SAM3Propagate]
+                                   ↓
+                           [SAM3VideoOutput]
+                                   ↓ MASK
+[SAM3DBody2abc BatchProcessor] ← mask input
+           ↓
+[ExportAlembic] → character_1.abc
+```
+
+### Prompt Types
+
+| Mode | How to Use | Example |
+|------|------------|---------|
+| **Text** | Describe the character | "player in red", "goalkeeper" |
+| **Point** | Click on the character | Use SAM3CreatePoint nodes |
+| **Box** | Draw box around character | Use SAM3CreateBox nodes |
+
+### Multi-Character Export
+
+For each character:
+1. Create separate `SAM3VideoSegmentation` with different prompts
+2. Each produces separate MASK output
+3. Connect each mask to separate `BatchProcessor`
+4. Export to separate Alembic files
+
+**Will SAM3 track reliably?** SAM3's video tracking is generally robust, but:
+- ✅ Works well for clear, distinct subjects
+- ✅ Handles moderate occlusion
+- ⚠️ Fast motion or motion blur can cause brief tracking loss
+- ⚠️ Similar-looking subjects may require point prompts for disambiguation
+- 💡 Use text prompts like "person on left" or click prompts for ambiguous cases
+
+### Static Camera (Sports/Surveillance)
+
+For fixed-camera shots with multiple moving characters:
+
+```
+BatchProcessor → ExportAlembic
+                  ├── world_space: True
+                  ├── static_camera: True  ← All characters at world positions
+                  └── person_index: -1     ← All detected people
+```
+
 ## 🔄 Workflow Example
 
 ```
@@ -319,6 +381,28 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 5. Save result with VideoHelperSuite
 
 ## 📝 Changelog
+
+### v2.3.9 - ComfyUI-SAM3 Integration & Per-Frame Masks
+- **ADDED**: Full support for per-frame masks from ComfyUI-SAM3
+- **ADDED**: Auto-detection of per-frame vs single mask input
+- **IMPROVED**: Mask bounding box computed per-frame for accurate tracking
+- **DOCS**: Added workflow guide for multi-character segmentation with SAM3
+- **NOTE**: Use [ComfyUI-SAM3](https://github.com/neverbiasu/ComfyUI-SAM3) for character selection
+
+### v2.3.8 - Static Camera Mode for Sports/Surveillance
+- **ADDED**: `static_camera` option in Alembic export
+  - For wide shots where camera is fixed (sports, surveillance, multi-person scenes)
+  - Places all characters at their absolute world positions
+  - Camera at origin, characters move independently in world space
+- **IMPROVED**: Tracking camera mode now clearly labeled in console output
+
+### v2.3.7 - Multi-Character Support & Workflow Fixes
+- **ADDED**: `person_index` parameter (-1=all, 0=first, 1=second, etc.)
+- **ADDED**: `person_count` output showing max people detected across frames
+- **ADDED**: Status message now shows character count
+- **FIXED**: Maya Camera Script now pulls resolution from input images automatically
+- **FIXED**: Workflow JSON updated with proper connections
+- **ADDED**: `image_size` stored in mesh data for resolution tracking
 
 ### v2.3.6 - Maya Camera Script Node
 - **ADDED**: New `🎥 Maya Camera Script` node - generates Python script with your solve values

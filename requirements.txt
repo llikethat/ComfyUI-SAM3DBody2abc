@@ -45,6 +45,17 @@ scipy>=1.7.0
 #   pip install -e "git+https://github.com/cvg/GeoCalib#egg=geocalib"
 #
 # ============================================================
+# OPTIONAL: SAM3 Multi-Character Segmentation
+# ============================================================
+# For selecting specific characters in multi-person videos.
+# Use the ComfyUI-SAM3 extension (NOT the raw sam3 package):
+#
+#   https://github.com/neverbiasu/ComfyUI-SAM3
+#
+# Install it as a ComfyUI custom node, then connect:
+#   SAM3VideoOutput → mask → SAM3DBody2abc BatchProcessor
+#
+# ============================================================
 
 # Required ComfyUI custom nodes (install separately):
 # - ComfyUI-SAM3DBody: https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody

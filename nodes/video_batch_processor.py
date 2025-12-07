@@ -104,11 +104,18 @@ class SAM3DBodyBatchProcessor:
                     "step": 1,
                     "tooltip": "Number of frames to process in parallel (higher = faster but more VRAM). Try 4-8 for better GPU usage."
                 }),
+                "person_index": ("INT", {
+                    "default": 0,
+                    "min": -1,
+                    "max": 10,
+                    "step": 1,
+                    "tooltip": "Which person to track (-1=all, 0=first/largest, 1=second, etc.)"
+                }),
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT")
-    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status", "focal_length")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT", "INT")
+    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status", "focal_length", "person_count")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc/Video"
     
@@ -433,11 +440,14 @@ class SAM3DBodyBatchProcessor:
         focal_length_px: float = 0.0,
         auto_calibrate: bool = False,
         batch_size: int = 1,
+        person_index: int = 0,
     ):
         """Process video frames through SAM3DBody."""
         import comfy.utils
         
         print(f"[SAM3DBody2abc] Starting batch 3D mesh reconstruction...")
+        print(f"[SAM3DBody2abc] Inference type: {inference_type}")
+        print(f"[SAM3DBody2abc] Person index: {person_index} (-1=all, 0=first)")
         print(f"[SAM3DBody2abc] Inference type: {inference_type}")
         
         # Calculate frame range
@@ -514,6 +524,7 @@ class SAM3DBodyBatchProcessor:
             
             mesh_sequence = []
             valid_count = 0
+            max_people_detected = 0
             # Use custom focal length if we calculated one, otherwise 0 to be updated later
             first_focal_length = custom_focal_length if custom_focal_length else 0.0
             
@@ -531,15 +542,24 @@ class SAM3DBodyBatchProcessor:
                 print(f"[SAM3DBody2abc] CUDA enabled: {torch.cuda.get_device_name(0)}")
                 print(f"[SAM3DBody2abc] VRAM available: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
             
-            # Process mask if provided
-            mask_np = None
+            # Process mask if provided - supports per-frame masks from SAM3
+            masks_np = None
+            per_frame_mask = False
             if mask is not None:
                 if isinstance(mask, torch.Tensor):
-                    mask_np = mask.cpu().numpy()
+                    masks_np = mask.cpu().numpy()
                 else:
-                    mask_np = np.array(mask)
-                if mask_np.ndim == 3:
-                    mask_np = mask_np[0]  # Take first mask if batch
+                    masks_np = np.array(mask)
+                
+                # Check if we have per-frame masks [N, H, W] or single mask [H, W]
+                if masks_np.ndim == 3 and masks_np.shape[0] == len(frame_indices):
+                    per_frame_mask = True
+                    print(f"[SAM3DBody2abc] Using per-frame masks from SAM3: {masks_np.shape}")
+                elif masks_np.ndim == 3:
+                    masks_np = masks_np[0]  # Take first mask if batch but not matching frames
+                    print(f"[SAM3DBody2abc] Using single mask for all frames: {masks_np.shape}")
+                else:
+                    print(f"[SAM3DBody2abc] Using single mask for all frames: {masks_np.shape}")
             
             pbar = comfy.utils.ProgressBar(len(frame_indices))
             
@@ -549,10 +569,18 @@ class SAM3DBodyBatchProcessor:
                     frame_tensor = images[frame_idx:frame_idx+1]
                     img_bgr = self._comfy_image_to_numpy(frame_tensor)
                     
+                    # Get mask for this frame
+                    frame_mask = None
+                    if masks_np is not None:
+                        if per_frame_mask:
+                            frame_mask = masks_np[idx]  # Use frame-specific mask
+                        else:
+                            frame_mask = masks_np  # Use same mask for all frames
+                    
                     # Compute bbox from mask if provided
                     bboxes = None
-                    if mask_np is not None:
-                        bboxes = self._compute_bbox_from_mask(mask_np)
+                    if frame_mask is not None:
+                        bboxes = self._compute_bbox_from_mask(frame_mask)
                     
                     # Save image to temporary file (required by SAM3DBodyEstimator)
                     with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -565,9 +593,9 @@ class SAM3DBodyBatchProcessor:
                             outputs = estimator.process_one_image(
                                 tmp_path,
                                 bboxes=bboxes,
-                                masks=mask_np,
+                                masks=frame_mask,
                                 bbox_thr=bbox_threshold,
-                                use_mask=(mask_np is not None),
+                                use_mask=(frame_mask is not None),
                                 inference_type=inference_type,
                             )
                         
@@ -585,76 +613,103 @@ class SAM3DBodyBatchProcessor:
                     
                     # Check if we got valid output
                     if outputs and len(outputs) > 0:
-                        output = outputs[0]  # Take first person
+                        # Track max people detected across all frames
+                        num_people = len(outputs)
+                        if num_people > max_people_detected:
+                            max_people_detected = num_people
                         
-                        # Extract vertices
-                        vertices = output.get("pred_vertices", None)
-                        if vertices is not None:
-                            if isinstance(vertices, torch.Tensor):
-                                vertices = vertices.cpu().numpy()
+                        # Select which person(s) to process
+                        if person_index == -1:
+                            # All people - create separate entries for each
+                            persons_to_process = list(range(num_people))
+                        elif person_index < num_people:
+                            persons_to_process = [person_index]
+                        else:
+                            # Requested person index doesn't exist, fall back to first
+                            persons_to_process = [0]
                         
-                        # Extract joints
-                        joints = output.get("pred_joint_coords", None)
-                        if joints is None:
-                            joints = output.get("pred_keypoints_3d", None)
-                        if joints is not None:
-                            if isinstance(joints, torch.Tensor):
-                                joints = joints.cpu().numpy()
+                        for p_idx in persons_to_process:
+                            output = outputs[p_idx]
+                            
+                            # Extract vertices
+                            vertices = output.get("pred_vertices", None)
+                            if vertices is not None:
+                                if isinstance(vertices, torch.Tensor):
+                                    vertices = vertices.cpu().numpy()
+                            
+                            # Extract joints
+                            joints = output.get("pred_joint_coords", None)
+                            if joints is None:
+                                joints = output.get("pred_keypoints_3d", None)
+                            if joints is not None:
+                                if isinstance(joints, torch.Tensor):
+                                    joints = joints.cpu().numpy()
+                            
+                            # Extract joint rotations for FBX export
+                            joint_rotations = output.get("pred_global_rots", None)
+                            if joint_rotations is not None:
+                                if isinstance(joint_rotations, torch.Tensor):
+                                    joint_rotations = joint_rotations.cpu().numpy()
+                            
+                            # Extract camera
+                            camera = output.get("pred_cam_t", None)
+                            if camera is not None:
+                                if isinstance(camera, torch.Tensor):
+                                    camera = camera.cpu().numpy()
+                            
+                            # Extract focal length - prefer our custom FOV-based calculation
+                            focal_length = output.get("focal_length", None)
+                            if focal_length is not None:
+                                if isinstance(focal_length, torch.Tensor):
+                                    focal_length = focal_length.cpu().numpy()
+                            
+                            # Override with custom focal length if we calculated one from FOV
+                            if custom_focal_length is not None:
+                                focal_length = custom_focal_length
+                            
+                            mesh_data = {
+                                "frame_index": idx,
+                                "source_frame": frame_idx,
+                                "person_index": p_idx,
+                                "valid": vertices is not None,
+                                "vertices": vertices,
+                                "faces": estimator.faces if hasattr(estimator, 'faces') else None,
+                                "joints": joints,
+                                "joint_parents": joint_parents,  # From model (constant)
+                                "joint_rotations": joint_rotations,
+                                "camera": camera,
+                                "focal_length": focal_length,
+                                "image_size": (img_w, img_h),
+                                "bbox": output.get("bbox", None),
+                                "pose_params": {
+                                    "body_pose": output.get("body_pose_params", None),
+                                    "hand_pose": output.get("hand_pose_params", None),
+                                    "global_rot": output.get("global_rot", None),
+                                    "shape": output.get("shape_params", None),
+                                },
+                            }
+                            
+                            mesh_sequence.append(mesh_data)
+                            
+                            if vertices is not None:
+                                valid_count += 1
+                                if valid_count == 1:
+                                    print(f"[SAM3DBody2abc] First valid mesh: {vertices.shape[0]} vertices (person {p_idx})")
+                                    if joints is not None:
+                                        print(f"[SAM3DBody2abc] Joint data: {joints.shape[0]} joints")
+                                    if focal_length is not None:
+                                        fl_val = float(np.array(focal_length).flatten()[0]) if hasattr(focal_length, '__len__') else float(focal_length)
+                                        first_focal_length = fl_val
+                                        print(f"[SAM3DBody2abc] Focal length: {fl_val:.2f}")
                         
-                        # Extract joint rotations for FBX export
-                        joint_rotations = output.get("pred_global_rots", None)
-                        if joint_rotations is not None:
-                            if isinstance(joint_rotations, torch.Tensor):
-                                joint_rotations = joint_rotations.cpu().numpy()
-                        
-                        # Extract camera
-                        camera = output.get("pred_cam_t", None)
-                        if camera is not None:
-                            if isinstance(camera, torch.Tensor):
-                                camera = camera.cpu().numpy()
-                        
-                        # Extract focal length - prefer our custom FOV-based calculation
-                        focal_length = output.get("focal_length", None)
-                        if focal_length is not None:
-                            if isinstance(focal_length, torch.Tensor):
-                                focal_length = focal_length.cpu().numpy()
-                        
-                        # Override with custom focal length if we calculated one from FOV
-                        if custom_focal_length is not None:
-                            focal_length = custom_focal_length
-                        
-                        mesh_data = {
-                            "frame_index": idx,
-                            "source_frame": frame_idx,
-                            "valid": vertices is not None,
-                            "vertices": vertices,
-                            "faces": estimator.faces if hasattr(estimator, 'faces') else None,
-                            "joints": joints,
-                            "joint_parents": joint_parents,  # From model (constant)
-                            "joint_rotations": joint_rotations,
-                            "camera": camera,
-                            "focal_length": focal_length,
-                            "bbox": output.get("bbox", None),
-                            "pose_params": {
-                                "body_pose": output.get("body_pose_params", None),
-                                "hand_pose": output.get("hand_pose_params", None),
-                                "global_rot": output.get("global_rot", None),
-                                "shape": output.get("shape_params", None),
-                            },
-                        }
-                        
-                        mesh_sequence.append(mesh_data)
-                        
-                        if vertices is not None:
-                            valid_count += 1
-                            if valid_count == 1:
-                                print(f"[SAM3DBody2abc] First valid mesh: {vertices.shape[0]} vertices")
-                                if joints is not None:
-                                    print(f"[SAM3DBody2abc] Joint data: {joints.shape[0]} joints")
-                                if focal_length is not None:
-                                    fl_val = float(np.array(focal_length).flatten()[0]) if hasattr(focal_length, '__len__') else float(focal_length)
-                                    first_focal_length = fl_val
-                                    print(f"[SAM3DBody2abc] Focal length: {fl_val:.2f}")
+                        # If processing all people but none valid, add empty frame
+                        if person_index == -1 and len(persons_to_process) == 0:
+                            mesh_sequence.append({
+                                "frame_index": idx,
+                                "source_frame": frame_idx,
+                                "person_index": 0,
+                                "valid": False,
+                            })
                     else:
                         mesh_sequence.append({
                             "frame_index": idx,
@@ -676,20 +731,21 @@ class SAM3DBodyBatchProcessor:
             # Return processed frames
             output_images = images[frame_indices]
             
-            status = f"Processed {len(frame_indices)} frames, {valid_count} valid meshes"
+            person_info = f", {max_people_detected} person(s) detected" if max_people_detected > 0 else ""
+            status = f"Processed {len(frame_indices)} frames, {valid_count} valid meshes{person_info}"
             print(f"[SAM3DBody2abc] [OK] {status}")
             
-            return (mesh_sequence, output_images, len(frame_indices), status, first_focal_length)
+            return (mesh_sequence, output_images, len(frame_indices), status, first_focal_length, max_people_detected)
             
         except ImportError as e:
             print(f"[SAM3DBody2abc] [ERROR] Failed to import sam_3d_body")
-            return ([], images[:1], 0, f"Error: {e}", 0.0)
+            return ([], images[:1], 0, f"Error: {e}", 0.0, 0)
             
         except Exception as e:
             print(f"[SAM3DBody2abc] [ERROR] Batch processing failed: {e}")
             import traceback
             traceback.print_exc()
-            return ([], images[:1], 0, f"Error: {e}", 0.0)
+            return ([], images[:1], 0, f"Error: {e}", 0.0, 0)
 
 
 class SAM3DBodySequenceProcess:
