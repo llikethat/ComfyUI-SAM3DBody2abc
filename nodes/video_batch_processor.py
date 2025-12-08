@@ -114,8 +114,8 @@ class SAM3DBodyBatchProcessor:
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT", "INT")
-    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status", "focal_length", "person_count")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("mesh_sequence", "images", "frame_count", "status", "focal_length_info", "person_count_info")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc/Video"
     
@@ -617,25 +617,45 @@ class SAM3DBodyBatchProcessor:
                         num_people = len(outputs)
                         if num_people > max_people_detected:
                             max_people_detected = num_people
-                            if num_people > 1:
-                                print(f"[SAM3DBody2abc] Frame {frame_idx}: Detected {num_people} people")
+                            print(f"[SAM3DBody2abc] Frame {frame_idx}: Detected {num_people} people")
+                        
+                        # Sort people by bbox X position (left to right) for consistent IDs
+                        people_with_idx = []
+                        for orig_idx, output in enumerate(outputs):
+                            bbox = output.get("bbox", None)
+                            if bbox is not None:
+                                # bbox format: [x1, y1, x2, y2]
+                                center_x = (bbox[0] + bbox[2]) / 2
+                            else:
+                                center_x = orig_idx * 1000  # Fallback
+                            people_with_idx.append((center_x, orig_idx, output))
+                        
+                        # Sort by X position (left to right)
+                        people_with_idx.sort(key=lambda x: x[0])
                         
                         # Select which person(s) to process
                         if person_index == -1:
-                            # All people - create separate entries for each
-                            persons_to_process = list(range(num_people))
-                            if idx == 0 and num_people > 1:
+                            # All people - use sorted order for consistent IDs
+                            persons_to_process = [(sorted_idx, item[1], item[2]) 
+                                                  for sorted_idx, item in enumerate(people_with_idx)]
+                            if idx == 0:
                                 print(f"[SAM3DBody2abc] person_index=-1: Processing ALL {num_people} detected people")
+                                for sorted_idx, (cx, orig_idx, _) in enumerate(people_with_idx):
+                                    print(f"[SAM3DBody2abc]   Person {sorted_idx}: bbox_center_x={cx:.0f}")
                         elif person_index < num_people:
-                            persons_to_process = [person_index]
+                            # Get the person at the sorted index
+                            if person_index < len(people_with_idx):
+                                _, orig_idx, output = people_with_idx[person_index]
+                                persons_to_process = [(person_index, orig_idx, output)]
+                            else:
+                                persons_to_process = [(0, 0, outputs[0])]
                         else:
                             # Requested person index doesn't exist, fall back to first
-                            persons_to_process = [0]
+                            persons_to_process = [(0, 0, outputs[0])]
                             if idx == 0:
-                                print(f"[SAM3DBody2abc] Warning: person_index={person_index} not found, using 0")
+                                print(f"[SAM3DBody2abc] Warning: person_index={person_index} not found (only {num_people}), using 0")
                         
-                        for p_idx in persons_to_process:
-                            output = outputs[p_idx]
+                        for sorted_idx, orig_idx, output in persons_to_process:
                             
                             # Extract vertices
                             vertices = output.get("pred_vertices", None)
@@ -673,10 +693,17 @@ class SAM3DBodyBatchProcessor:
                             if custom_focal_length is not None:
                                 focal_length = custom_focal_length
                             
+                            # Get bbox for auto-ID naming
+                            bbox = output.get("bbox", None)
+                            bbox_center_x = None
+                            if bbox is not None:
+                                bbox_center_x = (bbox[0] + bbox[2]) / 2
+                            
                             mesh_data = {
                                 "frame_index": idx,
                                 "source_frame": frame_idx,
-                                "person_index": p_idx,
+                                "person_index": sorted_idx,  # Use sorted index for consistent IDs
+                                "person_bbox_x": bbox_center_x,  # For auto-naming
                                 "valid": vertices is not None,
                                 "vertices": vertices,
                                 "faces": estimator.faces if hasattr(estimator, 'faces') else None,
@@ -686,7 +713,7 @@ class SAM3DBodyBatchProcessor:
                                 "camera": camera,
                                 "focal_length": focal_length,
                                 "image_size": (img_w, img_h),
-                                "bbox": output.get("bbox", None),
+                                "bbox": bbox,
                                 "pose_params": {
                                     "body_pose": output.get("body_pose_params", None),
                                     "hand_pose": output.get("hand_pose_params", None),
@@ -700,7 +727,7 @@ class SAM3DBodyBatchProcessor:
                             if vertices is not None:
                                 valid_count += 1
                                 if valid_count == 1:
-                                    print(f"[SAM3DBody2abc] First valid mesh: {vertices.shape[0]} vertices (person {p_idx})")
+                                    print(f"[SAM3DBody2abc] First valid mesh: {vertices.shape[0]} vertices (person {sorted_idx})")
                                     if joints is not None:
                                         print(f"[SAM3DBody2abc] Joint data: {joints.shape[0]} joints")
                                     if focal_length is not None:
@@ -741,17 +768,21 @@ class SAM3DBodyBatchProcessor:
             status = f"Processed {len(frame_indices)} frames, {valid_count} valid meshes{person_info}"
             print(f"[SAM3DBody2abc] [OK] {status}")
             
-            return (mesh_sequence, output_images, len(frame_indices), status, first_focal_length, max_people_detected)
+            # Format outputs as strings for display compatibility
+            focal_info = f"Focal length: {first_focal_length:.2f} px" if first_focal_length > 0 else "Focal length: auto"
+            person_info_str = f"Detected: {max_people_detected} person(s)"
+            
+            return (mesh_sequence, output_images, len(frame_indices), status, focal_info, person_info_str)
             
         except ImportError as e:
             print(f"[SAM3DBody2abc] [ERROR] Failed to import sam_3d_body")
-            return ([], images[:1], 0, f"Error: {e}", 0.0, 0)
+            return ([], images[:1], 0, f"Error: {e}", "Error", "0 persons")
             
         except Exception as e:
             print(f"[SAM3DBody2abc] [ERROR] Batch processing failed: {e}")
             import traceback
             traceback.print_exc()
-            return ([], images[:1], 0, f"Error: {e}", 0.0, 0)
+            return ([], images[:1], 0, f"Error: {e}", "Error", "0 persons")
 
 
 class SAM3DBodySequenceProcess:

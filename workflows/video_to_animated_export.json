@@ -1,6 +1,6 @@
 {
-  "last_node_id": 13,
-  "last_link_id": 16,
+  "last_node_id": 18,
+  "last_link_id": 22,
   "nodes": [
     {
       "id": 1,
@@ -36,8 +36,8 @@
     {
       "id": 3,
       "type": "SAM3DBody2abc_BatchProcessor",
-      "pos": [450, 200],
-      "size": {"0": 350, "1": 350},
+      "pos": [450, 150],
+      "size": {"0": 380, "1": 420},
       "flags": {},
       "order": 2,
       "mode": 0,
@@ -47,21 +47,34 @@
         {"name": "mask", "type": "MASK", "link": null}
       ],
       "outputs": [
-        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [3, 4, 13], "slot_index": 0},
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [3, 4, 17, 19], "slot_index": 0},
         {"name": "images", "type": "IMAGE", "links": [5, 15], "slot_index": 1},
         {"name": "frame_count", "type": "INT", "links": null, "slot_index": 2},
         {"name": "status", "type": "STRING", "links": [6], "slot_index": 3},
-        {"name": "focal_length", "type": "FLOAT", "links": null, "slot_index": 4},
-        {"name": "person_count", "type": "INT", "links": [16], "slot_index": 5}
+        {"name": "focal_length_info", "type": "STRING", "links": [21], "slot_index": 4},
+        {"name": "person_count_info", "type": "STRING", "links": [16], "slot_index": 5}
       ],
-      "title": "🎬 SAM3DBody2abc Batch Processor",
+      "title": "🎬 Batch Processor",
       "properties": {"Node name for S&R": "SAM3DBody2abc_BatchProcessor"},
-      "widgets_values": [0.8, "full", 0, -1, 1, 55.0, 0.0, 0.0, 0.0, false, 1, 0]
+      "widgets_values": [
+        0.8,
+        "full",
+        0,
+        -1,
+        1,
+        55.0,
+        0.0,
+        0.0,
+        0.0,
+        true,
+        0,
+        0
+      ]
     },
     {
       "id": 4,
       "type": "SAM3DBody2abc_ExportAlembic",
-      "pos": [900, 100],
+      "pos": [900, 50],
       "size": {"0": 350, "1": 280},
       "flags": {},
       "order": 3,
@@ -74,17 +87,57 @@
         {"name": "status", "type": "STRING", "links": null},
         {"name": "exported_frames", "type": "INT", "links": null}
       ],
-      "title": "📦 SAM3DBody2abc Export Alembic",
+      "title": "📦 Export Alembic (.abc)",
       "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAlembic"},
-      "widgets_values": ["body_animation", 24.0, "", true, true, 1.0, "Y", false, 0.5]
+      "widgets_values": ["body_mesh", 24.0, "", true, true, 1.0, "Y", false, 0.5]
+    },
+    {
+      "id": 14,
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
+      "pos": [900, 380],
+      "size": {"0": 350, "1": 200},
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 17}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [18]},
+        {"name": "status", "type": "STRING", "links": null},
+        {"name": "exported_frames", "type": "INT", "links": null}
+      ],
+      "title": "📦 Export Animated FBX",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAnimatedFBX"},
+      "widgets_values": ["body_rigged", 24.0, "", 1.0, true, true]
+    },
+    {
+      "id": 15,
+      "type": "SAM3DBody2abc_ExportBVH",
+      "pos": [900, 620],
+      "size": {"0": 350, "1": 180},
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 19}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [20]},
+        {"name": "status", "type": "STRING", "links": null},
+        {"name": "exported_frames", "type": "INT", "links": null}
+      ],
+      "title": "📦 Export BVH Skeleton",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportBVH"},
+      "widgets_values": ["skeleton_mocap", 24.0, "", 100.0, false, true]
     },
     {
       "id": 6,
       "type": "SAM3DBody2abc_OverlayBatch",
-      "pos": [900, 750],
+      "pos": [1350, 550],
       "size": {"0": 350, "1": 150},
       "flags": {},
-      "order": 5,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 4},
@@ -93,27 +146,27 @@
       "outputs": [
         {"name": "rendered_images", "type": "IMAGE", "links": [8]}
       ],
-      "title": "🎨 SAM3DBody2abc Overlay Batch",
+      "title": "🎨 Overlay Batch",
       "properties": {"Node name for S&R": "SAM3DBody2abc_OverlayBatch"},
       "widgets_values": ["solid", 0.5]
     },
     {
       "id": 7,
       "type": "VHS_VideoCombine",
-      "pos": [1350, 750],
+      "pos": [1750, 550],
       "size": {"0": 350, "1": 300},
       "flags": {},
-      "order": 6,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {"name": "images", "type": "IMAGE", "link": 8},
-        {"name": "audio", "type": "AUDIO", "link": 11},
+        {"name": "audio", "type": "AUDIO", "links": [11]},
         {"name": "meta_batch", "type": "VHS_BatchManager", "link": null}
       ],
       "outputs": [
         {"name": "Filenames", "type": "VHS_FILENAMES", "links": null}
       ],
-      "title": "Save Video (MP4) 🎬",
+      "title": "Save Overlay Video (MP4) 🎬",
       "properties": {"Node name for S&R": "VHS_VideoCombine"},
       "widgets_values": {
         "frame_rate": 24,
@@ -128,10 +181,10 @@
     {
       "id": 8,
       "type": "ShowText|pysssss",
-      "pos": [1350, 100],
-      "size": {"0": 350, "1": 80},
+      "pos": [1300, 50],
+      "size": {"0": 300, "1": 60},
       "flags": {},
-      "order": 7,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "STRING", "link": 7}
@@ -140,12 +193,40 @@
       "properties": {}
     },
     {
-      "id": 10,
+      "id": 16,
       "type": "ShowText|pysssss",
-      "pos": [1350, 200],
-      "size": {"0": 350, "1": 80},
+      "pos": [1300, 130],
+      "size": {"0": 300, "1": 60},
       "flags": {},
-      "order": 8,
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 18}
+      ],
+      "title": "📁 FBX Path",
+      "properties": {}
+    },
+    {
+      "id": 17,
+      "type": "ShowText|pysssss",
+      "pos": [1300, 210],
+      "size": {"0": 300, "1": 60},
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 20}
+      ],
+      "title": "📁 BVH Path",
+      "properties": {}
+    },
+    {
+      "id": 9,
+      "type": "ShowText|pysssss",
+      "pos": [1300, 300],
+      "size": {"0": 300, "1": 60},
+      "flags": {},
+      "order": 14,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "STRING", "link": 6}
@@ -154,50 +235,45 @@
       "properties": {}
     },
     {
-      "id": 11,
+      "id": 19,
       "type": "ShowText|pysssss",
-      "pos": [1350, 300],
-      "size": {"0": 350, "1": 60},
+      "pos": [1300, 380],
+      "size": {"0": 300, "1": 60},
       "flags": {},
-      "order": 9,
+      "order": 15,
       "mode": 0,
       "inputs": [
-        {"name": "text", "type": "*", "link": 16}
+        {"name": "text", "type": "STRING", "link": 21}
       ],
-      "title": "👥 Person Count",
+      "title": "📷 Camera/Focal Info",
       "properties": {}
     },
     {
-      "id": 12,
-      "type": "SAM3DBody2abc_MayaCamera",
-      "pos": [900, 420],
-      "size": {"0": 350, "1": 130},
+      "id": 20,
+      "type": "ShowText|pysssss",
+      "pos": [1300, 460],
+      "size": {"0": 300, "1": 60},
       "flags": {},
-      "order": 4,
+      "order": 16,
       "mode": 0,
       "inputs": [
-        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 13},
-        {"name": "images", "type": "IMAGE", "link": 15}
+        {"name": "text", "type": "STRING", "link": 16}
       ],
-      "outputs": [
-        {"name": "maya_script", "type": "STRING", "links": [14]}
-      ],
-      "title": "🎥 SAM3DBody2abc Maya Camera Script",
-      "properties": {"Node name for S&R": "SAM3DBody2abc_MayaCamera"},
-      "widgets_values": [36.0, 1.0]
+      "title": "👥 Person Detection Info",
+      "properties": {}
     },
     {
-      "id": 13,
-      "type": "ShowText|pysssss",
-      "pos": [1350, 400],
-      "size": {"0": 450, "1": 300},
+      "id": 10,
+      "type": "PreviewImage",
+      "pos": [450, 620],
+      "size": {"0": 350, "1": 300},
       "flags": {},
-      "order": 10,
+      "order": 17,
       "mode": 0,
       "inputs": [
-        {"name": "text", "type": "STRING", "link": 14}
+        {"name": "images", "type": "IMAGE", "link": 15}
       ],
-      "title": "📋 Maya Camera Script (Copy This)",
+      "title": "Preview Source Frames",
       "properties": {}
     }
   ],
@@ -207,43 +283,46 @@
     [3, 3, 0, 4, 0, "MESH_SEQUENCE"],
     [4, 3, 0, 6, 0, "MESH_SEQUENCE"],
     [5, 3, 1, 6, 1, "IMAGE"],
-    [6, 3, 3, 10, 0, "STRING"],
+    [6, 3, 3, 9, 0, "STRING"],
     [7, 4, 0, 8, 0, "STRING"],
     [8, 6, 0, 7, 0, "IMAGE"],
     [11, 1, 2, 7, 1, "AUDIO"],
-    [13, 3, 0, 12, 0, "MESH_SEQUENCE"],
-    [14, 12, 0, 13, 0, "STRING"],
-    [15, 3, 1, 12, 1, "IMAGE"],
-    [16, 3, 5, 11, 0, "*"]
+    [15, 3, 1, 10, 0, "IMAGE"],
+    [16, 3, 5, 20, 0, "STRING"],
+    [17, 3, 0, 14, 0, "MESH_SEQUENCE"],
+    [18, 14, 0, 16, 0, "STRING"],
+    [19, 3, 0, 15, 0, "MESH_SEQUENCE"],
+    [20, 15, 0, 17, 0, "STRING"],
+    [21, 3, 4, 19, 0, "STRING"]
   ],
   "groups": [
     {
-      "title": "Input",
-      "bounding": [30, 80, 380, 500],
+      "title": "📥 INPUT: Load Video & Model",
+      "bounding": [30, 80, 400, 500],
       "color": "#3f789e"
     },
     {
-      "title": "Processing",
-      "bounding": [430, 80, 400, 500],
-      "color": "#8a5a3e"
+      "title": "⚙️ PROCESS: Batch Processing with Camera Calibration",
+      "bounding": [430, 80, 420, 520],
+      "color": "#8AA62F"
     },
     {
-      "title": "Export & Visualization",
-      "bounding": [880, 80, 950, 1000],
-      "color": "#3e8a5a"
+      "title": "📤 EXPORT: Alembic, FBX, BVH",
+      "bounding": [870, 30, 420, 800],
+      "color": "#a1a462"
+    },
+    {
+      "title": "📊 STATUS & INFO",
+      "bounding": [1280, 30, 330, 520],
+      "color": "#88A"
+    },
+    {
+      "title": "🎬 VIDEO OUTPUT: Overlay Preview",
+      "bounding": [1330, 530, 800, 350],
+      "color": "#b58b2b"
     }
   ],
   "config": {},
-  "extra": {
-    "ds": {
-      "scale": 0.7,
-      "offset": [0, 0]
-    },
-    "info": {
-      "name": "Video to Animated Alembic + Overlay Video",
-      "description": "Process video through SAM3DBody and export animated Alembic geometry with Maya camera script and overlay video (MP4). Supports multi-character detection.",
-      "author": "SAM3DBody2abc"
-    }
-  },
+  "extra": {},
   "version": 0.4
 }

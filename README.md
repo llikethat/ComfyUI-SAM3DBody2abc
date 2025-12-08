@@ -1,11 +1,13 @@
 # ComfyUI-SAM3DBody2abc
 
-![Version](https://img.shields.io/badge/version-2.3.9-blue)
+![Version](https://img.shields.io/badge/version-2.5.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Extension for [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) that adds:
 - **Video batch processing** - Process entire videos at once
 - **Animated Alembic export** - Export geometry animation as .abc files
+- **Animated FBX export** - Export rigged skeleton with skinning weights (NEW!)
+- **BVH skeleton export** - Universal mocap format for retargeting (NEW!)
 - **Mesh overlay rendering** - Visualize 3D mesh on video frames
 - **Temporal smoothing** - Reduce jitter in animations
 - **DSLR/Cinema camera support** - Use real-world camera parameters
@@ -43,7 +45,8 @@ pip install -r requirements.txt
 | Node | Description |
 |------|-------------|
 | **📦 Export Alembic** | Export animated mesh as .abc file (Maya, Houdini, Blender compatible) |
-| **📁 Export OBJ Sequence** | Export as numbered OBJ files |
+| **📦 Export Animated FBX** | Export animated mesh + rigged skeleton with skinning weights |
+| **📦 Export BVH Skeleton** | Export skeleton animation as .bvh file (universal mocap format) |
 
 ### Overlay Visualization
 | Node | Description |
@@ -60,17 +63,82 @@ pip install -r requirements.txt
 | **〰️ Smooth** | Apply temporal smoothing to reduce jitter |
 | **🗑️ Clear** | Clear accumulated sequence |
 
+### Multi-Person Integration (SAM3DBody Native)
+| Node | Description |
+|------|-------------|
+| **👥 Multi Output → Sequence** | Convert SAM3DBody's `SAM3D_MULTI_OUTPUT` to `MESH_SEQUENCE` |
+| **👥 Multi Output Accumulator** | Accumulate multi-person frames into sequence |
+
+## 👥 Multi-Person Processing
+
+There are two approaches for multi-person video processing:
+
+### Option 1: Our Batch Processor (Auto-Detection)
+Use when you want automatic person detection:
+```
+Load Video → 🎬 Batch Processor (person_index=-1) → Export
+```
+- Automatically detects all people per frame
+- `person_index`: -1=all people, 0=first, 1=second, etc.
+- Good for quick processing without pre-segmentation
+
+### Option 2: SAM3DBody Process Multiple (Recommended for SAM3)
+Use SAM3DBody's native multi-person processing with SAM3 masks:
+```
+Load Video → SAM3 Segmentation → SAM3 Propagate → Extract Masks
+                                                       ↓
+Load SAM3DBody Model → SAM 3D Body Process Multiple ←─┘
+                                    ↓
+                    👥 Multi Output Accumulator (per person)
+                                    ↓
+                        Export Alembic/FBX/BVH
+```
+
+This approach:
+- Uses SAM3DBody's native `SAM 3D Body Process Multiple` node
+- Handles all detected people in a single pass per frame
+- Our converter nodes (`👥 Multi Output → Sequence`, `👥 Multi Output Accumulator`) bridge to export
+
+### Workflow Example with SAM3
+1. **SAM3 Segmentation**: Segment "person" to get masks for all people
+2. **SAM3 Propagate**: Track masks through video
+3. **Extract Masks**: Get per-frame batched masks
+4. **SAM 3D Body Process Multiple**: Process with SAM3DBody (native node)
+5. **👥 Multi Output Accumulator**: Convert to MESH_SEQUENCE per person
+6. **Export**: Use our Alembic/FBX/BVH export nodes
+
 ## 📷 Camera Calibration
 
 The extension supports multiple ways to specify camera parameters, in order of priority:
 
-### Priority 1: Auto-Calibrate (Recommended)
+### Priority 1: Auto-Calibrate with GeoCalib (Our Extension)
 Set `auto_calibrate: True` to use GeoCalib for automatic FOV estimation from the image.
 
 ```bash
-# Install GeoCalib
+# Install GeoCalib (lightweight, pip-installable)
 pip install -e 'git+https://github.com/cvg/GeoCalib#egg=geocalib'
 ```
+
+### Alternative: MoGe2 via SAM3DBody Advanced Node
+SAM3DBody has native support for MoGe2 FOV estimation. Use the **SAM 3D Body: Process Advanced** node with:
+
+1. **Download MoGe2 model:**
+   ```bash
+   # Clone MoGe repository
+   git clone https://github.com/microsoft/MoGe.git
+   cd MoGe
+   pip install -r requirements.txt
+   
+   # Models are auto-downloaded from HuggingFace:
+   # - Ruicheng/moge-vitl (MoGe-1, 314M params)
+   # - Ruicheng/moge-2-vitl (MoGe-2, 326M params, recommended)
+   ```
+
+2. **Set path in ComfyUI:**
+   - In **SAM 3D Body: Process Advanced** node:
+     - `fov_name`: `moge2`
+     - `fov_path`: Path to MoGe model (e.g., `/path/to/MoGe` or HuggingFace model name)
+   - Or set environment variable: `export SAM3D_FOV_PATH=/path/to/MoGe`
 
 ### Priority 2: Direct Focal Length in Pixels
 If you know the focal length in pixels, use `focal_length_px` directly.
@@ -172,12 +240,53 @@ The Alembic exporter creates industry-standard `.abc` files compatible with:
 - **3ds Max** - Import Alembic
 
 ### Export Options
-| Parameter | Description |
-|-----------|-------------|
-| `fps` | Animation frame rate (default: 30) |
-| `world_space` | Apply 180° X rotation to match overlay (default: True) |
-| `include_uvs` | Include UV coordinates if available |
-| `include_normals` | Include vertex normals |
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `fps` | 24.0 | Animation frame rate |
+| `world_space` | True | Apply transforms to match overlay render |
+| `static_camera` | False | For fixed camera shots (sports, surveillance) |
+| `center_mesh` | False | Center mesh at origin (ignores world_space) |
+| `include_joints` | True | Include joint positions as point cloud |
+| `scale` | 1.0 | Scale factor (1.0=meters, 100=centimeters) |
+| `temporal_smoothing` | 0.5 | Reduce jitter (0=none, 1=max) |
+
+### Coordinate Space Options Explained
+
+**`world_space: True` (Default - Recommended)**
+- Applies 180° rotation around X axis to match overlay render
+- For tracking shots: mesh moves relative to first frame
+- For static camera: mesh placed at absolute world position
+
+**`static_camera: True` (For Sports/Surveillance)**
+- Use when camera is FIXED and characters move in the scene
+- Each character placed at their detected world position
+- Camera is at origin, looking down -Z axis
+- Combine with `world_space: True`
+
+**`static_camera: False` (Default - For Tracking Shots)**
+- Use when camera follows a single subject
+- First frame is reference position
+- Subsequent frames show relative movement
+
+**`center_mesh: True`**
+- Centers mesh at origin on each frame
+- Ignores camera translation entirely
+- Good for turntable-style playback
+
+### Multi-Person Export
+
+When multiple people are detected:
+1. Each person exported to separate file
+2. Filenames include position hint: `_person0_L` (left), `_person1_C` (center), `_person2_R` (right)
+3. Status output shows all exported files
+
+Example output:
+```
+character_person0_L.abc  (leftmost person)
+character_person1_C.abc  (center person)
+character_person2_R.abc  (rightmost person)
+```
 
 ## 🎬 Maya Import Guide
 
@@ -369,18 +478,56 @@ BatchProcessor → ExportAlembic
 ## 🔄 Workflow Example
 
 ```
-Load Video → SAM3DBody Batch Processor → Export Alembic
-                    ↓
-              Overlay Batch → Save Video
+                              ┌─→ Export Alembic (.abc)
+Load Video → Batch Processor ─┼─→ Export Animated FBX
+                              ├─→ Export BVH Skeleton
+                              └─→ Overlay Batch → Save Video
 ```
 
 1. Load your video using VideoHelperSuite
 2. Process with **SAM3DBody2abc Batch Processor**
-3. Export mesh animation with **Export Alembic**
+3. Export animation:
+   - **Alembic** for mesh cache
+   - **FBX** for rigged skeleton
+   - **BVH** for motion retargeting
 4. Render overlay with **Overlay Batch**
 5. Save result with VideoHelperSuite
 
 ## 📝 Changelog
+
+### v2.5.0 - Animated FBX & BVH Export
+- **ADDED**: `📦 Export Animated FBX` node - exports full video sequence as single animated FBX file
+  - Includes 127-joint rigged skeleton with keyframes for each frame
+  - Extracts skinning weights from MHR model
+  - Shape keys for mesh animation
+  - Compatible with Maya, Blender, Unity, Unreal Engine
+  - Requires Blender (uses same bundled Blender as Alembic export)
+- **ADDED**: `📦 Export BVH Skeleton` node - exports skeleton animation as BVH file
+  - Universal mocap format supported by all 3D software
+  - 22-joint simplified skeleton (easy retargeting)
+  - No Blender dependency (pure Python)
+  - Options: world_space, z_up (for Blender), scale
+- **REMOVED**: GVHMR integration (unnecessary - SAM3DBody provides everything needed)
+- **IMPROVED**: Shared `find_blender()` function between export modules
+- **UPDATED**: All sample workflows now include Alembic + FBX + BVH export nodes
+- **UPDATED**: Workflows show all three export formats side by side
+
+### Export Format Comparison
+| Format | Content | Use Case | Dependency |
+|--------|---------|----------|------------|
+| **Alembic (.abc)** | Animated mesh | Cache playback, VFX | Blender |
+| **FBX** | Mesh + Skeleton + Weights | Rigged characters, game engines | Blender |
+| **BVH** | Skeleton only | Motion retargeting | None |
+
+### v2.4.0 - Multi-Person Detection Fixes & Better Export
+- **FIXED**: Multi-person detection with person_index=-1 now properly processes all detected people
+- **FIXED**: Person IDs now consistent across frames (sorted by bbox X position, left to right)
+- **FIXED**: World space translation for static camera mode
+- **FIXED**: Output types changed to STRING for ShowText compatibility
+- **ADDED**: Auto-ID in filenames based on screen position (L/C/R suffix)
+- **ADDED**: Detailed coordinate space documentation
+- **IMPROVED**: Better logging showing detected person positions
+- **IMPROVED**: Workflows updated with correct output connections
 
 ### v2.3.9 - ComfyUI-SAM3 Integration & Multi-Character Export
 - **ADDED**: Full support for per-frame masks from ComfyUI-SAM3
@@ -396,9 +543,9 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 ### Included Workflows:
 | Workflow | Description |
 |----------|-------------|
-| `video_to_animated_export.json` | Basic video → Alembic + overlay |
-| `sam3_multi_character.json` | SAM3 character selection → 3D body → Alembic |
-| `static_camera_sports.json` | Sports/surveillance with all characters at world positions |
+| `video_to_animated_export.json` | Video → Alembic + FBX + BVH + overlay |
+| `sam3_multi_character.json` | SAM3 character selection → 3D body → All formats |
+| `static_camera_sports.json` | Sports/surveillance with all characters (all formats) |
 
 ### v2.3.8 - Static Camera Mode for Sports/Surveillance
 - **ADDED**: `static_camera` option in Alembic export
@@ -483,6 +630,7 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 - scipy
 
 ### Optional
+- **Blender** (for FBX and Alembic export - bundled with ComfyUI-SAM3DBody)
 - pyrender (for solid overlay rendering)
 - PyOpenGL + OSMesa (for headless solid rendering)
 - GeoCalib (for auto FOV calibration)

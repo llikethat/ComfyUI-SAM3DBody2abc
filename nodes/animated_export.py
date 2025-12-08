@@ -15,6 +15,68 @@ _BLENDER_PATH_CACHE = None
 _BLENDER_SEARCHED = False
 
 
+def find_blender() -> Optional[str]:
+    """Find Blender executable (uses global cache). Can be imported by other modules."""
+    global _BLENDER_PATH_CACHE, _BLENDER_SEARCHED
+    
+    if _BLENDER_SEARCHED:
+        return _BLENDER_PATH_CACHE
+    
+    import shutil
+    import glob
+    
+    locations = [
+        shutil.which("blender"),
+        "/usr/bin/blender",
+        "/usr/local/bin/blender",
+        "/Applications/Blender.app/Contents/MacOS/Blender",
+    ]
+    
+    # ComfyUI SAM3DBody bundled Blender - try multiple approaches
+    try:
+        # Method 1: From this file's location (custom_nodes/ComfyUI-SAM3DBody2abc/nodes/)
+        custom_nodes_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        # Method 2: From folder_paths
+        try:
+            custom_nodes_dir2 = os.path.join(folder_paths.base_path, "custom_nodes")
+        except:
+            custom_nodes_dir2 = None
+        
+        # Search patterns for SAM3DBody bundled Blender
+        for base_dir in [custom_nodes_dir, custom_nodes_dir2, "/workspace/ComfyUI/custom_nodes"]:
+            if base_dir is None:
+                continue
+            sam3d_blender_patterns = [
+                os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*-linux-x64", "blender"),
+                os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*", "blender"),
+                os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "*", "blender"),
+            ]
+            for pattern in sam3d_blender_patterns:
+                matches = glob.glob(pattern)
+                if matches:
+                    locations.extend(matches)
+                    break
+            if len(locations) > 4:  # Found something beyond defaults
+                break
+    except Exception as e:
+        print(f"[SAM3DBody2abc] Error searching for Blender: {e}")
+    
+    # Windows paths
+    for version in ["4.2", "4.1", "4.0", "3.6"]:
+        locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")
+    
+    _BLENDER_SEARCHED = True
+    for loc in locations:
+        if loc and os.path.exists(loc):
+            _BLENDER_PATH_CACHE = loc
+            print(f"[SAM3DBody2abc] Found Blender: {loc}")
+            return loc
+    
+    _BLENDER_PATH_CACHE = None
+    return None
+
+
 class ExportAnimatedAlembic:
     """
     Export mesh sequence to animated Alembic (.abc) format.
@@ -209,9 +271,33 @@ class ExportAnimatedAlembic:
         for person_idx in sorted(person_frames.keys()):
             person_valid_frames = person_frames[person_idx]
             
-            # Generate filename for this person
+            # Get bbox position for auto-ID (use first frame)
+            bbox_x = None
+            if person_valid_frames:
+                first_frame = person_valid_frames[0]
+                bbox_x = first_frame.get("person_bbox_x")
+                if bbox_x is None and first_frame.get("bbox") is not None:
+                    bbox = first_frame["bbox"]
+                    bbox_x = (bbox[0] + bbox[2]) / 2
+            
+            # Generate filename for this person with position info
             if num_people > 1:
-                person_filename = f"{filename}_person{person_idx}"
+                if bbox_x is not None:
+                    # Include position hint in filename (L=left, C=center, R=right)
+                    # Get image width from first frame
+                    img_size = person_valid_frames[0].get("image_size", (1920, 1080))
+                    img_w = img_size[0] if img_size else 1920
+                    
+                    if bbox_x < img_w * 0.33:
+                        pos_hint = "L"
+                    elif bbox_x > img_w * 0.66:
+                        pos_hint = "R"
+                    else:
+                        pos_hint = "C"
+                    
+                    person_filename = f"{filename}_person{person_idx}_{pos_hint}"
+                else:
+                    person_filename = f"{filename}_person{person_idx}"
             else:
                 person_filename = filename
             
@@ -229,6 +315,7 @@ class ExportAnimatedAlembic:
             if world_space and not center_mesh:
                 if static_camera:
                     # STATIC CAMERA MODE: For sports, surveillance, wide shots
+                    # Camera is at origin, characters placed at absolute world positions
                     print(f"[ExportAnimatedAlembic] Person {person_idx}: Static camera mode")
                     
                     for i, frame in enumerate(person_valid_frames):
@@ -239,25 +326,42 @@ class ExportAnimatedAlembic:
                             if hasattr(cam_t, 'cpu'):
                                 cam_t = cam_t.cpu().numpy()
                             cam_t = np.array(cam_t).flatten()
-                            person_pos = np.array([cam_t[0], -cam_t[1], -cam_t[2]])
+                            
+                            # cam_t = [x, y, z] is camera position relative to person
+                            # Meta flips X in their convention
+                            # For world position: person is at (-cam_t) relative to camera
+                            # After 180° X rotation: Y and Z are negated
+                            # So final world position = [-cam_t[0], cam_t[1], cam_t[2]] after rotation
+                            person_world_x = -cam_t[0]  # Flip X (Meta convention)
+                            person_world_y = cam_t[1]   # Y stays (will be negated by rotation)
+                            person_world_z = cam_t[2]   # Z stays (will be negated by rotation)
                         else:
-                            person_pos = np.array([0.0, 0.0, 0.0])
+                            person_world_x, person_world_y, person_world_z = 0.0, 0.0, 0.0
                         
-                        # Apply 180° rotation + translate to world position
+                        # Step 1: Apply 180° rotation around X axis (negate Y and Z)
                         verts[:, 1] = -verts[:, 1]
                         verts[:, 2] = -verts[:, 2]
-                        verts = verts + person_pos
+                        
+                        # Step 2: Translate to world position
+                        # After rotation, person offset becomes [x, -y, -z]
+                        verts[:, 0] += person_world_x
+                        verts[:, 1] += -person_world_y  # Negated due to rotation
+                        verts[:, 2] += -person_world_z  # Negated due to rotation
+                        
                         frame["vertices"] = verts
                         
                         if frame.get("joints") is not None:
                             joints = np.array(frame["joints"])
                             joints[:, 1] = -joints[:, 1]
                             joints[:, 2] = -joints[:, 2]
-                            joints = joints + person_pos
+                            joints[:, 0] += person_world_x
+                            joints[:, 1] += -person_world_y
+                            joints[:, 2] += -person_world_z
                             frame["joints"] = joints
                         
                         if i == 0:
-                            print(f"[ExportAnimatedAlembic] Person {person_idx} start position: {person_pos}")
+                            print(f"[ExportAnimatedAlembic] Person {person_idx} cam_t: {cam_t if cam_t is not None else 'None'}")
+                            print(f"[ExportAnimatedAlembic] Person {person_idx} world pos: ({person_world_x:.2f}, {-person_world_y:.2f}, {-person_world_z:.2f})")
                 else:
                     # TRACKING CAMERA MODE
                     print(f"[ExportAnimatedAlembic] Person {person_idx}: Tracking camera mode")
@@ -602,66 +706,8 @@ class ExportAnimatedAlembic:
         return None
     
     def _find_blender(self) -> Optional[str]:
-        """Find Blender executable (uses global cache)."""
-        global _BLENDER_PATH_CACHE, _BLENDER_SEARCHED
-        
-        if _BLENDER_SEARCHED:
-            return _BLENDER_PATH_CACHE
-        
-        import shutil
-        import glob
-        
-        locations = [
-            shutil.which("blender"),
-            "/usr/bin/blender",
-            "/usr/local/bin/blender",
-            "/Applications/Blender.app/Contents/MacOS/Blender",
-        ]
-        
-        # ComfyUI SAM3DBody bundled Blender - try multiple approaches
-        try:
-            # Method 1: From this file's location (custom_nodes/ComfyUI-SAM3DBody2abc/nodes/)
-            custom_nodes_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            
-            # Method 2: From folder_paths
-            try:
-                import folder_paths
-                custom_nodes_dir2 = os.path.join(folder_paths.base_path, "custom_nodes")
-            except:
-                custom_nodes_dir2 = None
-            
-            # Search patterns for SAM3DBody bundled Blender
-            for base_dir in [custom_nodes_dir, custom_nodes_dir2, "/workspace/ComfyUI/custom_nodes"]:
-                if base_dir is None:
-                    continue
-                sam3d_blender_patterns = [
-                    os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*-linux-x64", "blender"),
-                    os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*", "blender"),
-                    os.path.join(base_dir, "ComfyUI-SAM3DBody", "lib", "blender", "*", "blender"),
-                ]
-                for pattern in sam3d_blender_patterns:
-                    matches = glob.glob(pattern)
-                    if matches:
-                        locations.extend(matches)
-                        break
-                if len(locations) > 4:  # Found something beyond defaults
-                    break
-        except Exception as e:
-            print(f"[SAM3DBody2abc] Error searching for Blender: {e}")
-        
-        # Windows paths
-        for version in ["4.2", "4.1", "4.0", "3.6"]:
-            locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")
-        
-        _BLENDER_SEARCHED = True
-        for loc in locations:
-            if loc and os.path.exists(loc):
-                _BLENDER_PATH_CACHE = loc
-                print(f"[SAM3DBody2abc] Found Blender: {loc}")
-                return loc
-        
-        _BLENDER_PATH_CACHE = None
-        return None
+        """Find Blender executable (uses shared function)."""
+        return find_blender()
     
     def _create_blender_alembic_script(self) -> str:
         """Create Blender Python script for animated Alembic export using mesh cache."""
@@ -826,829 +872,8 @@ print(f"SUCCESS: Exported {num_frames} frames to {output_path}")
 '''
 
 
-class ExportAnimatedFBX:
-    """
-    Export animated skeleton to FBX format.
-    Creates a SINGLE FBX file with animated skeleton across ALL frames.
-    
-    Uses the MHR (Momentum Human Rig) 127-joint skeleton hierarchy.
-    Supports export optimized for Maya, Blender, or Houdini.
-    """
-    
-    @classmethod
-    def INPUT_TYPES(cls) -> Dict[str, Any]:
-        return {
-            "required": {
-                "mesh_sequence": ("MESH_SEQUENCE",),
-                "filename": ("STRING", {
-                    "default": "body_skeleton",
-                    "multiline": False
-                }),
-                "fps": ("FLOAT", {
-                    "default": 24.0,
-                    "min": 1.0,
-                    "max": 120.0
-                }),
-            },
-            "optional": {
-                "output_dir": ("STRING", {"default": "", "multiline": False}),
-                "scale": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0}),
-                "target_app": (["maya", "blender", "houdini"], {
-                    "default": "maya",
-                    "tooltip": "Target application: Maya (joints), Blender (armature), Houdini (joints)"
-                }),
-                "include_mesh": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Include mesh geometry with skeleton"
-                }),
-            }
-        }
-    
-    RETURN_TYPES = ("STRING", "STRING", "INT")
-    RETURN_NAMES = ("file_path", "status", "exported_frames")
-    FUNCTION = "export_fbx"
-    CATEGORY = "SAM3DBody2abc/Export"
-    OUTPUT_NODE = True
-    
-    def export_fbx(
-        self,
-        mesh_sequence: List[Dict],
-        filename: str = "body_skeleton",
-        fps: float = 24.0,
-        output_dir: str = "",
-        scale: float = 1.0,
-        target_app: str = "maya",
-        include_mesh: bool = False,
-    ) -> Tuple[str, str, int]:
-        """Export animated skeleton to FBX."""
-        
-        if not output_dir:
-            output_dir = folder_paths.get_output_directory()
-        os.makedirs(output_dir, exist_ok=True)
-        
-        output_path = os.path.join(output_dir, f"{filename}.fbx")
-        counter = 1
-        while os.path.exists(output_path):
-            output_path = os.path.join(output_dir, f"{filename}_{counter:04d}.fbx")
-            counter += 1
-        
-        # Filter frames with joint data
-        valid_frames = [
-            f for f in mesh_sequence 
-            if f.get("valid") and f.get("joints") is not None
-        ]
-        
-        if not valid_frames:
-            return (output_path, "Error: No valid joint data", 0)
-        
-        print(f"[ExportAnimatedFBX] Target application: {target_app}")
-        
-        # Try Blender export
-        try:
-            result = self._export_via_blender(
-                valid_frames, output_path, fps, scale, include_mesh, target_app
-            )
-            return result
-        except Exception as e:
-            print(f"[ExportAnimatedFBX] Blender export failed: {e}")
-        
-        # Fallback to JSON skeleton data
-        return self._export_skeleton_json(valid_frames, output_path, fps, scale)
-    
-    def _export_via_blender(
-        self,
-        frames: List[Dict],
-        output_path: str,
-        fps: float,
-        scale: float,
-        include_mesh: bool,
-        target_app: str = "maya",
-    ) -> Tuple[str, str, int]:
-        """Export using Blender."""
-        import subprocess
-        import tempfile
-        
-        blender_path = self._find_blender()
-        if not blender_path:
-            raise RuntimeError("Blender not found")
-        
-        # Get MHR joint hierarchy from first frame (127 joints)
-        joint_parents = frames[0].get("joint_parents")
-        if joint_parents is None:
-            print("[ExportAnimatedFBX] WARNING: No joint_parents in data, trying to load from MHR model...")
-            # Try to load from HuggingFace cache
-            try:
-                import glob
-                hf_cache_base = os.path.expanduser("~/.cache/huggingface/hub/models--facebook--sam-3d-body-dinov3")
-                if os.path.exists(hf_cache_base):
-                    pattern = os.path.join(hf_cache_base, "snapshots", "*", "assets", "mhr_model.pt")
-                    matches = glob.glob(pattern)
-                    if matches:
-                        matches.sort(key=os.path.getmtime, reverse=True)
-                        mhr_path = matches[0]
-                        import torch
-                        mhr_model = torch.jit.load(mhr_path, map_location='cpu')
-                        parent_tensor = mhr_model.character_torch.skeleton.joint_parents
-                        joint_parents = parent_tensor.cpu().numpy().astype(int).tolist()
-                        print(f"[ExportAnimatedFBX] Loaded MHR hierarchy: {len(joint_parents)} joints")
-            except Exception as e:
-                print(f"[ExportAnimatedFBX] Failed to load MHR model: {e}")
-        
-        if joint_parents is None:
-            # Use anatomically-correct MHR skeleton hierarchy
-            num_joints = len(frames[0]["joints"])
-            joint_parents = self._get_mhr_joint_parents(num_joints)
-            print(f"[ExportAnimatedFBX] Using MHR anatomical hierarchy: {num_joints} joints")
-        
-        num_joints = len(joint_parents)
-        joint_names = [f"Joint_{i:03d}" for i in range(num_joints)]
-        
-        print(f"[ExportAnimatedFBX] Exporting MHR skeleton with {num_joints} joints")
-        root_idx = joint_parents.index(-1) if -1 in joint_parents else 0
-        print(f"[ExportAnimatedFBX] Root joint at index: {root_idx}")
-        
-        # Prepare export data - Blender script handles coordinate transforms
-        export_data = {
-            "frames": [],
-            "output_path": output_path,
-            "fps": fps,
-            "scale": scale,
-            "include_mesh": include_mesh,
-            "target_app": target_app,
-            "joint_names": joint_names,
-            "joint_parents": joint_parents if isinstance(joint_parents, list) else list(joint_parents),
-        }
-        
-        for frame in frames:
-            joints = frame.get("joints")
-            if joints is None:
-                continue
-            
-            # Pass raw joint data - Blender script handles coordinate transform
-            joints_array = np.array(joints)
-            
-            frame_export = {
-                "joints": joints_array.tolist(),
-            }
-            if include_mesh and frame.get("vertices") is not None:
-                verts = np.array(frame["vertices"])
-                frame_export["vertices"] = verts.tolist()
-                if frame.get("faces") is not None:
-                    frame_export["faces"] = np.array(frame["faces"]).tolist()
-            export_data["frames"].append(frame_export)
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump(export_data, f)
-            data_path = f.name
-        
-        # Select script based on target application
-        script = self._create_blender_fbx_script(target_app)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(script)
-            script_path = f.name
-        
-        try:
-            result = subprocess.run(
-                [blender_path, "--background", "--python", script_path, "--", data_path],
-                capture_output=True,
-                text=True,
-                timeout=600
-            )
-            
-            print(f"[ExportAnimatedFBX] Blender stdout: {result.stdout[-500:] if result.stdout else 'None'}")
-            if result.stderr:
-                print(f"[ExportAnimatedFBX] Blender stderr: {result.stderr[-500:]}")
-            
-            if result.returncode == 0 and os.path.exists(output_path):
-                return (output_path, f"Exported {len(frames)} frames to FBX", len(frames))
-            else:
-                raise RuntimeError(f"Blender FBX export failed: {result.stderr}")
-        finally:
-            os.unlink(data_path)
-            os.unlink(script_path)
-    
-    def _export_skeleton_json(
-        self,
-        frames: List[Dict],
-        output_path: str,
-        fps: float,
-        scale: float,
-    ) -> Tuple[str, str, int]:
-        """Fallback: Export skeleton as JSON."""
-        
-        json_path = output_path.replace('.fbx', '_skeleton.json')
-        
-        skeleton_data = {
-            "fps": fps,
-            "scale": scale,
-            "joint_names": self.JOINT_NAMES,
-            "joint_parents": self.JOINT_PARENTS,
-            "frames": []
-        }
-        
-        for frame in frames:
-            joints = np.array(frame["joints"]) * scale
-            skeleton_data["frames"].append({
-                "joints": joints.tolist(),
-                "pose": np.array(frame.get("pose", [])).tolist() if frame.get("pose") is not None else None,
-            })
-        
-        with open(json_path, 'w') as f:
-            json.dump(skeleton_data, f, indent=2)
-        
-        return (json_path, f"Exported {len(frames)} frames as skeleton JSON (FBX requires Blender)", len(frames))
-    
-    def _get_mhr_joint_parents(self, num_joints: int) -> List[int]:
-        """
-        Get anatomically-correct joint parent hierarchy for MHR skeleton.
-        
-        MHR70 joint mapping (first 70 joints):
-        0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear
-        5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow
-        9: left_hip, 10: right_hip, 11: left_knee, 12: right_knee
-        13: left_ankle, 14: right_ankle, 15-17: left foot, 18-20: right foot
-        21-41: right hand (wrist at 41), 42-62: left hand (wrist at 62)
-        63-68: additional arm points, 69: neck
-        70+: additional keypoints (face, etc.)
-        
-        Hierarchy uses left_hip (9) as root connecting upper and lower body.
-        """
-        # Base hierarchy for first 70 joints (MHR70)
-        mhr70_parents = [
-            69,   # 0: nose -> neck
-            0,    # 1: left_eye -> nose
-            0,    # 2: right_eye -> nose
-            1,    # 3: left_ear -> left_eye
-            2,    # 4: right_ear -> right_eye
-            69,   # 5: left_shoulder -> neck
-            69,   # 6: right_shoulder -> neck
-            5,    # 7: left_elbow -> left_shoulder
-            6,    # 8: right_elbow -> right_shoulder
-            -1,   # 9: left_hip -> ROOT
-            9,    # 10: right_hip -> left_hip (pelvis connection)
-            9,    # 11: left_knee -> left_hip
-            10,   # 12: right_knee -> right_hip
-            11,   # 13: left_ankle -> left_knee
-            12,   # 14: right_ankle -> right_knee
-            13,   # 15: left_big_toe -> left_ankle
-            13,   # 16: left_small_toe -> left_ankle
-            13,   # 17: left_heel -> left_ankle
-            14,   # 18: right_big_toe -> right_ankle
-            14,   # 19: right_small_toe -> right_ankle
-            14,   # 20: right_heel -> right_ankle
-            # Right hand finger chain (21-41)
-            22,   # 21: right_thumb_tip -> 22
-            23,   # 22: right_thumb_first -> 23
-            24,   # 23: right_thumb_second -> 24
-            41,   # 24: right_thumb_third -> wrist
-            26,   # 25: right_index_tip -> 26
-            27,   # 26: right_index_first -> 27
-            28,   # 27: right_index_second -> 28
-            41,   # 28: right_index_third -> wrist
-            30,   # 29: right_middle_tip -> 30
-            31,   # 30: right_middle_first -> 31
-            32,   # 31: right_middle_second -> 32
-            41,   # 32: right_middle_third -> wrist
-            34,   # 33: right_ring_tip -> 34
-            35,   # 34: right_ring_first -> 35
-            36,   # 35: right_ring_second -> 36
-            41,   # 36: right_ring_third -> wrist
-            38,   # 37: right_pinky_tip -> 38
-            39,   # 38: right_pinky_first -> 39
-            40,   # 39: right_pinky_second -> 40
-            41,   # 40: right_pinky_third -> wrist
-            8,    # 41: right_wrist -> right_elbow
-            # Left hand finger chain (42-62)
-            43,   # 42: left_thumb_tip -> 43
-            44,   # 43: left_thumb_first -> 44
-            45,   # 44: left_thumb_second -> 45
-            62,   # 45: left_thumb_third -> wrist
-            47,   # 46: left_index_tip -> 47
-            48,   # 47: left_index_first -> 48
-            49,   # 48: left_index_second -> 49
-            62,   # 49: left_index_third -> wrist
-            51,   # 50: left_middle_tip -> 51
-            52,   # 51: left_middle_first -> 52
-            53,   # 52: left_middle_second -> 53
-            62,   # 53: left_middle_third -> wrist
-            55,   # 54: left_ring_tip -> 55
-            56,   # 55: left_ring_first -> 56
-            57,   # 56: left_ring_second -> 57
-            62,   # 57: left_ring_third -> wrist
-            59,   # 58: left_pinky_tip -> 59
-            60,   # 59: left_pinky_first -> 60
-            61,   # 60: left_pinky_second -> 61
-            62,   # 61: left_pinky_third -> wrist
-            7,    # 62: left_wrist -> left_elbow
-            # Additional arm joints (63-68)
-            7,    # 63: left_olecranon -> left_elbow
-            8,    # 64: right_olecranon -> right_elbow
-            7,    # 65: left_cubital_fossa -> left_elbow
-            8,    # 66: right_cubital_fossa -> right_elbow
-            5,    # 67: left_acromion -> left_shoulder
-            6,    # 68: right_acromion -> right_shoulder
-            # Neck connects upper body to hips
-            9,    # 69: neck -> left_hip (connects upper/lower body)
-        ]
-        
-        if num_joints <= 70:
-            return mhr70_parents[:num_joints]
-        
-        # For 127 joints, additional joints (70-126) are likely face keypoints
-        # Connect them to the nose (0) or neck (69)
-        joint_parents = mhr70_parents.copy()
-        for i in range(70, num_joints):
-            joint_parents.append(0)  # Face keypoints -> nose
-        
-        return joint_parents
-    
-    def _find_blender(self) -> Optional[str]:
-        """Find Blender executable (uses global cache)."""
-        global _BLENDER_PATH_CACHE, _BLENDER_SEARCHED
-        
-        if _BLENDER_SEARCHED:
-            return _BLENDER_PATH_CACHE
-        
-        import shutil
-        import glob
-        
-        locations = [
-            shutil.which("blender"),
-            "/usr/bin/blender",
-            "/usr/local/bin/blender",
-            "/Applications/Blender.app/Contents/MacOS/Blender",
-        ]
-        
-        # ComfyUI SAM3DBody bundled Blender
-        try:
-            comfy_base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            sam3d_blender_patterns = [
-                os.path.join(comfy_base, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*", "blender"),
-                os.path.join(comfy_base, "ComfyUI-SAM3DBody", "lib", "blender", "*/blender"),
-            ]
-            for pattern in sam3d_blender_patterns:
-                matches = glob.glob(pattern)
-                if matches:
-                    locations.extend(matches)
-                    break
-        except:
-            pass
-        
-        for version in ["4.2", "4.1", "4.0", "3.6"]:
-            locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")
-        
-        _BLENDER_SEARCHED = True
-        for loc in locations:
-            if loc and os.path.exists(loc):
-                _BLENDER_PATH_CACHE = loc
-                print(f"[SAM3DBody2abc] Found Blender: {loc}")
-                return loc
-        
-        _BLENDER_PATH_CACHE = None
-        return None
-    
-    def _create_blender_fbx_script(self, target_app: str = "maya") -> str:
-        """Create Blender script for animated FBX skeleton export.
-        
-        Creates proper armature with bones that export as Maya joints.
-        """
-        return '''
-import bpy
-import json
-import sys
-import numpy as np
-from mathutils import Vector, Matrix
-
-argv = sys.argv
-data_path = argv[argv.index("--") + 1]
-
-print(f"FBX export starting... loading {data_path}")
-
-with open(data_path, 'r') as f:
-    data = json.load(f)
-
-frames = data["frames"]
-output_path = data["output_path"]
-fps = data["fps"]
-scale = data["scale"]
-joint_names = data["joint_names"]
-joint_parents = data["joint_parents"]
-target_app = data.get("target_app", "maya")
-
-num_joints = len(joint_names)
-num_frames = len(frames)
-
-print(f"FBX export: {num_joints} joints, {num_frames} frames, target: {target_app}")
-
-# Clean scene completely
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete()
-
-for block in bpy.data.actions:
-    bpy.data.actions.remove(block)
-for block in bpy.data.armatures:
-    bpy.data.armatures.remove(block)
-for block in bpy.data.meshes:
-    bpy.data.meshes.remove(block)
-for block in bpy.data.objects:
-    bpy.data.objects.remove(block)
-
-# Set FPS and frame range
-bpy.context.scene.render.fps = int(fps)
-bpy.context.scene.frame_start = 1
-bpy.context.scene.frame_end = num_frames
-
-def transform_coords(joints_raw, scale):
-    """Transform SAM3D coords to Blender/Maya coords."""
-    joints = np.zeros_like(joints_raw)
-    joints[:, 0] = joints_raw[:, 0] * scale
-    joints[:, 1] = joints_raw[:, 2] * scale  
-    joints[:, 2] = -joints_raw[:, 1] * scale
-    return joints
-
-# Transform all frames
-all_frames_joints = []
-for frame_data in frames:
-    joints_raw = np.array(frame_data["joints"])
-    joints = transform_coords(joints_raw, scale)
-    all_frames_joints.append(joints)
-
-rest_joints = all_frames_joints[0]
-
-# Build hierarchy info
-children_map = {i: [] for i in range(num_joints)}
-for i, parent_idx in enumerate(joint_parents):
-    if parent_idx >= 0:
-        children_map[parent_idx].append(i)
-
-root_indices = [i for i, p in enumerate(joint_parents) if p == -1]
-print(f"Root joints: {root_indices}")
-
-# Create armature
-print("Creating armature with bones...")
-armature_data = bpy.data.armatures.new('SAM3D_Skeleton')
-armature_obj = bpy.data.objects.new('SAM3D_Skeleton', armature_data)
-bpy.context.collection.objects.link(armature_obj)
-bpy.context.view_layer.objects.active = armature_obj
-
-# Enter edit mode to create bones
-bpy.ops.object.mode_set(mode='EDIT')
-
-bones_dict = {}
-bone_length = 0.05 * scale  # Default bone length
-
-for i, name in enumerate(joint_names):
-    bone = armature_data.edit_bones.new(name)
-    pos = Vector((rest_joints[i, 0], rest_joints[i, 1], rest_joints[i, 2]))
-    bone.head = pos
-    
-    # Set tail - point toward first child or extend from parent
-    children = children_map[i]
-    parent_idx = joint_parents[i]
-    
-    if children:
-        child_pos = Vector((rest_joints[children[0], 0], rest_joints[children[0], 1], rest_joints[children[0], 2]))
-        direction = child_pos - pos
-        if direction.length > 0.001:
-            bone.tail = pos + direction.normalized() * min(direction.length, bone_length)
-        else:
-            bone.tail = pos + Vector((0, bone_length, 0))
-    elif parent_idx >= 0:
-        parent_pos = Vector((rest_joints[parent_idx, 0], rest_joints[parent_idx, 1], rest_joints[parent_idx, 2]))
-        direction = pos - parent_pos
-        if direction.length > 0.001:
-            bone.tail = pos + direction.normalized() * bone_length * 0.5
-        else:
-            bone.tail = pos + Vector((0, bone_length * 0.5, 0))
-    else:
-        bone.tail = pos + Vector((0, bone_length, 0))
-    
-    bones_dict[name] = bone
-
-# Set parent relationships
-for i, parent_idx in enumerate(joint_parents):
-    if 0 <= parent_idx < num_joints:
-        child_bone = bones_dict[joint_names[i]]
-        parent_bone = bones_dict[joint_names[parent_idx]]
-        child_bone.parent = parent_bone
-        child_bone.use_connect = False
-
-bpy.ops.object.mode_set(mode='OBJECT')
-
-# Store rest pose world matrices
-bpy.context.view_layer.update()
-rest_world_positions = {}
-for bone in armature_obj.data.bones:
-    rest_world_positions[bone.name] = armature_obj.matrix_world @ bone.head_local
-
-print(f"Created {len(armature_data.bones)} bones")
-
-# Animate bones
-print("Keyframing bone positions...")
-bpy.ops.object.mode_set(mode='POSE')
-
-# Create action for animation
-action = bpy.data.actions.new('SAM3D_Animation')
-armature_obj.animation_data_create()
-armature_obj.animation_data.action = action
-
-for frame_idx, joints in enumerate(all_frames_joints):
-    bpy.context.scene.frame_set(frame_idx + 1)
-    
-    for i, name in enumerate(joint_names):
-        pose_bone = armature_obj.pose.bones[name]
-        
-        # Target world position
-        target_pos = Vector((joints[i, 0], joints[i, 1], joints[i, 2]))
-        
-        # Rest world position
-        rest_pos = rest_world_positions[name]
-        
-        # Calculate offset in world space
-        world_offset = target_pos - rest_pos
-        
-        # Convert to bone local space
-        # For root bones, this is simpler
-        if joint_parents[i] == -1:
-            pose_bone.location = world_offset
-        else:
-            # For child bones, we need to account for parent transform
-            # Simplified: just apply offset (works for location-based animation)
-            bone_matrix = pose_bone.bone.matrix_local
-            local_offset = bone_matrix.inverted().to_3x3() @ world_offset
-            pose_bone.location = local_offset
-        
-        pose_bone.keyframe_insert(data_path="location", frame=frame_idx + 1)
-    
-    if (frame_idx + 1) % 100 == 0:
-        print(f"  Frame {frame_idx + 1}/{num_frames}")
-
-bpy.ops.object.mode_set(mode='OBJECT')
-print("Animation keyframing complete")
-
-# Verify we only have the armature
-print(f"Scene objects: {[obj.name for obj in bpy.context.scene.objects]}")
-print(f"Object types: {[obj.type for obj in bpy.context.scene.objects]}")
-
-# Select only armature for export
-bpy.ops.object.select_all(action='DESELECT')
-armature_obj.select_set(True)
-bpy.context.view_layer.objects.active = armature_obj
-
-# Export FBX
-print(f"Exporting FBX for {target_app}...")
-
-export_settings = {
-    "filepath": output_path,
-    "check_existing": False,
-    "use_selection": True,
-    "object_types": {'ARMATURE'},
-    "add_leaf_bones": False,
-    "bake_anim": True,
-    "bake_anim_use_all_actions": False,
-    "bake_anim_use_nla_strips": False,
-    "bake_anim_force_startend_keying": True,
-    "bake_anim_simplify_factor": 0.0,
-}
-
-if target_app == "maya":
-    export_settings["use_space_transform"] = True
-    export_settings["axis_forward"] = '-Z'
-    export_settings["axis_up"] = 'Y'
-    export_settings["primary_bone_axis"] = 'Y'
-    export_settings["secondary_bone_axis"] = 'X'
-elif target_app == "houdini":
-    export_settings["use_space_transform"] = True
-    export_settings["axis_forward"] = '-Z'
-    export_settings["axis_up"] = 'Y'
-    export_settings["primary_bone_axis"] = 'Y'
-    export_settings["secondary_bone_axis"] = 'X'
-else:
-    export_settings["use_space_transform"] = True
-    export_settings["axis_forward"] = '-Y'
-    export_settings["axis_up"] = 'Z'
-    export_settings["primary_bone_axis"] = 'Y'
-    export_settings["secondary_bone_axis"] = 'X'
-
-bpy.ops.export_scene.fbx(**export_settings)
-
-print(f"SUCCESS: Exported {num_frames} frames to {output_path}")
-print(f"Armature '{armature_obj.name}' has {len(armature_obj.data.bones)} bones")
-'''
-class ExportAnimatedMesh:
-    """
-    Combined export node - exports both Alembic geometry and FBX skeleton.
-    Convenience node for complete animation export workflow.
-    """
-    
-    @classmethod
-    def INPUT_TYPES(cls) -> Dict[str, Any]:
-        return {
-            "required": {
-                "mesh_sequence": ("MESH_SEQUENCE",),
-                "filename": ("STRING", {"default": "body_animation", "multiline": False}),
-                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0}),
-            },
-            "optional": {
-                "output_dir": ("STRING", {"default": "", "multiline": False}),
-                "export_alembic": ("BOOLEAN", {"default": True}),
-                "export_fbx": ("BOOLEAN", {"default": True}),
-                "export_obj_sequence": ("BOOLEAN", {"default": False}),
-                "scale": ("FLOAT", {"default": 1.0, "min": 0.001, "max": 1000.0}),
-            }
-        }
-    
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("alembic_path", "fbx_path", "status")
-    FUNCTION = "export_all"
-    CATEGORY = "SAM3DBody2abc/Export"
-    OUTPUT_NODE = True
-    
-    def export_all(
-        self,
-        mesh_sequence: List[Dict],
-        filename: str = "body_animation",
-        fps: float = 24.0,
-        output_dir: str = "",
-        export_alembic: bool = True,
-        export_fbx: bool = True,
-        export_obj_sequence: bool = False,
-        scale: float = 1.0,
-    ) -> Tuple[str, str, str]:
-        """Export to multiple formats."""
-        
-        abc_path = ""
-        fbx_path = ""
-        status_parts = []
-        
-        if export_alembic:
-            exporter = ExportAnimatedAlembic()
-            abc_path, status, count = exporter.export_alembic(
-                mesh_sequence, f"{filename}_mesh", fps,
-                output_dir, scale=scale
-            )
-            status_parts.append(f"ABC: {status}")
-        
-        if export_fbx:
-            exporter = ExportAnimatedFBX()
-            fbx_path, status, count = exporter.export_fbx(
-                mesh_sequence, f"{filename}_skeleton", fps,
-                output_dir, scale=scale
-            )
-            status_parts.append(f"FBX: {status}")
-        
-        return (abc_path, fbx_path, " | ".join(status_parts))
 
 
-class ExportOBJSequence:
-    """
-    Export mesh sequence as OBJ file sequence.
-    
-    Creates numbered OBJ files (frame_000001.obj, frame_000002.obj, etc.)
-    that can be imported into any 3D software using Stop Motion OBJ addon
-    or similar mesh sequence importers.
-    
-    This is the most reliable export format for animated meshes.
-    """
-    
-    @classmethod
-    def INPUT_TYPES(cls) -> Dict[str, Any]:
-        return {
-            "required": {
-                "mesh_sequence": ("MESH_SEQUENCE",),
-                "filename_prefix": ("STRING", {
-                    "default": "body",
-                    "multiline": False,
-                    "tooltip": "Prefix for OBJ files (e.g., 'body' -> body_000001.obj)"
-                }),
-            },
-            "optional": {
-                "output_dir": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "tooltip": "Leave empty for ComfyUI output folder"
-                }),
-                "scale": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.001,
-                    "max": 1000.0,
-                    "step": 0.01,
-                }),
-                "flip_yz": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Swap Y and Z axes (for Z-up software)"
-                }),
-                "write_mtl": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Write .mtl material files"
-                }),
-            }
-        }
-    
-    RETURN_TYPES = ("STRING", "STRING", "INT")
-    RETURN_NAMES = ("output_dir", "status", "frame_count")
-    FUNCTION = "export_obj_sequence"
-    CATEGORY = "SAM3DBody2abc/Export"
-    OUTPUT_NODE = True
-    
-    def export_obj_sequence(
-        self,
-        mesh_sequence: List[Dict],
-        filename_prefix: str = "body",
-        output_dir: str = "",
-        scale: float = 1.0,
-        flip_yz: bool = False,
-        write_mtl: bool = False,
-    ) -> Tuple[str, str, int]:
-        """Export mesh sequence as numbered OBJ files."""
-        
-        # Setup output directory
-        if not output_dir:
-            output_dir = folder_paths.get_output_directory()
-        
-        # Create subdirectory for OBJ sequence
-        seq_dir = os.path.join(output_dir, f"{filename_prefix}_obj_sequence")
-        os.makedirs(seq_dir, exist_ok=True)
-        
-        # Filter valid frames
-        valid_frames = [f for f in mesh_sequence if f.get("valid") and f.get("vertices") is not None]
-        
-        if not valid_frames:
-            return (seq_dir, "Error: No valid mesh data", 0)
-        
-        # Get reference faces (constant topology)
-        ref_faces = valid_frames[0].get("faces")
-        if ref_faces is None:
-            return (seq_dir, "Error: No face data", 0)
-        ref_faces = np.array(ref_faces)
-        
-        print(f"[ExportOBJSequence] Exporting {len(valid_frames)} frames to {seq_dir}")
-        
-        for idx, frame_data in enumerate(valid_frames):
-            vertices = np.array(frame_data["vertices"]) * scale
-            faces = frame_data.get("faces")
-            if faces is None:
-                faces = ref_faces
-            else:
-                faces = np.array(faces)
-            
-            # Apply axis flip if needed
-            if flip_yz:
-                vertices = vertices[:, [0, 2, 1]]  # Swap Y and Z
-                vertices[:, 2] = -vertices[:, 2]   # Flip new Z
-            
-            # Write OBJ file
-            frame_num = idx + 1
-            obj_path = os.path.join(seq_dir, f"{filename_prefix}_{frame_num:06d}.obj")
-            
-            with open(obj_path, 'w') as f:
-                f.write(f"# SAM3DBody2abc OBJ Export - Frame {frame_num}\n")
-                f.write(f"# Vertices: {len(vertices)}, Faces: {len(faces)}\n")
-                
-                if write_mtl:
-                    mtl_name = f"{filename_prefix}_{frame_num:06d}.mtl"
-                    f.write(f"mtllib {mtl_name}\n")
-                    f.write(f"usemtl body_material\n")
-                
-                # Write vertices
-                for v in vertices:
-                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
-                
-                # Write faces (1-indexed)
-                for face in faces:
-                    f.write(f"f {int(face[0])+1} {int(face[1])+1} {int(face[2])+1}\n")
-            
-            # Write MTL if requested
-            if write_mtl:
-                mtl_path = os.path.join(seq_dir, f"{filename_prefix}_{frame_num:06d}.mtl")
-                with open(mtl_path, 'w') as f:
-                    f.write("# SAM3DBody2abc MTL\n")
-                    f.write("newmtl body_material\n")
-                    f.write("Kd 0.8 0.6 0.5\n")  # Skin-ish color
-                    f.write("Ka 0.2 0.2 0.2\n")
-                    f.write("Ks 0.3 0.3 0.3\n")
-                    f.write("Ns 50.0\n")
-            
-            if (idx + 1) % 50 == 0:
-                print(f"[ExportOBJSequence] Written {idx + 1}/{len(valid_frames)} files...")
-        
-        # Write info file for importers
-        info_path = os.path.join(seq_dir, "sequence_info.json")
-        import json
-        with open(info_path, 'w') as f:
-            json.dump({
-                "prefix": filename_prefix,
-                "start_frame": 1,
-                "end_frame": len(valid_frames),
-                "total_frames": len(valid_frames),
-                "padding": 6,
-                "extension": "obj",
-                "pattern": f"{filename_prefix}_######.obj",
-                "vertex_count": len(valid_frames[0]["vertices"]),
-                "face_count": len(ref_faces),
-            }, f, indent=2)
-        
-        status = f"Exported {len(valid_frames)} OBJ files"
-        print(f"[ExportOBJSequence] {status}")
-        
-        return (seq_dir, status, len(valid_frames))
+# FBX export: See fbx_export.py for animated FBX with skeleton
+# BVH export: See bvh_export.py for skeleton animation export
+# OBJ sequence export removed - use Alembic or FBX instead

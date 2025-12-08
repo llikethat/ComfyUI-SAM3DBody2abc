@@ -1,6 +1,6 @@
 {
-  "last_node_id": 15,
-  "last_link_id": 20,
+  "last_node_id": 18,
+  "last_link_id": 25,
   "nodes": [
     {
       "id": 1,
@@ -47,12 +47,12 @@
         {"name": "mask", "type": "MASK", "link": null}
       ],
       "outputs": [
-        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [3], "slot_index": 0},
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [3, 20, 22], "slot_index": 0},
         {"name": "images", "type": "IMAGE", "links": null, "slot_index": 1},
         {"name": "frame_count", "type": "INT", "links": null, "slot_index": 2},
         {"name": "status", "type": "STRING", "links": [10], "slot_index": 3},
-        {"name": "focal_length", "type": "FLOAT", "links": null, "slot_index": 4},
-        {"name": "person_count", "type": "INT", "links": [11], "slot_index": 5}
+        {"name": "focal_length_info", "type": "STRING", "links": null, "slot_index": 4},
+        {"name": "person_count_info", "type": "STRING", "links": [11], "slot_index": 5}
       ],
       "title": "🎬 SAM3DBody2abc Batch Processor",
       "properties": {"Node name for S&R": "SAM3DBody2abc_BatchProcessor"},
@@ -62,7 +62,7 @@
       "id": 4,
       "type": "SAM3DBody2abc_ExportAlembic",
       "pos": [950, 150],
-      "size": {"0": 400, "1": 350},
+      "size": {"0": 380, "1": 260},
       "flags": {},
       "order": 3,
       "mode": 0,
@@ -74,45 +74,113 @@
         {"name": "status", "type": "STRING", "links": [13]},
         {"name": "exported_frames", "type": "INT", "links": [14]}
       ],
-      "title": "📦 Export Alembic (Static Camera)",
+      "title": "📦 Export Alembic",
       "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAlembic"},
       "widgets_values": ["sports_players", 30.0, "", true, true, 1.0, "Y", false, 0.3]
     },
     {
-      "id": 5,
-      "type": "ShowText|pysssss",
-      "pos": [1450, 150],
-      "size": {"0": 400, "1": 80},
+      "id": 15,
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
+      "pos": [1380, 150],
+      "size": {"0": 380, "1": 200},
       "flags": {},
       "order": 4,
       "mode": 0,
       "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 20}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [21]},
+        {"name": "status", "type": "STRING", "links": null},
+        {"name": "exported_frames", "type": "INT", "links": null}
+      ],
+      "title": "📦 Export Animated FBX",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAnimatedFBX"},
+      "widgets_values": ["sports_players", 30.0, "", 1.0, true, true]
+    },
+    {
+      "id": 16,
+      "type": "SAM3DBody2abc_ExportBVH",
+      "pos": [1810, 150],
+      "size": {"0": 380, "1": 180},
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 22}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [23]},
+        {"name": "status", "type": "STRING", "links": null},
+        {"name": "exported_frames", "type": "INT", "links": null}
+      ],
+      "title": "📦 Export BVH Skeleton",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportBVH"},
+      "widgets_values": ["sports_skeleton", 30.0, "", 100.0, false, true]
+    },
+    {
+      "id": 5,
+      "type": "ShowText|pysssss",
+      "pos": [950, 430],
+      "size": {"0": 380, "1": 80},
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
         {"name": "text", "type": "STRING", "link": 12}
       ],
-      "title": "📁 Primary Alembic Path",
+      "title": "📁 Alembic Path",
+      "properties": {}
+    },
+    {
+      "id": 17,
+      "type": "ShowText|pysssss",
+      "pos": [1380, 370],
+      "size": {"0": 380, "1": 80},
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 21}
+      ],
+      "title": "📁 FBX Path",
+      "properties": {}
+    },
+    {
+      "id": 18,
+      "type": "ShowText|pysssss",
+      "pos": [1810, 350],
+      "size": {"0": 380, "1": 80},
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 23}
+      ],
+      "title": "📁 BVH Path",
       "properties": {}
     },
     {
       "id": 6,
       "type": "ShowText|pysssss",
-      "pos": [1450, 250],
-      "size": {"0": 400, "1": 120},
+      "pos": [950, 530],
+      "size": {"0": 380, "1": 100},
       "flags": {},
-      "order": 5,
+      "order": 9,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "STRING", "link": 13}
       ],
-      "title": "📊 Export Status (Shows All Files)",
+      "title": "📊 Export Status (All Files)",
       "properties": {}
     },
     {
       "id": 7,
       "type": "ShowText|pysssss",
-      "pos": [1450, 400],
-      "size": {"0": 400, "1": 80},
+      "pos": [1380, 470],
+      "size": {"0": 380, "1": 80},
       "flags": {},
-      "order": 6,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "STRING", "link": 10}
@@ -123,29 +191,29 @@
     {
       "id": 8,
       "type": "ShowText|pysssss",
-      "pos": [1450, 500],
-      "size": {"0": 400, "1": 60},
+      "pos": [1810, 450],
+      "size": {"0": 380, "1": 60},
       "flags": {},
-      "order": 7,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "*", "link": 11}
       ],
-      "title": "👥 Person Count Detected",
+      "title": "👥 Person Count",
       "properties": {}
     },
     {
       "id": 9,
       "type": "ShowText|pysssss",
-      "pos": [1450, 580],
-      "size": {"0": 400, "1": 60},
+      "pos": [1380, 570],
+      "size": {"0": 380, "1": 60},
       "flags": {},
-      "order": 8,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "*", "link": 14}
       ],
-      "title": "📊 Total Frames Exported",
+      "title": "📊 Total Frames",
       "properties": {}
     }
   ],
@@ -154,10 +222,14 @@
     [2, 2, 0, 3, 0, "SAM3D_MODEL"],
     [3, 3, 0, 4, 0, "MESH_SEQUENCE"],
     [10, 3, 3, 7, 0, "STRING"],
-    [11, 3, 5, 8, 0, "*"],
+    [11, 3, 5, 8, 0, "STRING"],
     [12, 4, 0, 5, 0, "STRING"],
     [13, 4, 1, 6, 0, "STRING"],
-    [14, 4, 2, 9, 0, "*"]
+    [14, 4, 2, 9, 0, "INT"],
+    [20, 3, 0, 15, 0, "MESH_SEQUENCE"],
+    [21, 15, 0, 17, 0, "STRING"],
+    [22, 3, 0, 16, 0, "MESH_SEQUENCE"],
+    [23, 16, 0, 18, 0, "STRING"]
   ],
   "groups": [
     {
@@ -171,33 +243,32 @@
       "color": "#8a5a3e"
     },
     {
-      "title": "Export (static_camera=True)",
-      "bounding": [930, 80, 480, 500],
+      "title": "Export (Alembic / FBX / BVH)",
+      "bounding": [930, 80, 1300, 320],
       "color": "#3e8a5a"
     },
     {
       "title": "Output Info",
-      "bounding": [1430, 80, 450, 600],
+      "bounding": [930, 410, 1300, 280],
       "color": "#5a3e8a"
     }
   ],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.7,
+      "scale": 0.6,
       "offset": [0, 0]
     },
     "info": {
       "name": "Static Camera Sports/Surveillance",
-      "description": "Process video with fixed camera (sports, surveillance). Uses person_index=-1 to detect ALL people, static_camera=True to place each at world position. Creates SEPARATE Alembic files for each detected character.",
-      "author": "SAM3DBody2abc",
-      "version": "2.3.9",
+      "description": "Process video with fixed camera (sports, surveillance). Uses person_index=-1 to detect ALL people. Exports to Alembic (mesh), FBX (rigged), and BVH (skeleton) formats.",
+      "author": "SAM3DBody2abc v2.5.0",
       "notes": [
         "Set person_index=-1 to process ALL detected people",
-        "Set static_camera=True for fixed camera shots",
-        "Each person exports to separate file: sports_players_person0.abc, sports_players_person1.abc, etc.",
         "Lower bbox_threshold (0.5) to detect more people",
-        "Status output shows all exported files"
+        "Each person exports to separate file with ID suffix",
+        "FBX includes rigged skeleton with skinning weights",
+        "BVH is universal mocap format for retargeting"
       ]
     }
   },

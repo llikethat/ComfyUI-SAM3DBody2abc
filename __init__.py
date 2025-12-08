@@ -1,121 +1,107 @@
 """
 SAM3DBody2abc
 Extension for ComfyUI-SAM3DBody that adds video batch processing
-and animated export to Alembic (.abc) format.
+and animated export capabilities.
 
 This extension works WITH the existing ComfyUI-SAM3DBody node, extending it with:
 - Video/image sequence batch processing
-- Animated Alembic geometry export (full timeline)
+- Animated Alembic geometry export (full timeline in single file)
+- Animated FBX export with rigged skeleton (requires Blender)
+- BVH skeleton animation export (universal mocap format)
 - Real-time mesh overlay visualization on video frames
 
 Prerequisites:
 - ComfyUI-SAM3DBody (https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody)
-- ComfyUI-VideoHelperSuite (https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) [optional]
+- ComfyUI-VideoHelperSuite [optional]
+- Blender [for FBX and Alembic export]
 
 Author: Custom Extension
 License: MIT
-Version: 2.3.9
+Version: 2.5.0
 """
 
 import os
 import sys
 import importlib.util
 
-# Get the directory where this __init__.py is located
+__version__ = "2.5.0"
+__author__ = "Custom Extension"
+
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _nodes_dir = os.path.join(_current_dir, "nodes")
 
 def _load_module(name, filepath):
-    """Load a module from file path (works regardless of folder name)."""
+    """Load a module from file path."""
+    if not os.path.exists(filepath):
+        print(f"[SAM3DBody2abc] Warning: Module not found: {filepath}")
+        return None
     spec = importlib.util.spec_from_file_location(name, filepath)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    try:
+        spec.loader.exec_module(module)
+        return module
+    except Exception as e:
+        print(f"[SAM3DBody2abc] Error loading {name}: {e}")
+        return None
 
-# Load node modules using direct file paths
-_video_batch = _load_module(
-    "sam3dbody2abc_video_batch", 
-    os.path.join(_nodes_dir, "video_batch_processor.py")
-)
-_animated_export = _load_module(
-    "sam3dbody2abc_animated_export",
-    os.path.join(_nodes_dir, "animated_export.py")
-)
-_mesh_accumulator = _load_module(
-    "sam3dbody2abc_mesh_accumulator",
-    os.path.join(_nodes_dir, "mesh_accumulator.py")
-)
-_overlay_renderer = _load_module(
-    "sam3dbody2abc_overlay_renderer",
-    os.path.join(_nodes_dir, "overlay_renderer.py")
-)
+# Load core modules
+_video_batch = _load_module("sam3dbody2abc_video_batch", os.path.join(_nodes_dir, "video_batch_processor.py"))
+_animated_export = _load_module("sam3dbody2abc_animated_export", os.path.join(_nodes_dir, "animated_export.py"))
+_mesh_accumulator = _load_module("sam3dbody2abc_mesh_accumulator", os.path.join(_nodes_dir, "mesh_accumulator.py"))
+_overlay_renderer = _load_module("sam3dbody2abc_overlay_renderer", os.path.join(_nodes_dir, "overlay_renderer.py"))
+_bvh_export = _load_module("sam3dbody2abc_bvh_export", os.path.join(_nodes_dir, "bvh_export.py"))
+_fbx_export = _load_module("sam3dbody2abc_fbx_export", os.path.join(_nodes_dir, "fbx_export.py"))
 
-# Import classes from loaded modules
-SAM3DBodyBatchProcessor = _video_batch.SAM3DBodyBatchProcessor
-SAM3DBodySequenceProcess = _video_batch.SAM3DBodySequenceProcess
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
 
-ExportAnimatedAlembic = _animated_export.ExportAnimatedAlembic
-ExportOBJSequence = _animated_export.ExportOBJSequence
+# Video Batch Processing
+if _video_batch:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_BatchProcessor"] = _video_batch.SAM3DBodyBatchProcessor
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SequenceProcess"] = _video_batch.SAM3DBodySequenceProcess
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_BatchProcessor"] = "🎬 Batch Processor"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SequenceProcess"] = "📹 Sequence Process"
 
-MeshSequenceAccumulator = _mesh_accumulator.MeshSequenceAccumulator
-MeshSequenceFromSAM3DBody = _mesh_accumulator.MeshSequenceFromSAM3DBody
-MeshSequencePreview = _mesh_accumulator.MeshSequencePreview
-MeshSequenceSmooth = _mesh_accumulator.MeshSequenceSmooth
-ClearMeshSequence = _mesh_accumulator.ClearMeshSequence
-MayaCameraScript = _mesh_accumulator.MayaCameraScript
+# Export Nodes
+if _animated_export:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportAlembic"] = _animated_export.ExportAnimatedAlembic
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportAlembic"] = "📦 Export Alembic (.abc)"
 
-RenderMeshOverlay = _overlay_renderer.SAM3DBody2abcOverlay
-RenderMeshOverlayBatch = _overlay_renderer.SAM3DBody2abcOverlayBatch
+if _bvh_export:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportBVH"] = _bvh_export.ExportBVH
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportBVH"] = "📦 Export BVH Skeleton"
 
-NODE_CLASS_MAPPINGS = {
-    # Video/Batch Processing
-    "SAM3DBody2abc_BatchProcessor": SAM3DBodyBatchProcessor,
-    "SAM3DBody2abc_SequenceProcess": SAM3DBodySequenceProcess,
-    
-    # Animated Export (Alembic only - FBX removed due to issues)
-    "SAM3DBody2abc_ExportAlembic": ExportAnimatedAlembic,
-    "SAM3DBody2abc_ExportOBJSequence": ExportOBJSequence,
-    
-    # Mesh Sequence Management
-    "SAM3DBody2abc_Accumulator": MeshSequenceAccumulator,
-    "SAM3DBody2abc_MeshToSequence": MeshSequenceFromSAM3DBody,
-    "SAM3DBody2abc_Preview": MeshSequencePreview,
-    "SAM3DBody2abc_Smooth": MeshSequenceSmooth,
-    "SAM3DBody2abc_Clear": ClearMeshSequence,
-    "SAM3DBody2abc_MayaCamera": MayaCameraScript,
-    
-    # Overlay Rendering
-    "SAM3DBody2abc_Overlay": RenderMeshOverlay,
-    "SAM3DBody2abc_OverlayBatch": RenderMeshOverlayBatch,
-}
+if _fbx_export:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportAnimatedFBX"] = _fbx_export.ExportAnimatedFBX
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportAnimatedFBX"] = "📦 Export Animated FBX"
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    # Video/Batch Processing
-    "SAM3DBody2abc_BatchProcessor": "🎬 SAM3DBody2abc Batch Processor",
-    "SAM3DBody2abc_SequenceProcess": "📹 SAM3DBody2abc Sequence Process",
-    
-    # Animated Export
-    "SAM3DBody2abc_ExportAlembic": "📦 SAM3DBody2abc Export Alembic (.abc)",
-    "SAM3DBody2abc_ExportOBJSequence": "📁 SAM3DBody2abc Export OBJ Sequence",
-    
-    # Mesh Sequence Management
-    "SAM3DBody2abc_Accumulator": "📋 SAM3DBody2abc Accumulator",
-    "SAM3DBody2abc_MeshToSequence": "🔄 SAM3DBody2abc Mesh → Sequence",
-    "SAM3DBody2abc_Preview": "👁️ SAM3DBody2abc Preview",
-    "SAM3DBody2abc_Smooth": "〰️ SAM3DBody2abc Smooth",
-    "SAM3DBody2abc_Clear": "🗑️ SAM3DBody2abc Clear",
-    "SAM3DBody2abc_MayaCamera": "🎥 SAM3DBody2abc Maya Camera Script",
-    
-    # Overlay Rendering
-    "SAM3DBody2abc_Overlay": "🎨 SAM3DBody2abc Overlay",
-    "SAM3DBody2abc_OverlayBatch": "🎨 SAM3DBody2abc Overlay Batch",
-}
+# Mesh Sequence Tools
+if _mesh_accumulator:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Accumulator"] = _mesh_accumulator.MeshSequenceAccumulator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MeshToSequence"] = _mesh_accumulator.MeshSequenceFromSAM3DBody
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Preview"] = _mesh_accumulator.MeshSequencePreview
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Smooth"] = _mesh_accumulator.MeshSequenceSmooth
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Clear"] = _mesh_accumulator.ClearMeshSequence
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MayaCamera"] = _mesh_accumulator.MayaCameraScript
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MultiToSequence"] = _mesh_accumulator.MultiOutputToMeshSequence
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MultiAccumulator"] = _mesh_accumulator.MultiOutputBatchToSequence
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Accumulator"] = "📋 Accumulator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MeshToSequence"] = "🔄 Mesh → Sequence"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Preview"] = "👁️ Preview"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Smooth"] = "〰️ Smooth"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Clear"] = "🗑️ Clear"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MayaCamera"] = "🎥 Maya Camera Script"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MultiToSequence"] = "👥 Multi Output → Sequence"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MultiAccumulator"] = "👥 Multi Output Accumulator"
 
-# Custom type for mesh sequences
-MESH_SEQUENCE_TYPE = "MESH_SEQUENCE"
+# Overlay Rendering
+if _overlay_renderer:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Overlay"] = _overlay_renderer.SAM3DBody2abcOverlay
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_OverlayBatch"] = _overlay_renderer.SAM3DBody2abcOverlayBatch
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Overlay"] = "🎨 Overlay"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_OverlayBatch"] = "🎨 Overlay Batch"
+
+print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes")
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
-
-__version__ = "2.3.9"
-__author__ = "Custom Extension"

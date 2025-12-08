@@ -533,3 +533,249 @@ print("Film back: {sensor_width_mm:.1f}mm x {sensor_height_mm:.1f}mm")
         
         return (script,)
 
+
+class MultiOutputToMeshSequence:
+    """
+    Convert SAM3DBody's SAM3D_MULTI_OUTPUT to MESH_SEQUENCE format.
+    
+    This allows you to use SAM3DBody's native multi-person processing
+    (SAM 3D Body Process Multiple) and then export with our nodes.
+    
+    Workflow:
+    1. SAM3 Video Segmentation → Get masks for each person
+    2. SAM 3D Body Process Multiple → Get mesh data for all people
+    3. This node → Convert to MESH_SEQUENCE (one per person)
+    4. Export nodes → Alembic, FBX, BVH
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "multi_mesh_data": ("SAM3D_MULTI_OUTPUT",),
+                "person_index": ("INT", {
+                    "default": 0,
+                    "min": -1,
+                    "max": 100,
+                    "tooltip": "-1 for all people (separate sequences), 0+ for specific person"
+                }),
+            },
+            "optional": {
+                "frame_index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 100000,
+                    "tooltip": "Frame index for this data (for video sequences)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("MESH_SEQUENCE", "INT", "STRING")
+    RETURN_NAMES = ("mesh_sequence", "num_people", "status")
+    FUNCTION = "convert"
+    CATEGORY = "SAM3DBody2abc/Video"
+    
+    # Class-level storage for accumulating frames
+    _sequences: Dict[str, List[Dict]] = {}
+    
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")  # Always execute
+    
+    def convert(
+        self,
+        multi_mesh_data: Dict,
+        person_index: int = 0,
+        frame_index: int = 0,
+    ) -> Tuple[List[Dict], int, str]:
+        """
+        Convert SAM3D_MULTI_OUTPUT to MESH_SEQUENCE.
+        
+        For video processing, call this node for each frame to accumulate
+        into a full sequence.
+        """
+        num_people = multi_mesh_data.get("num_people", 0)
+        people = multi_mesh_data.get("people", [])
+        faces = multi_mesh_data.get("faces")
+        
+        if not people:
+            return ([], 0, "Error: No people in multi_mesh_data")
+        
+        # Determine which people to process
+        if person_index == -1:
+            # All people
+            indices_to_process = list(range(num_people))
+        elif person_index < num_people:
+            indices_to_process = [person_index]
+        else:
+            return ([], num_people, f"Error: person_index {person_index} >= num_people {num_people}")
+        
+        # Build mesh sequence
+        mesh_sequence = []
+        
+        for idx in indices_to_process:
+            person_data = people[idx]
+            
+            # Extract vertices
+            vertices = person_data.get("pred_vertices")
+            if vertices is None:
+                continue
+            if isinstance(vertices, torch.Tensor):
+                vertices = vertices.cpu().numpy()
+            
+            # Extract joints
+            joints = person_data.get("pred_keypoints_3d") or person_data.get("pred_joint_coords")
+            if joints is not None and isinstance(joints, torch.Tensor):
+                joints = joints.cpu().numpy()
+            
+            # Extract camera translation
+            cam_t = person_data.get("pred_cam_t")
+            if cam_t is not None and isinstance(cam_t, torch.Tensor):
+                cam_t = cam_t.cpu().numpy()
+            
+            # Extract focal length
+            focal = person_data.get("focal_length", 5000.0)
+            if isinstance(focal, (torch.Tensor, np.ndarray)):
+                focal = float(focal.flatten()[0])
+            
+            # Build mesh frame data
+            mesh_data = {
+                "frame_index": frame_index,
+                "person_index": idx,
+                "vertices": vertices,
+                "faces": faces if isinstance(faces, np.ndarray) else np.array(faces) if faces else None,
+                "joints": joints,
+                "cam_t": cam_t,
+                "focal_length": focal,
+                "valid": True,
+            }
+            
+            mesh_sequence.append(mesh_data)
+        
+        status = f"Converted {len(mesh_sequence)} person(s) from frame {frame_index}"
+        
+        return (mesh_sequence, num_people, status)
+
+
+class MultiOutputBatchToSequence:
+    """
+    Accumulate multiple frames of SAM3D_MULTI_OUTPUT into a complete MESH_SEQUENCE.
+    
+    Use this for video processing with SAM3DBody's Process Multiple node.
+    This node accumulates frames over multiple calls to build a complete sequence.
+    """
+    
+    # Class-level storage
+    _sequences: Dict[str, Dict[int, List[Dict]]] = {}
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "multi_mesh_data": ("SAM3D_MULTI_OUTPUT",),
+                "sequence_id": ("STRING", {
+                    "default": "multi_person_sequence",
+                    "multiline": False,
+                }),
+                "frame_index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 100000,
+                }),
+                "person_index": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 100,
+                    "tooltip": "Which person to extract (by index in each frame)"
+                }),
+            },
+            "optional": {
+                "reset": ("BOOLEAN", {"default": False}),
+            }
+        }
+    
+    RETURN_TYPES = ("MESH_SEQUENCE", "INT", "STRING")
+    RETURN_NAMES = ("mesh_sequence", "frame_count", "status")
+    FUNCTION = "accumulate"
+    CATEGORY = "SAM3DBody2abc/Video"
+    
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+    
+    def accumulate(
+        self,
+        multi_mesh_data: Dict,
+        sequence_id: str = "multi_person_sequence",
+        frame_index: int = 0,
+        person_index: int = 0,
+        reset: bool = False,
+    ) -> Tuple[List[Dict], int, str]:
+        """
+        Accumulate frames into sequence for a specific person.
+        """
+        # Initialize or reset
+        if reset or sequence_id not in self._sequences:
+            self._sequences[sequence_id] = {}
+        
+        seq_data = self._sequences[sequence_id]
+        
+        # Get person data
+        people = multi_mesh_data.get("people", [])
+        faces = multi_mesh_data.get("faces")
+        num_people = multi_mesh_data.get("num_people", len(people))
+        
+        if person_index >= num_people:
+            return (list(seq_data.values()), len(seq_data), 
+                    f"Warning: person_index {person_index} >= num_people {num_people}")
+        
+        person_data = people[person_index]
+        
+        # Extract vertices
+        vertices = person_data.get("pred_vertices")
+        if vertices is not None:
+            if isinstance(vertices, torch.Tensor):
+                vertices = vertices.cpu().numpy()
+            
+            # Extract other data
+            joints = person_data.get("pred_keypoints_3d") or person_data.get("pred_joint_coords")
+            if joints is not None and isinstance(joints, torch.Tensor):
+                joints = joints.cpu().numpy()
+            
+            cam_t = person_data.get("pred_cam_t")
+            if cam_t is not None and isinstance(cam_t, torch.Tensor):
+                cam_t = cam_t.cpu().numpy()
+            
+            focal = person_data.get("focal_length", 5000.0)
+            if isinstance(focal, (torch.Tensor, np.ndarray)):
+                focal = float(focal.flatten()[0])
+            
+            # Store frame
+            seq_data[frame_index] = {
+                "frame_index": frame_index,
+                "person_index": person_index,
+                "vertices": vertices,
+                "faces": faces if isinstance(faces, np.ndarray) else np.array(faces) if faces else None,
+                "joints": joints,
+                "cam_t": cam_t,
+                "focal_length": focal,
+                "valid": True,
+            }
+        
+        # Build sorted sequence
+        sorted_frames = [seq_data[k] for k in sorted(seq_data.keys())]
+        
+        status = f"Person {person_index}: {len(sorted_frames)} frames accumulated"
+        
+        return (sorted_frames, len(sorted_frames), status)
+    
+    @classmethod
+    def clear_sequence(cls, sequence_id: str):
+        if sequence_id in cls._sequences:
+            del cls._sequences[sequence_id]
+    
+    @classmethod
+    def clear_all(cls):
+        cls._sequences.clear()
+
+
