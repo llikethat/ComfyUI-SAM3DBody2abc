@@ -617,16 +617,22 @@ class SAM3DBodyBatchProcessor:
                         num_people = len(outputs)
                         if num_people > max_people_detected:
                             max_people_detected = num_people
+                            if num_people > 1:
+                                print(f"[SAM3DBody2abc] Frame {frame_idx}: Detected {num_people} people")
                         
                         # Select which person(s) to process
                         if person_index == -1:
                             # All people - create separate entries for each
                             persons_to_process = list(range(num_people))
+                            if idx == 0 and num_people > 1:
+                                print(f"[SAM3DBody2abc] person_index=-1: Processing ALL {num_people} detected people")
                         elif person_index < num_people:
                             persons_to_process = [person_index]
                         else:
                             # Requested person index doesn't exist, fall back to first
                             persons_to_process = [0]
+                            if idx == 0:
+                                print(f"[SAM3DBody2abc] Warning: person_index={person_index} not found, using 0")
                         
                         for p_idx in persons_to_process:
                             output = outputs[p_idx]

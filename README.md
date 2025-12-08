@@ -382,12 +382,23 @@ Load Video → SAM3DBody Batch Processor → Export Alembic
 
 ## 📝 Changelog
 
-### v2.3.9 - ComfyUI-SAM3 Integration & Per-Frame Masks
+### v2.3.9 - ComfyUI-SAM3 Integration & Multi-Character Export
 - **ADDED**: Full support for per-frame masks from ComfyUI-SAM3
 - **ADDED**: Auto-detection of per-frame vs single mask input
+- **ADDED**: Separate Alembic file export per character (filename_person0.abc, filename_person1.abc, etc.)
+- **ADDED**: Export status now shows all generated files
+- **ADDED**: Sample workflows for SAM3 integration and static camera
 - **IMPROVED**: Mask bounding box computed per-frame for accurate tracking
+- **IMPROVED**: Better logging for multi-person detection
 - **DOCS**: Added workflow guide for multi-character segmentation with SAM3
 - **NOTE**: Use [ComfyUI-SAM3](https://github.com/neverbiasu/ComfyUI-SAM3) for character selection
+
+### Included Workflows:
+| Workflow | Description |
+|----------|-------------|
+| `video_to_animated_export.json` | Basic video → Alembic + overlay |
+| `sam3_multi_character.json` | SAM3 character selection → 3D body → Alembic |
+| `static_camera_sports.json` | Sports/surveillance with all characters at world positions |
 
 ### v2.3.8 - Static Camera Mode for Sports/Surveillance
 - **ADDED**: `static_camera` option in Alembic export

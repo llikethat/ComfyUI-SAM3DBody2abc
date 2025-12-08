@@ -158,7 +158,12 @@ class ExportAnimatedAlembic:
         temporal_smoothing: float = 0.5,
     ) -> Tuple[str, str, int]:
         """
-        Export complete animation to single Alembic file.
+        Export complete animation to Alembic file(s).
+        
+        If multiple people detected (person_index varies), exports SEPARATE files:
+        - filename_person0.abc
+        - filename_person1.abc
+        - etc.
         
         If world_space=True, applies the same transforms as the overlay renderer:
         - 180° rotation around X axis
@@ -174,143 +179,175 @@ class ExportAnimatedAlembic:
             output_dir = folder_paths.get_output_directory()
         os.makedirs(output_dir, exist_ok=True)
         
-        output_path = os.path.join(output_dir, f"{filename}.abc")
-        
-        # Handle existing files
-        counter = 1
-        while os.path.exists(output_path):
-            output_path = os.path.join(output_dir, f"{filename}_{counter:04d}.abc")
-            counter += 1
-        
         # Filter valid frames
         valid_frames = [f for f in mesh_sequence if f.get("valid") and f.get("vertices") is not None]
         
         if not valid_frames:
-            return (output_path, "Error: No valid mesh data", 0)
+            return ("", "Error: No valid mesh data", 0)
         
-        # Apply world_space transform (same as overlay renderer)
-        if world_space and not center_mesh:
-            if static_camera:
-                # STATIC CAMERA MODE: For sports, surveillance, wide shots
-                # Each character is placed at their absolute world position
-                # Camera is at origin, characters move in world space
-                print("[ExportAnimatedAlembic] Static camera mode - placing characters at absolute positions")
-                
-                for i, frame in enumerate(valid_frames):
-                    verts = np.array(frame["vertices"])
-                    
-                    # Get camera translation for this frame
-                    cam_t = frame.get("camera")
-                    
-                    if cam_t is not None:
-                        if hasattr(cam_t, 'cpu'):
-                            cam_t = cam_t.cpu().numpy()
-                        cam_t = np.array(cam_t).flatten()
-                        
-                        # cam_t = [x, y, z] means camera at (x, y, z) relative to person
-                        # So person is at (-x, -y, -z) relative to camera
-                        # With camera at origin, person position = -cam_t (with X flip)
-                        person_pos = np.array([cam_t[0], -cam_t[1], -cam_t[2]])
-                    else:
-                        person_pos = np.array([0.0, 0.0, 0.0])
-                    
-                    # Step 1: Apply 180° rotation around X axis (negate Y and Z)
-                    verts[:, 1] = -verts[:, 1]
-                    verts[:, 2] = -verts[:, 2]
-                    
-                    # Step 2: Translate to world position
-                    verts = verts + person_pos
-                    
-                    frame["vertices"] = verts
-                    
-                    # Also transform joints if present
-                    if frame.get("joints") is not None:
-                        joints = np.array(frame["joints"])
-                        joints[:, 1] = -joints[:, 1]
-                        joints[:, 2] = -joints[:, 2]
-                        joints = joints + person_pos
-                        frame["joints"] = joints
-                    
-                    if i == 0:
-                        person_idx = frame.get("person_index", 0)
-                        print(f"[ExportAnimatedAlembic] Person {person_idx} frame 0 position: {person_pos}")
+        # ========================================
+        # GROUP FRAMES BY PERSON INDEX
+        # ========================================
+        person_frames = {}
+        for frame in valid_frames:
+            person_idx = frame.get("person_index", 0)
+            if person_idx not in person_frames:
+                person_frames[person_idx] = []
+            person_frames[person_idx].append(frame)
+        
+        num_people = len(person_frames)
+        print(f"[ExportAnimatedAlembic] Found {num_people} person(s) in mesh sequence")
+        for p_idx, frames in person_frames.items():
+            print(f"[ExportAnimatedAlembic]   Person {p_idx}: {len(frames)} frames")
+        
+        # ========================================
+        # EXPORT EACH PERSON TO SEPARATE FILE
+        # ========================================
+        exported_files = []
+        total_frames = 0
+        
+        for person_idx in sorted(person_frames.keys()):
+            person_valid_frames = person_frames[person_idx]
+            
+            # Generate filename for this person
+            if num_people > 1:
+                person_filename = f"{filename}_person{person_idx}"
             else:
-                # TRACKING CAMERA MODE: Camera follows the subject
-                # First frame is reference, subsequent frames show relative movement
-                print("[ExportAnimatedAlembic] Tracking camera mode - relative to first frame")
-                
-                # Get reference camera from first frame (for relative positioning)
-                ref_cam = valid_frames[0].get("camera")
-                if ref_cam is not None:
-                    if hasattr(ref_cam, 'cpu'):
-                        ref_cam = ref_cam.cpu().numpy()
-                    ref_cam = np.array(ref_cam).flatten()
-                else:
-                    ref_cam = np.array([0.0, 0.0, 0.0])
-                
-                # Also check last frame's camera for comparison
-                last_cam = valid_frames[-1].get("camera")
-                if last_cam is not None:
-                    if hasattr(last_cam, 'cpu'):
-                        last_cam = last_cam.cpu().numpy()
-                    last_cam = np.array(last_cam).flatten()
-                    print(f"[ExportAnimatedAlembic] Camera frame 0: {ref_cam}")
-                    print(f"[ExportAnimatedAlembic] Camera frame {len(valid_frames)-1}: {last_cam}")
-                    print(f"[ExportAnimatedAlembic] Camera delta: {last_cam - ref_cam}")
-                
-                for i, frame in enumerate(valid_frames):
-                    verts = np.array(frame["vertices"])
+                person_filename = filename
+            
+            output_path = os.path.join(output_dir, f"{person_filename}.abc")
+            
+            # Handle existing files
+            counter = 1
+            while os.path.exists(output_path):
+                output_path = os.path.join(output_dir, f"{person_filename}_{counter:04d}.abc")
+                counter += 1
+            
+            print(f"[ExportAnimatedAlembic] Exporting Person {person_idx} → {os.path.basename(output_path)}")
+            
+            # Apply world_space transform (same as overlay renderer)
+            if world_space and not center_mesh:
+                if static_camera:
+                    # STATIC CAMERA MODE: For sports, surveillance, wide shots
+                    print(f"[ExportAnimatedAlembic] Person {person_idx}: Static camera mode")
                     
-                    # Get camera translation for this frame
-                    cam_t = frame.get("camera")
-                    offset = np.array([0.0, 0.0, 0.0])
-                    
-                    if cam_t is not None:
-                        if hasattr(cam_t, 'cpu'):
-                            cam_t = cam_t.cpu().numpy()
-                        cam_t = np.array(cam_t).flatten()
+                    for i, frame in enumerate(person_valid_frames):
+                        verts = np.array(frame["vertices"])
+                        cam_t = frame.get("camera")
                         
-                        # Calculate offset relative to first frame
-                        # cam_t[0] is flipped in Meta's convention
-                        camera_trans = np.array([-cam_t[0], cam_t[1], cam_t[2]])
-                        ref_trans = np.array([-ref_cam[0], ref_cam[1], ref_cam[2]])
-                        offset = camera_trans - ref_trans
+                        if cam_t is not None:
+                            if hasattr(cam_t, 'cpu'):
+                                cam_t = cam_t.cpu().numpy()
+                            cam_t = np.array(cam_t).flatten()
+                            person_pos = np.array([cam_t[0], -cam_t[1], -cam_t[2]])
+                        else:
+                            person_pos = np.array([0.0, 0.0, 0.0])
+                        
+                        # Apply 180° rotation + translate to world position
+                        verts[:, 1] = -verts[:, 1]
+                        verts[:, 2] = -verts[:, 2]
+                        verts = verts + person_pos
+                        frame["vertices"] = verts
+                        
+                        if frame.get("joints") is not None:
+                            joints = np.array(frame["joints"])
+                            joints[:, 1] = -joints[:, 1]
+                            joints[:, 2] = -joints[:, 2]
+                            joints = joints + person_pos
+                            frame["joints"] = joints
+                        
+                        if i == 0:
+                            print(f"[ExportAnimatedAlembic] Person {person_idx} start position: {person_pos}")
+                else:
+                    # TRACKING CAMERA MODE
+                    print(f"[ExportAnimatedAlembic] Person {person_idx}: Tracking camera mode")
                     
-                    # Step 1: Apply 180° rotation around X axis (negate Y and Z)
-                    verts[:, 1] = -verts[:, 1]
-                    verts[:, 2] = -verts[:, 2]
+                    ref_cam = person_valid_frames[0].get("camera")
+                    if ref_cam is not None:
+                        if hasattr(ref_cam, 'cpu'):
+                            ref_cam = ref_cam.cpu().numpy()
+                        ref_cam = np.array(ref_cam).flatten()
+                    else:
+                        ref_cam = np.array([0.0, 0.0, 0.0])
                     
-                    # Step 2: Apply camera translation offset (also rotated 180° around X)
-                    # In rotated space: X stays same, Y and Z are negated
-                    rotated_offset = np.array([offset[0], -offset[1], -offset[2]])
-                    verts = verts - rotated_offset
-                    
-                    frame["vertices"] = verts
-                    
-                    # Also transform joints if present
-                    if frame.get("joints") is not None:
-                        joints = np.array(frame["joints"])
-                        joints[:, 1] = -joints[:, 1]
-                        joints[:, 2] = -joints[:, 2]
-                        joints = joints - rotated_offset
-                        frame["joints"] = joints
+                    for i, frame in enumerate(person_valid_frames):
+                        verts = np.array(frame["vertices"])
+                        cam_t = frame.get("camera")
+                        offset = np.array([0.0, 0.0, 0.0])
+                        
+                        if cam_t is not None:
+                            if hasattr(cam_t, 'cpu'):
+                                cam_t = cam_t.cpu().numpy()
+                            cam_t = np.array(cam_t).flatten()
+                            camera_trans = np.array([-cam_t[0], cam_t[1], cam_t[2]])
+                            ref_trans = np.array([-ref_cam[0], ref_cam[1], ref_cam[2]])
+                            offset = camera_trans - ref_trans
+                        
+                        verts[:, 1] = -verts[:, 1]
+                        verts[:, 2] = -verts[:, 2]
+                        rotated_offset = np.array([offset[0], -offset[1], -offset[2]])
+                        verts = verts - rotated_offset
+                        frame["vertices"] = verts
+                        
+                        if frame.get("joints") is not None:
+                            joints = np.array(frame["joints"])
+                            joints[:, 1] = -joints[:, 1]
+                            joints[:, 2] = -joints[:, 2]
+                            joints = joints - rotated_offset
+                            frame["joints"] = joints
+            
+            # Apply temporal smoothing
+            if temporal_smoothing > 0:
+                person_valid_frames = self._apply_temporal_smoothing(person_valid_frames, temporal_smoothing)
+            
+            # Export this person
+            export_result = self._export_single_person(
+                person_valid_frames, output_path, fps, include_joints, scale, up_axis, center_mesh
+            )
+            
+            if export_result[0]:  # If file was created
+                exported_files.append(export_result[0])
+                total_frames += export_result[2]
         
-        # Apply temporal smoothing to reduce jitter
-        if temporal_smoothing > 0:
-            valid_frames = self._apply_temporal_smoothing(valid_frames, temporal_smoothing)
+        # ========================================
+        # RETURN RESULTS
+        # ========================================
+        if not exported_files:
+            return ("", "Error: No files exported", 0)
         
+        # Return first file path, but include all in status
+        primary_path = exported_files[0]
+        
+        if num_people > 1:
+            file_list = ", ".join([os.path.basename(f) for f in exported_files])
+            status = f"Exported {num_people} characters: {file_list}"
+        else:
+            status = f"Exported {total_frames} frames to {os.path.basename(primary_path)}"
+        
+        print(f"[ExportAnimatedAlembic] {status}")
+        
+        return (primary_path, status, total_frames)
+    
+    def _export_single_person(
+        self,
+        frames: List[Dict],
+        output_path: str,
+        fps: float,
+        include_joints: bool,
+        scale: float,
+        up_axis: str,
+        center_mesh: bool,
+    ) -> Tuple[str, str, int]:
+        """Export a single person's frames to Alembic."""
         # Try native Alembic export (PyAlembic - not SQLAlchemy alembic!)
         try:
-            # Check for the correct PyAlembic package (not SQLAlchemy's alembic)
             from alembic import Abc, AbcGeom
             import imath
-            print("[ExportAnimatedAlembic] PyAlembic found, using native export...")
             result = self._export_native_alembic(
-                valid_frames, output_path, fps, include_joints, scale, up_axis, center_mesh
+                frames, output_path, fps, include_joints, scale, up_axis, center_mesh
             )
             return result
         except ImportError as e:
-            # Could be missing PyAlembic entirely, or have wrong package (SQLAlchemy)
             print(f"[ExportAnimatedAlembic] PyAlembic not available ({e}), trying Blender...")
         except Exception as e:
             print(f"[ExportAnimatedAlembic] PyAlembic export failed: {e}, trying Blender...")
@@ -318,7 +355,7 @@ class ExportAnimatedAlembic:
         # Try Blender export
         try:
             result = self._export_via_blender(
-                valid_frames, output_path, fps, include_joints, scale, up_axis, center_mesh
+                frames, output_path, fps, include_joints, scale, up_axis, center_mesh
             )
             return result
         except Exception as e:
@@ -326,7 +363,7 @@ class ExportAnimatedAlembic:
         
         # Fallback to OBJ sequence with animation metadata
         return self._export_with_metadata(
-            valid_frames, output_path, fps, scale, up_axis, center_mesh
+            frames, output_path, fps, scale, up_axis, center_mesh
         )
     
     def _export_native_alembic(

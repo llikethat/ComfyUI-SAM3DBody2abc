@@ -1,0 +1,205 @@
+{
+  "last_node_id": 15,
+  "last_link_id": 20,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 150],
+      "size": {"0": 315, "1": 250},
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "frame_count", "type": "INT", "links": null},
+        {"name": "AUDIO", "type": "AUDIO", "links": null},
+        {"name": "VHS_VIDEOINFO", "type": "VHS_VIDEOINFO", "links": null}
+      ],
+      "title": "🎥 Load Sports Video",
+      "properties": {"Node name for S&R": "VHS_LoadVideo"}
+    },
+    {
+      "id": 2,
+      "type": "LoadSAM3DBodyModel",
+      "pos": [50, 450],
+      "size": {"0": 315, "1": 82},
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "outputs": [
+        {"name": "SAM3D_MODEL", "type": "SAM3D_MODEL", "links": [2], "slot_index": 0}
+      ],
+      "title": "🧍 Load SAM 3D Body Model",
+      "properties": {"Node name for S&R": "LoadSAM3DBodyModel"}
+    },
+    {
+      "id": 3,
+      "type": "SAM3DBody2abc_BatchProcessor",
+      "pos": [450, 150],
+      "size": {"0": 400, "1": 450},
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "SAM3D_MODEL", "link": 2},
+        {"name": "images", "type": "IMAGE", "link": 1},
+        {"name": "mask", "type": "MASK", "link": null}
+      ],
+      "outputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [3], "slot_index": 0},
+        {"name": "images", "type": "IMAGE", "links": null, "slot_index": 1},
+        {"name": "frame_count", "type": "INT", "links": null, "slot_index": 2},
+        {"name": "status", "type": "STRING", "links": [10], "slot_index": 3},
+        {"name": "focal_length", "type": "FLOAT", "links": null, "slot_index": 4},
+        {"name": "person_count", "type": "INT", "links": [11], "slot_index": 5}
+      ],
+      "title": "🎬 SAM3DBody2abc Batch Processor",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_BatchProcessor"},
+      "widgets_values": [0.5, "full", 0, -1, 1, 45.0, 0.0, 0.0, 0.0, false, 1, -1]
+    },
+    {
+      "id": 4,
+      "type": "SAM3DBody2abc_ExportAlembic",
+      "pos": [950, 150],
+      "size": {"0": 400, "1": 350},
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 3}
+      ],
+      "outputs": [
+        {"name": "file_path", "type": "STRING", "links": [12]},
+        {"name": "status", "type": "STRING", "links": [13]},
+        {"name": "exported_frames", "type": "INT", "links": [14]}
+      ],
+      "title": "📦 Export Alembic (Static Camera)",
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAlembic"},
+      "widgets_values": ["sports_players", 30.0, "", true, true, 1.0, "Y", false, 0.3]
+    },
+    {
+      "id": 5,
+      "type": "ShowText|pysssss",
+      "pos": [1450, 150],
+      "size": {"0": 400, "1": 80},
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 12}
+      ],
+      "title": "📁 Primary Alembic Path",
+      "properties": {}
+    },
+    {
+      "id": 6,
+      "type": "ShowText|pysssss",
+      "pos": [1450, 250],
+      "size": {"0": 400, "1": 120},
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 13}
+      ],
+      "title": "📊 Export Status (Shows All Files)",
+      "properties": {}
+    },
+    {
+      "id": 7,
+      "type": "ShowText|pysssss",
+      "pos": [1450, 400],
+      "size": {"0": 400, "1": 80},
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 10}
+      ],
+      "title": "📊 Processing Status",
+      "properties": {}
+    },
+    {
+      "id": 8,
+      "type": "ShowText|pysssss",
+      "pos": [1450, 500],
+      "size": {"0": 400, "1": 60},
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "*", "link": 11}
+      ],
+      "title": "👥 Person Count Detected",
+      "properties": {}
+    },
+    {
+      "id": 9,
+      "type": "ShowText|pysssss",
+      "pos": [1450, 580],
+      "size": {"0": 400, "1": 60},
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "*", "link": 14}
+      ],
+      "title": "📊 Total Frames Exported",
+      "properties": {}
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 1, "IMAGE"],
+    [2, 2, 0, 3, 0, "SAM3D_MODEL"],
+    [3, 3, 0, 4, 0, "MESH_SEQUENCE"],
+    [10, 3, 3, 7, 0, "STRING"],
+    [11, 3, 5, 8, 0, "*"],
+    [12, 4, 0, 5, 0, "STRING"],
+    [13, 4, 1, 6, 0, "STRING"],
+    [14, 4, 2, 9, 0, "*"]
+  ],
+  "groups": [
+    {
+      "title": "Input",
+      "bounding": [30, 80, 380, 500],
+      "color": "#3f789e"
+    },
+    {
+      "title": "Processing (person_index=-1 for ALL)",
+      "bounding": [430, 80, 480, 550],
+      "color": "#8a5a3e"
+    },
+    {
+      "title": "Export (static_camera=True)",
+      "bounding": [930, 80, 480, 500],
+      "color": "#3e8a5a"
+    },
+    {
+      "title": "Output Info",
+      "bounding": [1430, 80, 450, 600],
+      "color": "#5a3e8a"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7,
+      "offset": [0, 0]
+    },
+    "info": {
+      "name": "Static Camera Sports/Surveillance",
+      "description": "Process video with fixed camera (sports, surveillance). Uses person_index=-1 to detect ALL people, static_camera=True to place each at world position. Creates SEPARATE Alembic files for each detected character.",
+      "author": "SAM3DBody2abc",
+      "version": "2.3.9",
+      "notes": [
+        "Set person_index=-1 to process ALL detected people",
+        "Set static_camera=True for fixed camera shots",
+        "Each person exports to separate file: sports_players_person0.abc, sports_players_person1.abc, etc.",
+        "Lower bbox_threshold (0.5) to detect more people",
+        "Status output shows all exported files"
+      ]
+    }
+  },
+  "version": 0.4
+}
