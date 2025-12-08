@@ -94,6 +94,24 @@ class BatchProcess:
             return data.copy()
         return data
     
+    def _compute_bbox_from_mask(self, mask_np):
+        """Compute bounding box from binary mask."""
+        # mask_np should be (H, W) or (H, W, 1)
+        if mask_np.ndim == 3:
+            mask_np = mask_np[:, :, 0]
+        
+        rows = np.any(mask_np > 0.5, axis=1)
+        cols = np.any(mask_np > 0.5, axis=0)
+        
+        if not rows.any() or not cols.any():
+            return None
+        
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        
+        # Return as [x1, y1, x2, y2]
+        return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
+    
     def _apply_smoothing(self, frames: Dict, strength: float, radius: int) -> Dict:
         """Apply temporal smoothing to vertices and joints."""
         if strength <= 0 or len(frames) < 3:
@@ -205,12 +223,23 @@ class BatchProcess:
                 
                 # Get mask if provided
                 frame_mask = None
+                frame_bbox = None
+                use_mask = False
+                
                 if mask is not None and frame_idx < mask.shape[0]:
                     mask_np = mask[frame_idx].cpu().numpy()
                     if mask_np.ndim == 2:
                         frame_mask = mask_np[..., np.newaxis]
                     else:
                         frame_mask = mask_np
+                    
+                    # Compute bbox from mask (required by SAM3DBody)
+                    frame_bbox = self._compute_bbox_from_mask(mask_np)
+                    if frame_bbox is not None:
+                        use_mask = True
+                    else:
+                        # Empty mask, skip mask-conditioned inference
+                        frame_mask = None
                 
                 # Save temp image
                 with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -221,9 +250,9 @@ class BatchProcess:
                     # Process frame
                     outputs = estimator.process_one_image(
                         tmp_path,
-                        bboxes=None,
+                        bboxes=frame_bbox,
                         masks=frame_mask,
-                        use_mask=frame_mask is not None,
+                        use_mask=use_mask,
                         inference_type=inference_type,
                     )
                 finally:
