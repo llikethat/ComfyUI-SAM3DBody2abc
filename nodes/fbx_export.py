@@ -1,141 +1,96 @@
 """
-Animated FBX Export for SAM3DBody2abc
-Export full video sequences as animated FBX files with rigged skeleton.
+FBX Export for SAM3DBody2abc
+Convert JSON sequence to animated FBX file.
 
-This creates a SINGLE FBX file containing:
-- Animated mesh (using shape keys or vertex animation)
-- Animated skeleton with keyframes for each frame
-- Proper skinning weights from MHR model
+Fixed settings:
+- Scale: 1.0
+- Up axis: Y
+- Coordinate system: Blender/Maya compatible
 
-Requires Blender to be installed for FBX conversion.
+Requires Blender for FBX conversion.
 """
 
 import os
 import sys
 import json
-import time
-import tempfile
 import subprocess
+import shutil
+import glob
 import numpy as np
-import torch
 from typing import Dict, List, Tuple, Any, Optional
 import folder_paths
 
-# Import shared find_blender function
-from .animated_export import find_blender
+# Timeout for Blender subprocess (10 minutes for long animations)
+BLENDER_TIMEOUT = 600
 
-# Timeout for Blender subprocess
-BLENDER_TIMEOUT = 600  # 10 minutes for long animations
-
-# Get path to our Blender script
+# Get path to Blender script
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _lib_dir = os.path.join(os.path.dirname(_current_dir), "lib")
-BLENDER_ANIM_SCRIPT = os.path.join(_lib_dir, "blender_export_animated_fbx.py")
+BLENDER_SCRIPT = os.path.join(_lib_dir, "blender_fbx_export.py")
+
+# Global Blender path cache
+_BLENDER_PATH = None
 
 
-def find_mhr_model_path():
-    """Find MHR model path for skinning weights."""
-    import glob
+def find_blender() -> Optional[str]:
+    """Find Blender executable."""
+    global _BLENDER_PATH
     
-    # Check ComfyUI models folder
-    sam3d_dir = os.path.join(folder_paths.models_dir, "sam3dbody", "assets", "mhr_model.pt")
-    if os.path.exists(sam3d_dir):
-        return sam3d_dir
+    if _BLENDER_PATH is not None:
+        return _BLENDER_PATH
     
-    # Check HuggingFace cache
-    hf_patterns = [
-        os.path.expanduser("~/.cache/huggingface/hub/models--facebook--sam-3d-body-*/snapshots/*/assets/mhr_model.pt"),
-        os.path.expanduser("~/.cache/huggingface/hub/models--facebook--sam-3d-body-dinov3/snapshots/*/assets/mhr_model.pt"),
+    locations = [
+        shutil.which("blender"),
+        "/usr/bin/blender",
+        "/usr/local/bin/blender",
+        "/Applications/Blender.app/Contents/MacOS/Blender",
     ]
     
-    for pattern in hf_patterns:
-        matches = glob.glob(pattern)
-        if matches:
-            return sorted(matches, key=os.path.getmtime, reverse=True)[0]
+    # Check ComfyUI custom_nodes for bundled Blender
+    try:
+        custom_nodes_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        patterns = [
+            os.path.join(custom_nodes_dir, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*-linux-x64", "blender"),
+            os.path.join(custom_nodes_dir, "ComfyUI-SAM3DBody", "lib", "blender", "*", "blender"),
+        ]
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if matches:
+                locations.extend(matches)
+                break
+    except Exception:
+        pass
+    
+    # Windows paths
+    for version in ["4.2", "4.1", "4.0", "3.6"]:
+        locations.append(f"C:\\Program Files\\Blender Foundation\\Blender {version}\\blender.exe")
+    
+    for loc in locations:
+        if loc and os.path.exists(loc):
+            _BLENDER_PATH = loc
+            print(f"[FBX Export] Found Blender: {loc}")
+            return loc
     
     return None
 
 
-def extract_skinning_weights(mhr_path: str, num_vertices: int) -> Optional[List]:
-    """Extract skinning weights from MHR model."""
-    if not mhr_path or not os.path.exists(mhr_path):
-        return None
-    
-    try:
-        mhr_model = torch.jit.load(mhr_path, map_location='cpu')
-        lbs = mhr_model.character_torch.linear_blend_skinning
-        
-        vert_indices = lbs.vert_indices_flattened.cpu().numpy().astype(int)
-        skin_indices = lbs.skin_indices_flattened.cpu().numpy().astype(int)
-        skin_weights = lbs.skin_weights_flattened.cpu().numpy().astype(float)
-        
-        # Build per-vertex weight list
-        vertex_weights = {}
-        for i in range(len(vert_indices)):
-            vert_idx = int(vert_indices[i])
-            bone_idx = int(skin_indices[i])
-            weight = float(skin_weights[i])
-            
-            if vert_idx not in vertex_weights:
-                vertex_weights[vert_idx] = []
-            vertex_weights[vert_idx].append([bone_idx, weight])
-        
-        # Convert to list format
-        skinning_data = []
-        for vert_idx in range(num_vertices):
-            if vert_idx in vertex_weights:
-                skinning_data.append(vertex_weights[vert_idx])
-            else:
-                skinning_data.append([])
-        
-        return skinning_data
-        
-    except Exception as e:
-        print(f"[AnimatedFBX] Could not extract skinning weights: {e}")
-        return None
-
-
-def get_joint_parents(mhr_path: str) -> Optional[List[int]]:
-    """Get joint parent hierarchy from MHR model."""
-    if not mhr_path or not os.path.exists(mhr_path):
-        return None
-    
-    try:
-        mhr_model = torch.jit.load(mhr_path, map_location='cpu')
-        parents = mhr_model.character_torch.skeleton.joint_parents.cpu().numpy().astype(int).tolist()
-        return parents
-    except Exception as e:
-        print(f"[AnimatedFBX] Could not extract joint parents: {e}")
-        return None
-
-
-class ExportAnimatedFBX:
+class ExportFBX:
     """
-    Export mesh sequence to animated FBX format.
+    Export JSON sequence to animated FBX file.
     
-    Creates a SINGLE FBX file with:
-    - Full animation timeline
-    - Rigged skeleton with keyframes
-    - Skinning weights for proper deformation
-    
-    Requires Blender to be installed.
-    For FBX export without Blender, use BVH export instead.
+    Settings:
+    - Scale: 1.0 (fixed)
+    - Up axis: Y (fixed)
+    - Include mesh: optional
     """
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "mesh_sequence": ("MESH_SEQUENCE",),
-                "filename": ("STRING", {
-                    "default": "body_animation",
-                    "multiline": False
-                }),
-                "fps": ("FLOAT", {
-                    "default": 30.0,
-                    "min": 1.0,
-                    "max": 120.0,
-                    "step": 1.0
+                "json_path": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "Path to animation JSON file"
                 }),
             },
             "optional": {
@@ -144,209 +99,237 @@ class ExportAnimatedFBX:
                     "multiline": False,
                     "tooltip": "Leave empty for ComfyUI output folder"
                 }),
-                "scale": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.001,
-                    "max": 1000.0,
-                    "step": 0.01,
-                    "tooltip": "Scale factor (1.0=meters)"
+                "filename": ("STRING", {
+                    "default": "animation",
+                    "multiline": False,
                 }),
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Include animated mesh geometry"
-                }),
-                "include_skeleton": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Include animated skeleton"
+                    "tooltip": "Include animated mesh (False = skeleton only)"
                 }),
             }
         }
     
-    RETURN_TYPES = ("STRING", "STRING", "INT")
-    RETURN_NAMES = ("file_path", "status", "exported_frames")
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("fbx_path", "status")
     FUNCTION = "export_fbx"
     CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
     
     def export_fbx(
         self,
-        mesh_sequence: List[Dict],
-        filename: str = "body_animation",
-        fps: float = 30.0,
+        json_path: str,
         output_dir: str = "",
-        scale: float = 1.0,
+        filename: str = "animation",
         include_mesh: bool = True,
-        include_skeleton: bool = True,
-    ) -> Tuple[str, str, int]:
-        """Export mesh sequence to animated FBX."""
-        
-        if not mesh_sequence:
-            return ("", "Error: Empty mesh sequence", 0)
-        
+    ) -> Tuple[str, str]:
+        """
+        Convert JSON to FBX using Blender.
+        """
         # Check Blender
-        blender_exe = find_blender()
-        if not blender_exe:
-            return ("", "Error: Blender not found. Install Blender or set BLENDER_PATH environment variable.", 0)
+        blender_path = find_blender()
+        if not blender_path:
+            return ("", "Error: Blender not found. Install Blender or use ComfyUI-SAM3DBody bundled version.")
         
-        if not os.path.exists(BLENDER_ANIM_SCRIPT):
-            return ("", f"Error: Blender script not found: {BLENDER_ANIM_SCRIPT}", 0)
+        # Check JSON file
+        if not os.path.exists(json_path):
+            return ("", f"Error: JSON file not found: {json_path}")
         
-        # Get output directory
+        # Check Blender script
+        if not os.path.exists(BLENDER_SCRIPT):
+            return ("", f"Error: Blender script not found: {BLENDER_SCRIPT}")
+        
+        # Determine output directory
         if not output_dir:
             output_dir = folder_paths.get_output_directory()
         os.makedirs(output_dir, exist_ok=True)
         
-        # Filter valid frames
-        valid_frames = []
-        for frame in mesh_sequence:
-            if frame.get("valid") and frame.get("vertices") is not None:
-                valid_frames.append(frame)
+        # Output FBX path
+        fbx_path = os.path.join(output_dir, f"{filename}.fbx")
         
-        if not valid_frames:
-            return ("", "Error: No valid frames in sequence", 0)
-        
-        print(f"[AnimatedFBX] Processing {len(valid_frames)} frames at {fps} fps")
-        
-        # Get mesh data from first frame
-        first_verts = valid_frames[0]["vertices"]
-        if isinstance(first_verts, torch.Tensor):
-            first_verts = first_verts.cpu().numpy()
-        num_vertices = len(first_verts)
-        
-        # Get faces (same for all frames)
-        faces = valid_frames[0].get("faces")
-        if faces is None:
-            return ("", "Error: No face data in mesh sequence", 0)
-        if isinstance(faces, torch.Tensor):
-            faces = faces.cpu().numpy()
-        faces = faces.astype(int).tolist()
-        
-        # Get MHR model for skinning weights
-        mhr_path = find_mhr_model_path()
-        skinning_weights = None
-        joint_parents = None
-        
-        if mhr_path:
-            print(f"[AnimatedFBX] Found MHR model: {mhr_path}")
-            skinning_weights = extract_skinning_weights(mhr_path, num_vertices)
-            joint_parents = get_joint_parents(mhr_path)
-            if skinning_weights:
-                print(f"[AnimatedFBX] Extracted skinning weights for {len(skinning_weights)} vertices")
-            if joint_parents:
-                print(f"[AnimatedFBX] Extracted joint hierarchy ({len(joint_parents)} joints)")
-        
-        # Build animation data structure
-        anim_data = {
-            "fps": fps,
-            "faces": faces,
-            "num_joints": 127,
-            "joint_parents": joint_parents,
-            "skinning_weights": skinning_weights,
-            "include_mesh": include_mesh,
-            "include_skeleton": include_skeleton,
-            "frames": [],
-        }
-        
-        # Process each frame
-        for frame in valid_frames:
-            vertices = frame["vertices"]
-            if isinstance(vertices, torch.Tensor):
-                vertices = vertices.cpu().numpy()
-            
-            # Apply scale
-            vertices = vertices * scale
-            
-            frame_data = {
-                "frame_index": frame.get("frame_index", len(anim_data["frames"])),
-                "vertices": vertices.tolist(),
-            }
-            
-            # Add joint positions if available
-            joints = frame.get("joints")
-            if joints is not None:
-                if isinstance(joints, torch.Tensor):
-                    joints = joints.cpu().numpy()
-                joints = joints * scale
-                frame_data["joint_positions"] = joints.tolist()
-            
-            anim_data["frames"].append(frame_data)
-        
-        # Write animation JSON to temp file
-        temp_dir = folder_paths.get_temp_directory()
-        json_path = os.path.join(temp_dir, f"anim_data_{int(time.time())}.json")
-        
-        with open(json_path, 'w') as f:
-            json.dump(anim_data, f)
-        
-        print(f"[AnimatedFBX] Animation data written to {json_path}")
-        
-        # Prepare output path
-        if not filename.endswith('.fbx'):
-            filename = filename + '.fbx'
-        output_path = os.path.join(output_dir, filename)
-        
-        # Handle existing files
-        counter = 1
-        base_name = filename[:-4]
-        while os.path.exists(output_path):
-            output_path = os.path.join(output_dir, f"{base_name}_{counter:04d}.fbx")
-            counter += 1
-        
-        # Run Blender export
-        print(f"[AnimatedFBX] Running Blender export...")
+        # Build Blender command
         cmd = [
-            blender_exe,
+            blender_path,
             "--background",
-            "--python", BLENDER_ANIM_SCRIPT,
+            "--python", BLENDER_SCRIPT,
             "--",
             json_path,
-            output_path,
+            fbx_path,
+            "1" if include_mesh else "0",
         ]
+        
+        print(f"[FBX Export] Running Blender: {' '.join(cmd)}")
         
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=BLENDER_TIMEOUT
+                timeout=BLENDER_TIMEOUT,
             )
             
-            # Print Blender output for debugging
-            if result.stdout:
-                for line in result.stdout.split('\n'):
-                    if '[AnimatedFBX]' in line or 'Error' in line.lower():
-                        print(line)
-            
             if result.returncode != 0:
-                error_msg = result.stderr if result.stderr else "Unknown error"
-                return ("", f"Error: Blender export failed: {error_msg[:200]}", 0)
+                error_msg = result.stderr[:500] if result.stderr else "Unknown error"
+                print(f"[FBX Export] Blender error: {error_msg}")
+                return ("", f"Blender error: {error_msg}")
             
-            if not os.path.exists(output_path):
-                return ("", "Error: Export completed but FBX file not created", 0)
+            if not os.path.exists(fbx_path):
+                return ("", "Error: FBX file was not created")
             
-            # Clean up temp file
-            try:
-                os.unlink(json_path)
-            except:
-                pass
+            status = f"Exported: {filename}.fbx"
+            if not include_mesh:
+                status += " (skeleton only)"
             
-            status = f"Exported {len(valid_frames)} frames to FBX"
-            print(f"[AnimatedFBX] {status}")
-            print(f"[AnimatedFBX] Output: {output_path}")
+            print(f"[FBX Export] {status}")
             
-            return (output_path, status, len(valid_frames))
+            return (fbx_path, status)
             
         except subprocess.TimeoutExpired:
-            return ("", f"Error: Blender export timed out after {BLENDER_TIMEOUT}s", 0)
+            return ("", f"Error: Blender timed out after {BLENDER_TIMEOUT}s")
         except Exception as e:
-            return ("", f"Error: {str(e)}", 0)
+            return ("", f"Error: {str(e)}")
 
 
-# Node registration
-NODE_CLASS_MAPPINGS = {
-    "SAM3DBody2abc_ExportAnimatedFBX": ExportAnimatedFBX,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "SAM3DBody2abc_ExportAnimatedFBX": "📦 Export Animated FBX",
-}
+class ExportFBXDirect:
+    """
+    Export FRAME_SEQUENCE directly to FBX (combines JSON export + FBX conversion).
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "frame_sequence": ("FRAME_SEQUENCE",),
+                "filename": ("STRING", {
+                    "default": "animation",
+                    "multiline": False,
+                }),
+                "fps": ("FLOAT", {
+                    "default": 24.0,
+                    "min": 1.0,
+                    "max": 120.0,
+                }),
+            },
+            "optional": {
+                "output_dir": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                }),
+                "include_mesh": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include animated mesh (False = skeleton only)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("STRING", "STRING", "INT")
+    RETURN_NAMES = ("fbx_path", "status", "frame_count")
+    FUNCTION = "export"
+    CATEGORY = "SAM3DBody2abc/Export"
+    OUTPUT_NODE = True
+    
+    def export(
+        self,
+        frame_sequence: Dict,
+        filename: str = "animation",
+        fps: float = 24.0,
+        output_dir: str = "",
+        include_mesh: bool = True,
+    ) -> Tuple[str, str, int]:
+        """
+        Export sequence directly to FBX.
+        """
+        frames = frame_sequence.get("frames", {})
+        faces = frame_sequence.get("faces")
+        
+        if not frames:
+            return ("", "Error: No frames to export", 0)
+        
+        # Check Blender
+        blender_path = find_blender()
+        if not blender_path:
+            return ("", "Error: Blender not found", 0)
+        
+        # Determine output directory
+        if not output_dir:
+            output_dir = folder_paths.get_output_directory()
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Build JSON for Blender
+        sorted_indices = sorted(frames.keys())
+        
+        export_data = {
+            "fps": fps,
+            "frame_count": len(sorted_indices),
+            "include_mesh": include_mesh,
+            "frames": [],
+        }
+        
+        if include_mesh and faces is not None:
+            export_data["faces"] = faces.tolist() if isinstance(faces, np.ndarray) else faces
+        
+        for idx in sorted_indices:
+            frame = frames[idx]
+            frame_export = {"frame_index": idx}
+            
+            if include_mesh and frame.get("vertices") is not None:
+                verts = frame["vertices"]
+                frame_export["vertices"] = verts.tolist() if isinstance(verts, np.ndarray) else verts
+            
+            if frame.get("joints") is not None:
+                joints = frame["joints"]
+                frame_export["joints"] = joints.tolist() if isinstance(joints, np.ndarray) else joints
+            
+            if frame.get("camera") is not None:
+                cam = frame["camera"]
+                frame_export["camera"] = cam.tolist() if isinstance(cam, np.ndarray) else cam
+            
+            export_data["frames"].append(frame_export)
+        
+        # Write temp JSON
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(export_data, f)
+            json_path = f.name
+        
+        try:
+            # Output FBX path
+            fbx_path = os.path.join(output_dir, f"{filename}.fbx")
+            
+            # Run Blender
+            cmd = [
+                blender_path,
+                "--background",
+                "--python", BLENDER_SCRIPT,
+                "--",
+                json_path,
+                fbx_path,
+                "1" if include_mesh else "0",
+            ]
+            
+            print(f"[FBX Export] Exporting {len(sorted_indices)} frames...")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=BLENDER_TIMEOUT,
+            )
+            
+            if result.returncode != 0:
+                error_msg = result.stderr[:500] if result.stderr else "Unknown error"
+                return ("", f"Blender error: {error_msg}", 0)
+            
+            if not os.path.exists(fbx_path):
+                return ("", "Error: FBX not created", 0)
+            
+            status = f"Exported {len(sorted_indices)} frames"
+            if not include_mesh:
+                status += " (skeleton only)"
+            
+            return (fbx_path, status, len(sorted_indices))
+            
+        finally:
+            # Clean up temp JSON
+            if os.path.exists(json_path):
+                os.unlink(json_path)
