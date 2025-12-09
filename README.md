@@ -5,14 +5,22 @@ Export video sequences to animated FBX with mesh shape keys and properly connect
 ## 🔧 Workflow
 
 ```
-Load Video → SAM3 BBox Collector → SAM3 Grounding → Mask
-                                                      ↓
-Load SAM3DBody → 🎬 Video Batch Processor ←───────────┘
-                            ↓
-               📦 Export Animated FBX
-                            ↓
-               🎥 FBX Animation Viewer
+VHS_LoadVideo ──┬──→ SAM3BBoxCollector → SAM3VideoSegmentation
+                │                                  ↓
+                │                          SAM3Propagate
+                │                                  ↓
+                │                          SAM3VideoOutput → per-frame masks
+                │                                                    ↓
+                └──→ 🎬 Video Batch Processor ←──────────────────────┘
+                              ↑
+                    LoadSAM3DBodyModel
+                              ↓
+                   📦 Export Animated FBX
+                              ↓
+                   🎥 FBX Animation Viewer
 ```
+
+Uses SAM3's built-in video propagation for accurate per-frame character tracking.
 
 ## 📦 Nodes
 
@@ -25,6 +33,17 @@ Load SAM3DBody → 🎬 Video Batch Processor ←──────────�
 | **💾 Export Sequence JSON** | Save sequence to JSON |
 | **📦 Export FBX from JSON** | Convert JSON to FBX |
 | **🗑️ Clear Accumulator** | Clear data |
+
+## 🎯 Character Tracking
+
+Use SAM3's video segmentation nodes:
+
+1. **SAM3BBoxCollector** - Draw bbox around character on first frame
+2. **SAM3VideoSegmentation** - Initialize video tracking
+3. **SAM3Propagate** - Propagate mask across all frames
+4. **SAM3VideoOutput** - Get per-frame MASK output
+
+This gives accurate per-frame masks that follow the character's movement.
 
 ## 🆕 Features in v3.0.0
 
@@ -100,12 +119,14 @@ SAM3DBody estimates the camera focal length for each frame. The export includes:
 
 Included: `workflows/animation_workflow.json`
 
-This workflow demonstrates:
-1. Load video with VHS_LoadVideo
-2. Create bounding box with SAM3BBoxCollector
-3. Segment person with SAM3Grounding
-4. Process frames with Video Batch Processor
-5. Export to animated FBX
+Node sequence:
+1. **VHS_LoadVideo** - Load video file
+2. **SAM3BBoxCollector** - Draw bbox on first frame
+3. **SAM3VideoSegmentation** - Initialize tracking
+4. **SAM3Propagate** - Track mask across frames
+5. **SAM3VideoOutput** - Get per-frame masks
+6. **Video Batch Processor** - Process with SAM3DBody
+7. **Export Animated FBX** - Export with mesh + skeleton + camera
 
 ## 🔧 Skeleton Hierarchy
 

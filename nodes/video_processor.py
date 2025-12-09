@@ -44,7 +44,7 @@ class VideoBatchProcessor:
             },
             "optional": {
                 "mask": ("MASK", {
-                    "tooltip": "Segmentation mask from SAM3"
+                    "tooltip": "Per-frame segmentation masks from SAM3 Propagation"
                 }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
@@ -150,7 +150,11 @@ class VideoBatchProcessor:
         end_frame: int = -1,
         skip_frames: int = 1,
     ) -> Tuple[Dict, torch.Tensor, int, str]:
-        """Process video frames."""
+        """Process video frames.
+        
+        Uses per-frame masks from SAM3 Propagation for character tracking.
+        Each frame gets its own mask, allowing accurate tracking as the character moves.
+        """
         
         try:
             from sam_3d_body import SAM3DBodyEstimator
@@ -165,6 +169,8 @@ class VideoBatchProcessor:
             return ({}, images[:1], 0, "Error: No frames")
         
         print(f"[SAM3DBody2abc] Processing {len(frame_indices)} frames...")
+        if mask is not None:
+            print(f"[SAM3DBody2abc] Using per-frame masks ({mask.shape[0]} masks available)")
         
         sam_3d_model = model["model"]
         model_cfg = model["model_cfg"]
@@ -197,7 +203,7 @@ class VideoBatchProcessor:
                     else:
                         img_bgr = img_np
                     
-                    # Handle mask - match SAM3DBody's mask handling exactly
+                    # Get per-frame mask if available
                     frame_mask = None
                     frame_bbox = None
                     use_mask = False
@@ -210,7 +216,7 @@ class VideoBatchProcessor:
                         
                         frame_bbox = self._compute_bbox_from_mask(mask_np)
                         if frame_bbox is not None:
-                            frame_mask = mask_np  # Keep as 2D
+                            frame_mask = mask_np
                             use_mask = True
                     
                     # Save temp image

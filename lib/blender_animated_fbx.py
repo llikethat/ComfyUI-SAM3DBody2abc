@@ -263,7 +263,7 @@ def export_fbx(output_path, axis_forward, axis_up):
     print(f"[Blender] Export complete")
 
 
-def create_camera(focal_length, cam_t, all_frames, fps, transform_func):
+def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis="Y"):
     """
     Create a camera with the estimated focal length and optional animation.
     
@@ -273,6 +273,7 @@ def create_camera(focal_length, cam_t, all_frames, fps, transform_func):
         all_frames: All frames data for animation
         fps: Frames per second
         transform_func: Coordinate transformation function
+        up_axis: Which axis is up (Y, Z, -Y, -Z)
     """
     # Create camera
     cam_data = bpy.data.cameras.new("Camera")
@@ -294,18 +295,31 @@ def create_camera(focal_length, cam_t, all_frames, fps, transform_func):
         cam_data.lens = 50.0  # Default 50mm
         print("[Blender] Using default 50mm focal length")
     
-    # Position camera
-    if cam_t is not None:
-        # Camera looks at the subject from a distance
-        # pred_cam_t is [tx, ty, tz] where tz is the depth
-        cam_pos = transform_func(cam_t)
-        # Camera should be positioned looking at origin, so we offset
-        camera.location = Vector((0, 0, cam_t[2] if len(cam_t) > 2 else 3.0))
-    else:
-        camera.location = Vector((0, 0, 3.0))
+    # Get camera distance from pred_cam_t (z component is depth)
+    cam_distance = 3.0
+    if cam_t is not None and len(cam_t) > 2:
+        cam_distance = abs(cam_t[2])
     
-    # Point camera at origin
-    camera.rotation_euler = (math.radians(90), 0, 0)
+    # Position and orient camera based on up_axis
+    # Camera should look at origin from the front
+    if up_axis == "Y":
+        # Y-up: Camera at +Z looking toward -Z
+        camera.location = Vector((0, 0, cam_distance))
+        camera.rotation_euler = (math.radians(90), 0, 0)
+    elif up_axis == "Z":
+        # Z-up: Camera at -Y looking toward +Y
+        camera.location = Vector((0, -cam_distance, 0))
+        camera.rotation_euler = (math.radians(90), 0, 0)
+    elif up_axis == "-Y":
+        # -Y up: Camera at -Z looking toward +Z
+        camera.location = Vector((0, 0, -cam_distance))
+        camera.rotation_euler = (math.radians(-90), 0, 0)
+    elif up_axis == "-Z":
+        # -Z up: Camera at +Y looking toward -Y
+        camera.location = Vector((0, cam_distance, 0))
+        camera.rotation_euler = (math.radians(-90), 0, 0)
+    
+    print(f"[Blender] Camera position: {camera.location}, up_axis: {up_axis}")
     
     # Animate camera if we have per-frame data
     has_animation = False
@@ -313,10 +327,20 @@ def create_camera(focal_length, cam_t, all_frames, fps, transform_func):
         frame_cam_t = frame_data.get("pred_cam_t")
         frame_focal = frame_data.get("focal_length")
         
-        if frame_cam_t is not None:
+        if frame_cam_t is not None and len(frame_cam_t) > 2:
             bpy.context.scene.frame_set(frame_idx)
-            # Update camera position based on subject translation
-            camera.location.z = frame_cam_t[2] if len(frame_cam_t) > 2 else 3.0
+            new_distance = abs(frame_cam_t[2])
+            
+            # Update position based on up_axis
+            if up_axis == "Y":
+                camera.location.z = new_distance
+            elif up_axis == "Z":
+                camera.location.y = -new_distance
+            elif up_axis == "-Y":
+                camera.location.z = -new_distance
+            elif up_axis == "-Z":
+                camera.location.y = new_distance
+            
             camera.keyframe_insert(data_path="location", frame=frame_idx)
             has_animation = True
         
@@ -399,7 +423,7 @@ def main():
     
     # Create camera with focal length
     if include_camera and first_focal:
-        create_camera(first_focal, first_cam_t, frames, fps, transform_func)
+        create_camera(first_focal, first_cam_t, frames, fps, transform_func, up_axis)
     
     export_fbx(output_fbx, axis_forward, axis_up_export)
     print("[Blender] Done!")
