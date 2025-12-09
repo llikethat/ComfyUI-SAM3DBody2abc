@@ -96,7 +96,10 @@ class ExportAnimatedFBX:
     
     Creates FBX with:
     - Mesh + shape keys (vertex animation)
-    - Armature + keyframed joints
+    - Armature + keyframed joints (properly connected hierarchy)
+    
+    Options:
+    - up_axis: Y (default), Z, -Y, -Z
     """
     
     @classmethod
@@ -118,6 +121,10 @@ class ExportAnimatedFBX:
                     "default": True,
                     "tooltip": "Include mesh with shape keys"
                 }),
+                "up_axis": (["Y", "Z", "-Y", "-Z"], {
+                    "default": "Y",
+                    "tooltip": "Which axis points up in the output"
+                }),
                 "output_dir": ("STRING", {
                     "default": "",
                 }),
@@ -136,6 +143,7 @@ class ExportAnimatedFBX:
         filename: str = "animation",
         fps: float = 24.0,
         include_mesh: bool = True,
+        up_axis: str = "Y",
         output_dir: str = "",
     ) -> Tuple[str, str, int]:
         """Export to animated FBX."""
@@ -191,10 +199,11 @@ class ExportAnimatedFBX:
                 "--",
                 json_path,
                 fbx_path,
+                up_axis,
                 "1" if include_mesh else "0",
             ]
             
-            print(f"[FBX Export] Exporting {len(sorted_indices)} frames...")
+            print(f"[FBX Export] Exporting {len(sorted_indices)} frames (up={up_axis})...")
             
             result = subprocess.run(
                 cmd,
@@ -211,9 +220,9 @@ class ExportAnimatedFBX:
             if not os.path.exists(fbx_path):
                 return ("", "Error: FBX not created", 0)
             
-            status = f"Exported {len(sorted_indices)} frames"
+            status = f"Exported {len(sorted_indices)} frames (up={up_axis})"
             if not include_mesh:
-                status += " (skeleton only)"
+                status += " skeleton only"
             
             print(f"[FBX Export] {status}")
             return (fbx_path, status, len(sorted_indices))
@@ -241,6 +250,7 @@ class ExportFBXFromJSON:
             "optional": {
                 "filename": ("STRING", {"default": "animation"}),
                 "include_mesh": ("BOOLEAN", {"default": True}),
+                "up_axis": (["Y", "Z", "-Y", "-Z"], {"default": "Y"}),
                 "output_dir": ("STRING", {"default": ""}),
             }
         }
@@ -256,6 +266,7 @@ class ExportFBXFromJSON:
         json_path: str,
         filename: str = "animation",
         include_mesh: bool = True,
+        up_axis: str = "Y",
         output_dir: str = "",
     ) -> Tuple[str, str]:
         """Convert JSON to FBX."""
@@ -280,6 +291,7 @@ class ExportFBXFromJSON:
                 "--",
                 json_path,
                 fbx_path,
+                up_axis,
                 "1" if include_mesh else "0",
             ]
             
@@ -291,7 +303,7 @@ class ExportFBXFromJSON:
             if not os.path.exists(fbx_path):
                 return ("", "Error: FBX not created")
             
-            return (fbx_path, f"Exported to {filename}.fbx")
+            return (fbx_path, f"Exported to {filename}.fbx (up={up_axis})")
             
         except Exception as e:
             return ("", f"Error: {str(e)}")

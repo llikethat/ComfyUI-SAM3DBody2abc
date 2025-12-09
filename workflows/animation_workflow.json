@@ -1,0 +1,663 @@
+{
+  "id": "68af1882-476a-47ac-b243-ae84d3f76080",
+  "revision": 0,
+  "last_node_id": 15,
+  "last_link_id": 22,
+  "nodes": [
+    {
+      "id": 5,
+      "type": "MaskToImage",
+      "pos": [
+        1372.6815592447917,
+        406.5809733072917
+      ],
+      "size": [
+        184.6236328125,
+        26
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.77",
+        "Node name for S&R": "MaskToImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 10,
+      "type": "ShowText|pysssss",
+      "pos": [
+        2333.5432942708335,
+        228.66357421875003
+      ],
+      "size": [
+        387.3094889322915,
+        113.42203776041663
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "f2838ed5e59de4d73cde5c98354b87a8d3200190",
+        "Node name for S&R": "ShowText|pysssss"
+      },
+      "widgets_values": [
+        "/workspace/ComfyUI/output/drill_02.fbx"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "SAM3DBody2abc_VideoBatchProcessor",
+      "pos": [
+        1544.7585449218757,
+        150.10668945312509
+      ],
+      "size": [
+        270,
+        238
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "link": 13
+        },
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 21
+        },
+        {
+          "name": "mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mesh_sequence",
+          "type": "MESH_SEQUENCE",
+          "links": [
+            16
+          ]
+        },
+        {
+          "name": "debug_images",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "2c04c064b9b476d9dce0b4d0d16b4196b885b52c",
+        "Node name for S&R": "SAM3DBody2abc_VideoBatchProcessor"
+      },
+      "widgets_values": [
+        0.8,
+        "full",
+        0.8,
+        0,
+        -1,
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "type": "SAM3Grounding",
+      "pos": [
+        1005.4493815104164,
+        305.7717285156251
+      ],
+      "size": [
+        278.08203125,
+        190
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sam3_model",
+          "type": "SAM3_MODEL",
+          "link": 4
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 20
+        },
+        {
+          "name": "positive_boxes",
+          "shape": 7,
+          "type": "SAM3_BOXES_PROMPT",
+          "link": 3
+        },
+        {
+          "name": "negative_boxes",
+          "shape": 7,
+          "type": "SAM3_BOXES_PROMPT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": [
+            5,
+            15
+          ]
+        },
+        {
+          "name": "visualization",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "boxes",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "scores",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "SAM3Grounding"
+      },
+      "widgets_values": [
+        0.8,
+        "running girl",
+        -1,
+        false
+      ]
+    },
+    {
+      "id": 14,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        13.197562500000007,
+        242.56094651611286
+      ],
+      "size": [
+        252.056640625,
+        454.46961339860513
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            19,
+            20,
+            21
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "537f3a02269e14ab4b0350d4189a52034e9a3b12",
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "u17_running.mp4",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "choose video to upload": "image",
+        "videopreview": {
+          "hidden": false,
+          "paused": true,
+          "params": {
+            "filename": "u17_running.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "FBXAnimationViewer",
+      "pos": [
+        2282.319781561688,
+        94.05365424479118
+      ],
+      "size": [
+        1437.9796841349284,
+        1063.7916716536458
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "link": 22
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-motioncapture",
+        "ver": "dcd220c706a7d4c54a6ab37db21acbd3eea2394f",
+        "Node name for S&R": "FBXAnimationViewer"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 9,
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
+      "pos": [
+        1918.2265625,
+        216.03092447916669
+      ],
+      "size": [
+        270,
+        170
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh_sequence",
+          "type": "MESH_SEQUENCE",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": [
+            11,
+            22
+          ]
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "4bf0681c91204c5a6fa2bbc148f498df687a0771",
+        "Node name for S&R": "SAM3DBody2abc_ExportAnimatedFBX"
+      },
+      "widgets_values": [
+        "u17_girlrun",
+        24,
+        true,
+        ""
+      ]
+    },
+    {
+      "id": 6,
+      "type": "PreviewImage",
+      "pos": [
+        1737.2157389322917,
+        457.8009440104167
+      ],
+      "size": [
+        140,
+        246
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.77",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 2,
+      "type": "SAM3BBoxCollector",
+      "pos": [
+        531.8090006510416,
+        335.67366536458337
+      ],
+      "size": [
+        400,
+        480
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive_bboxes",
+          "type": "SAM3_BOXES_PROMPT",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "negative_bboxes",
+          "type": "SAM3_BOXES_PROMPT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "SAM3BBoxCollector"
+      },
+      "widgets_values": [
+        "[{\"x1\":41.687828480854265,\"y1\":85.34966488380208,\"x2\":338.13460878915123,\"y2\":629.6455047794585},{\"x1\":429.07637930953433,\"y1\":104.38136389312328,\"x2\":699.2672757873903,\"y2\":630.1582536968111},{\"x1\":732.1283307644268,\"y1\":78.82276508322178,\"x2\":1086.297478850265,\"y2\":641.1119389010547}]",
+        "[]",
+        ""
+      ]
+    },
+    {
+      "id": 4,
+      "type": "LoadSAM3Model",
+      "pos": [
+        491.93041992187506,
+        96.25170898437504
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "sam3_model",
+          "type": "SAM3_MODEL",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "LoadSAM3Model"
+      },
+      "widgets_values": [
+        "models/sam3/sam3.pt",
+        ""
+      ]
+    },
+    {
+      "id": 8,
+      "type": "LoadSAM3DBodyModel",
+      "pos": [
+        935.1054687499995,
+        108.38395182291667
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-SAM3DBody",
+        "ver": "938d45782ceee7f0e967a0cbfdffc96ddd880f01",
+        "Node name for S&R": "LoadSAM3DBodyModel"
+      },
+      "widgets_values": [
+        "/workspace/ComfyUI/models/sam3dbody",
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      3,
+      2,
+      0,
+      3,
+      2,
+      "SAM3_BOXES_PROMPT"
+    ],
+    [
+      4,
+      4,
+      0,
+      3,
+      0,
+      "SAM3_MODEL"
+    ],
+    [
+      5,
+      3,
+      0,
+      5,
+      0,
+      "MASK"
+    ],
+    [
+      6,
+      5,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      9,
+      0,
+      10,
+      0,
+      "STRING"
+    ],
+    [
+      13,
+      8,
+      0,
+      12,
+      0,
+      "SAM3D_MODEL"
+    ],
+    [
+      15,
+      3,
+      0,
+      12,
+      2,
+      "MASK"
+    ],
+    [
+      16,
+      12,
+      0,
+      9,
+      0,
+      "MESH_SEQUENCE"
+    ],
+    [
+      19,
+      14,
+      0,
+      2,
+      0,
+      "IMAGE"
+    ],
+    [
+      20,
+      14,
+      0,
+      3,
+      1,
+      "IMAGE"
+    ],
+    [
+      21,
+      14,
+      0,
+      12,
+      1,
+      "IMAGE"
+    ],
+    [
+      22,
+      9,
+      0,
+      15,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9225446857582166,
+      "offset": [
+        46.97921428059925,
+        187.53073684651713
+      ]
+    },
+    "workflowRendererVersion": "LG",
+    "frontendVersion": "1.32.10",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

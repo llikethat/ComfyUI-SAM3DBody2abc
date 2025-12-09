@@ -1,42 +1,86 @@
 """
 Blender Script: Export Animated FBX from Mesh Sequence JSON
-Creates mesh with shape keys + armature with keyframed joints.
+Creates mesh with shape keys + armature with properly connected skeleton hierarchy.
 
-Usage: blender --background --python blender_animated_fbx.py -- input.json output.fbx
+Usage: blender --background --python blender_animated_fbx.py -- input.json output.fbx [up_axis]
 
-Settings:
-- Scale: 1.0
-- Up axis: Y
+Args:
+    input.json: JSON with frames data
+    output.fbx: Output FBX path
+    up_axis: Y, Z, -Y, or -Z (default: Y)
 """
 
 import bpy
 import json
 import sys
 import os
-from mathutils import Vector
+from mathutils import Vector, Matrix
+import math
 
 
 def clear_scene():
     """Remove all objects."""
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete()
-
-
-def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps):
-    """
-    Create mesh with shape keys for animation.
     
-    Args:
-        first_vertices: Base mesh vertices
-        faces: Face indices
-        all_frames: List of frame data with vertices
-        fps: Frames per second
+    # Clean data blocks
+    for armature in bpy.data.armatures:
+        bpy.data.armatures.remove(armature)
+    for mesh in bpy.data.meshes:
+        bpy.data.meshes.remove(mesh)
+
+
+def get_transform_for_axis(up_axis):
     """
-    # Create mesh
+    Get coordinate transformation based on desired up axis.
+    SAM3DBody uses: X-right, Y-up, Z-forward (OpenGL convention)
+    
+    Returns: (flip_func, axis_forward, axis_up)
+    """
+    if up_axis == "Y":
+        # Y-up (default, matches SAM3DBody)
+        # Flip all axes as SAM3DBody does
+        return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
+    elif up_axis == "Z":
+        # Z-up (Blender default)
+        # Rotate 90 degrees around X
+        return lambda p: (-p[0], -p[2], p[1]), 'Y', 'Z'
+    elif up_axis == "-Y":
+        # -Y up (upside down)
+        return lambda p: (-p[0], p[1], p[2]), 'Z', '-Y'
+    elif up_axis == "-Z":
+        # -Z up
+        return lambda p: (-p[0], p[2], -p[1]), '-Y', '-Z'
+    else:
+        # Default to Y-up
+        return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
+
+
+def build_children_map(joint_parents):
+    """Build a map of parent -> list of children indices."""
+    children = {}
+    for i, parent_idx in enumerate(joint_parents):
+        if parent_idx >= 0:
+            if parent_idx not in children:
+                children[parent_idx] = []
+            children[parent_idx].append(i)
+    return children
+
+
+def find_root_joint(joint_parents):
+    """Find root joint (parent == -1 or self-referencing)."""
+    for i, parent_idx in enumerate(joint_parents):
+        if parent_idx < 0 or parent_idx == i:
+            return i
+    return 0  # Fallback to first joint
+
+
+def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps, transform_func):
+    """Create mesh with shape keys for animation."""
     mesh = bpy.data.meshes.new("body_mesh")
     
-    # Flip coordinates for Blender (negate all axes as SAM3DBody does)
-    verts = [(-v[0], -v[1], -v[2]) for v in first_vertices]
+    # Transform vertices
+    verts = [transform_func(v) for v in first_vertices]
     
     if faces:
         mesh.from_pydata(verts, [], faces)
@@ -45,7 +89,6 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps):
     
     mesh.update()
     
-    # Create object
     obj = bpy.data.objects.new("body", mesh)
     bpy.context.collection.objects.link(obj)
     bpy.context.view_layer.objects.active = obj
@@ -61,7 +104,6 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps):
     
     print(f"[Blender] Creating {len(all_frames)} shape keys...")
     
-    # Create shape key for each frame
     for frame_idx, frame_data in enumerate(all_frames):
         frame_verts = frame_data.get("vertices")
         if not frame_verts:
@@ -69,10 +111,9 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps):
         
         sk = obj.shape_key_add(name=f"frame_{frame_idx:04d}", from_mix=False)
         
-        # Set vertices (flip coordinates)
         for j, v in enumerate(frame_verts):
             if j < len(sk.data):
-                sk.data[j].co = (-v[0], -v[1], -v[2])
+                sk.data[j].co = transform_func(v)
         
         # Keyframe the shape key
         sk.value = 0.0
@@ -91,47 +132,68 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps):
     return obj
 
 
-def create_armature(first_joints, joint_parents, all_frames, fps):
+def create_armature(first_joints, joint_parents, all_frames, fps, transform_func):
     """
-    Create armature with animated joints.
+    Create armature with properly connected skeleton hierarchy.
     
-    Args:
-        first_joints: First frame joint positions (127 joints)
-        joint_parents: Parent index for each joint
-        all_frames: List of frame data with joint_coords
-        fps: Frames per second
+    The skeleton hierarchy uses joint_parents to establish parent-child relationships.
+    Root joint (typically pelvis/hip) has parent -1.
+    Bone tails point toward first child or use small offset if leaf.
     """
     num_joints = len(first_joints)
     
+    # Build hierarchy info
+    children_map = build_children_map(joint_parents) if joint_parents else {}
+    root_idx = find_root_joint(joint_parents) if joint_parents else 0
+    
+    print(f"[Blender] Root joint: {root_idx}")
+    print(f"[Blender] Creating armature with {num_joints} joints...")
+    
     # Create armature
-    bpy.ops.object.armature_add(enter_editmode=True)
-    armature = bpy.context.object
-    armature.name = "Skeleton"
-    arm_data = armature.data
-    arm_data.name = "Skeleton_Data"
+    arm_data = bpy.data.armatures.new("Skeleton_Data")
+    armature = bpy.data.objects.new("Skeleton", arm_data)
+    bpy.context.collection.objects.link(armature)
+    bpy.context.view_layer.objects.active = armature
+    armature.select_set(True)
     
-    # Remove default bone
-    bpy.ops.armature.select_all(action='SELECT')
-    bpy.ops.armature.delete()
+    bpy.ops.object.mode_set(mode='EDIT')
     
-    # Create bones
+    # Transform all joint positions
+    joint_positions = [transform_func(first_joints[i]) for i in range(num_joints)]
+    
+    # Create all bones first
     bones = []
     for i in range(num_joints):
         bone = arm_data.edit_bones.new(f"joint_{i:03d}")
-        
-        pos = first_joints[i]
-        # Flip coordinates to match mesh
-        head = Vector((-pos[0], -pos[1], -pos[2]))
-        bone.head = head
-        bone.tail = head + Vector((0, 0.02, 0))
-        
+        pos = joint_positions[i]
+        bone.head = Vector(pos)
+        # Temporary tail - will adjust after all bones created
+        bone.tail = Vector((pos[0], pos[1], pos[2] + 0.02))
         bones.append(bone)
     
-    # Set parent hierarchy
-    if joint_parents:
-        for i, parent_idx in enumerate(joint_parents):
-            if parent_idx >= 0 and parent_idx < len(bones):
+    # Set parent hierarchy and adjust bone tails
+    if joint_parents and len(joint_parents) == num_joints:
+        for i in range(num_joints):
+            parent_idx = joint_parents[i]
+            
+            # Set parent (skip root and invalid parents)
+            if parent_idx >= 0 and parent_idx < num_joints and parent_idx != i:
                 bones[i].parent = bones[parent_idx]
+                bones[i].use_connect = False  # Don't force connection
+            
+            # Adjust bone tail to point toward first child (better visualization)
+            if i in children_map and len(children_map[i]) > 0:
+                # Point toward first child
+                first_child = children_map[i][0]
+                child_pos = joint_positions[first_child]
+                direction = Vector(child_pos) - Vector(joint_positions[i])
+                if direction.length > 0.001:
+                    bones[i].tail = Vector(joint_positions[i]) + direction.normalized() * min(direction.length * 0.8, 0.1)
+                else:
+                    bones[i].tail = Vector((joint_positions[i][0], joint_positions[i][1], joint_positions[i][2] + 0.02))
+            else:
+                # Leaf bone - small offset in Z
+                bones[i].tail = Vector((joint_positions[i][0], joint_positions[i][1], joint_positions[i][2] + 0.02))
     
     bpy.ops.object.mode_set(mode='OBJECT')
     
@@ -140,6 +202,9 @@ def create_armature(first_joints, joint_parents, all_frames, fps):
     bpy.ops.object.mode_set(mode='POSE')
     
     print(f"[Blender] Animating {num_joints} joints over {len(all_frames)} frames...")
+    
+    # Store rest positions
+    rest_positions = [Vector(arm_data.bones[i].head_local) for i in range(num_joints)]
     
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
@@ -153,10 +218,10 @@ def create_armature(first_joints, joint_parents, all_frames, fps):
                 break
             
             pos = joints[bone_idx]
-            new_pos = Vector((-pos[0], -pos[1], -pos[2]))
+            new_pos = Vector(transform_func(pos))
             
-            rest_pos = arm_data.bones[bone_idx].head_local
-            offset = new_pos - rest_pos
+            # Calculate offset from rest pose
+            offset = new_pos - rest_positions[bone_idx]
             
             pose_bone.location = offset
             pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
@@ -165,13 +230,14 @@ def create_armature(first_joints, joint_parents, all_frames, fps):
             print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames")
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created animated skeleton")
+    print(f"[Blender] Created animated skeleton with proper hierarchy")
     return armature
 
 
-def export_fbx(output_path):
-    """Export to FBX."""
+def export_fbx(output_path, axis_forward, axis_up):
+    """Export to FBX with specified orientation."""
     print(f"[Blender] Exporting: {output_path}")
+    print(f"[Blender] Orientation: forward={axis_forward}, up={axis_up}")
     
     bpy.ops.export_scene.fbx(
         filepath=output_path,
@@ -179,8 +245,8 @@ def export_fbx(output_path):
         global_scale=1.0,
         apply_unit_scale=True,
         apply_scale_options='FBX_SCALE_ALL',
-        axis_forward='-Z',
-        axis_up='Y',
+        axis_forward=axis_forward,
+        axis_up=axis_up,
         object_types={'MESH', 'ARMATURE'},
         use_mesh_modifiers=True,
         mesh_smooth_type='FACE',
@@ -207,19 +273,21 @@ def main():
         sys.exit(1)
     
     if len(args) < 2:
-        print("[Blender] Usage: blender --background --python script.py -- input.json output.fbx")
+        print("[Blender] Usage: blender --background --python script.py -- input.json output.fbx [up_axis] [include_mesh]")
         sys.exit(1)
     
     input_json = args[0]
     output_fbx = args[1]
-    include_mesh = args[2] == "1" if len(args) > 2 else True
+    up_axis = args[2] if len(args) > 2 else "Y"
+    include_mesh = args[3] == "1" if len(args) > 3 else True
     
     print(f"[Blender] Input: {input_json}")
     print(f"[Blender] Output: {output_fbx}")
+    print(f"[Blender] Up axis: {up_axis}")
     print(f"[Blender] Include mesh: {include_mesh}")
     
     if not os.path.exists(input_json):
-        print(f"[Blender] Error: File not found")
+        print(f"[Blender] Error: File not found: {input_json}")
         sys.exit(1)
     
     with open(input_json, 'r') as f:
@@ -231,12 +299,16 @@ def main():
     joint_parents = data.get("joint_parents")
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
+    if joint_parents:
+        print(f"[Blender] Joint parents available: {len(joint_parents)} joints")
     
     if not frames:
         print("[Blender] Error: No frames")
         sys.exit(1)
     
-    # Get first frame data
+    # Get transformation based on up axis
+    transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis)
+    
     first_verts = frames[0].get("vertices")
     first_joints = frames[0].get("joint_coords")
     
@@ -244,13 +316,13 @@ def main():
     
     # Create mesh with shape keys
     if include_mesh and first_verts:
-        mesh_obj = create_mesh_with_shapekeys(first_verts, faces, frames, fps)
+        mesh_obj = create_mesh_with_shapekeys(first_verts, faces, frames, fps, transform_func)
     
-    # Create animated skeleton
+    # Create animated skeleton with proper hierarchy
     if first_joints:
-        armature = create_armature(first_joints, joint_parents, frames, fps)
+        armature = create_armature(first_joints, joint_parents, frames, fps, transform_func)
     
-    export_fbx(output_fbx)
+    export_fbx(output_fbx, axis_forward, axis_up_export)
     print("[Blender] Done!")
 
 
