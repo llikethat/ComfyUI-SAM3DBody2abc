@@ -1,10 +1,6 @@
 """
 Video Batch Processor for SAM3DBody2abc
 Processes video frames using SAM3DBody and accumulates mesh_data.
-
-Outputs match SAM3DBody Process:
-- mesh_sequence (accumulated mesh_data from all frames)
-- debug_images
 """
 
 import os
@@ -109,7 +105,6 @@ class VideoBatchProcessor:
         
         sorted_indices = sorted(frames.keys())
         
-        # Stack data
         verts_stack, joints_stack, valid_indices = [], [], []
         
         for idx in sorted_indices:
@@ -125,7 +120,6 @@ class VideoBatchProcessor:
         if len(verts_stack) < 3:
             return frames
         
-        # Smooth
         sigma = strength * 3
         verts_array = np.stack(verts_stack, axis=0)
         smoothed_verts = gaussian_filter1d(verts_array, sigma=sigma, axis=0, mode='nearest')
@@ -135,7 +129,6 @@ class VideoBatchProcessor:
             joints_array = np.stack(joints_stack, axis=0)
             smoothed_joints = gaussian_filter1d(joints_array, sigma=sigma, axis=0, mode='nearest')
         
-        # Update
         smoothed_frames = dict(frames)
         for i, idx in enumerate(valid_indices):
             smoothed_frames[idx] = dict(frames[idx])
@@ -191,90 +184,93 @@ class VideoBatchProcessor:
         mhr_path = model.get("mhr_path")
         debug_images = []
         
-        for i, frame_idx in enumerate(frame_indices):
-            try:
-                img_tensor = images[frame_idx]
-                img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)
-                
-                if img_np.shape[-1] == 3:
-                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                else:
-                    img_bgr = img_np
-                
-                # Handle mask
-                frame_mask = None
-                frame_bbox = None
-                use_mask = False
-                
-                if mask is not None and frame_idx < mask.shape[0]:
-                    mask_np = mask[frame_idx].cpu().numpy()
-                    if mask_np.ndim == 2:
-                        frame_mask = mask_np[..., np.newaxis]
-                    else:
-                        frame_mask = mask_np
-                    
-                    frame_bbox = self._compute_bbox_from_mask(mask_np)
-                    if frame_bbox is not None:
-                        use_mask = True
-                    else:
-                        frame_mask = None
-                
-                # Save temp image
-                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                    cv2.imwrite(tmp.name, img_bgr)
-                    tmp_path = tmp.name
-                
+        # Disable autocast for entire processing to avoid BFloat16 sparse matrix errors
+        # The MHR model uses sparse operations that don't support BFloat16 on CUDA
+        with torch.cuda.amp.autocast(enabled=False):
+            for i, frame_idx in enumerate(frame_indices):
                 try:
-                    outputs = estimator.process_one_image(
-                        tmp_path,
-                        bboxes=frame_bbox,
-                        masks=frame_mask,
-                        use_mask=use_mask,
-                        inference_type=inference_type,
-                    )
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                
-                if outputs and len(outputs) > 0:
-                    output = outputs[0]
+                    img_tensor = images[frame_idx]
+                    img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)
                     
-                    # Store faces (once)
-                    if faces is None:
-                        faces = to_numpy(estimator.faces)
+                    if img_np.shape[-1] == 3:
+                        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                    else:
+                        img_bgr = img_np
                     
-                    # Get joint parents (once)
-                    if joint_parents is None:
-                        try:
-                            if hasattr(sam_3d_model, 'mhr_head') and hasattr(sam_3d_model.mhr_head, 'mhr'):
-                                mhr = sam_3d_model.mhr_head.mhr
-                                if hasattr(mhr, 'character_torch') and hasattr(mhr.character_torch, 'skeleton'):
-                                    skel = mhr.character_torch.skeleton
-                                    if hasattr(skel, 'joint_parents'):
-                                        joint_parents = to_numpy(skel.joint_parents)
-                        except Exception:
-                            pass
+                    # Handle mask - match SAM3DBody's mask handling exactly
+                    frame_mask = None
+                    frame_bbox = None
+                    use_mask = False
                     
-                    # Store frame data
-                    frames[frame_idx] = {
-                        "vertices": to_numpy(output.get("pred_vertices")),
-                        "joint_coords": to_numpy(output.get("pred_joint_coords")),
-                        "camera": to_numpy(output.get("pred_cam_t")),
-                        "focal_length": output.get("focal_length"),
-                    }
+                    if mask is not None and frame_idx < mask.shape[0]:
+                        mask_np = mask[frame_idx].cpu().numpy()
+                        # SAM3DBody expects 2D mask
+                        if mask_np.ndim == 3:
+                            mask_np = mask_np[0]
+                        
+                        frame_bbox = self._compute_bbox_from_mask(mask_np)
+                        if frame_bbox is not None:
+                            frame_mask = mask_np  # Keep as 2D
+                            use_mask = True
                     
-                    debug_images.append(img_tensor)
-                else:
+                    # Save temp image
+                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                        cv2.imwrite(tmp.name, img_bgr)
+                        tmp_path = tmp.name
+                    
+                    try:
+                        with torch.no_grad():
+                            outputs = estimator.process_one_image(
+                                tmp_path,
+                                bboxes=frame_bbox,
+                                masks=frame_mask,
+                                bbox_thr=bbox_threshold,
+                                use_mask=use_mask,
+                                inference_type=inference_type,
+                            )
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.unlink(tmp_path)
+                    
+                    if outputs and len(outputs) > 0:
+                        output = outputs[0]
+                        
+                        # Store faces (once)
+                        if faces is None:
+                            faces = to_numpy(estimator.faces)
+                        
+                        # Get joint parents (once)
+                        if joint_parents is None:
+                            try:
+                                if hasattr(sam_3d_model, 'mhr_head') and hasattr(sam_3d_model.mhr_head, 'mhr'):
+                                    mhr = sam_3d_model.mhr_head.mhr
+                                    if hasattr(mhr, 'character_torch') and hasattr(mhr.character_torch, 'skeleton'):
+                                        skel = mhr.character_torch.skeleton
+                                        if hasattr(skel, 'joint_parents'):
+                                            joint_parents = to_numpy(skel.joint_parents)
+                            except Exception:
+                                pass
+                        
+                        # Store frame data
+                        frames[frame_idx] = {
+                            "vertices": to_numpy(output.get("pred_vertices")),
+                            "joint_coords": to_numpy(output.get("pred_joint_coords")),
+                            "camera": to_numpy(output.get("pred_cam_t")),
+                            "focal_length": output.get("focal_length"),
+                        }
+                        
+                        debug_images.append(img_tensor)
+                    else:
+                        frames[frame_idx] = {"vertices": None, "joint_coords": None}
+                        debug_images.append(img_tensor)
+                    
+                    if (i + 1) % 10 == 0 or (i + 1) == len(frame_indices):
+                        print(f"[SAM3DBody2abc] Processed {i + 1}/{len(frame_indices)}")
+                        
+                except Exception as e:
+                    print(f"[SAM3DBody2abc] Error frame {frame_idx}: {e}")
                     frames[frame_idx] = {"vertices": None, "joint_coords": None}
-                    debug_images.append(img_tensor)
-                
-                if (i + 1) % 10 == 0 or (i + 1) == len(frame_indices):
-                    print(f"[SAM3DBody2abc] Processed {i + 1}/{len(frame_indices)}")
-                    
-            except Exception as e:
-                print(f"[SAM3DBody2abc] Error frame {frame_idx}: {e}")
-                frames[frame_idx] = {"vertices": None, "joint_coords": None}
-                debug_images.append(images[frame_idx])
+                    debug_images.append(images[frame_idx])
         
         # Apply smoothing
         if smoothing_strength > 0:
