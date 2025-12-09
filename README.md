@@ -1,6 +1,6 @@
 # SAM3DBody2abc v3.0.0 - Video to Animated FBX
 
-Export video sequences to animated FBX files with proper skeleton hierarchy.
+Export video sequences to animated FBX with mesh shape keys and skeleton.
 
 ## 🔧 Workflow
 
@@ -12,73 +12,68 @@ Load SAM3DBody → 🎬 Video Batch Processor ←──────────�
                📦 Export Animated FBX
 ```
 
-Uses **SAM3** for person segmentation and **SAM3DBody** for body reconstruction.
-
 ## 📦 Nodes
 
 | Node | Description |
 |------|-------------|
-| **🎬 Video Batch Processor** | Process video frames with SAM3 masks, collect skeleton data |
-| **📋 Skeleton Accumulator** | Accumulate SKELETON outputs from SAM3DBody Process |
-| **💾 Export Skeleton JSON** | Export skeleton sequence to JSON |
-| **📦 Export Animated FBX** | Convert skeleton sequence to animated FBX |
-| **📦 Export FBX from JSON** | Convert saved JSON to animated FBX |
-| **🗑️ Clear Accumulator** | Clear accumulated data |
+| **🎬 Video Batch Processor** | Process video with SAM3DBody, collect mesh_data per frame |
+| **📋 Mesh Data Accumulator** | Manually accumulate mesh_data from SAM3DBody Process |
+| **💾 Export Sequence JSON** | Save sequence to JSON |
+| **📦 Export Animated FBX** | Export with mesh shape keys + skeleton keyframes |
+| **📦 Export FBX from JSON** | Convert JSON to FBX |
+| **🗑️ Clear Accumulator** | Clear data |
+
+## 🔗 SAM3DBody Native Integration
+
+Works with SAM3DBody Process node outputs:
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `mesh_data` | SAM3D_OUTPUT | vertices, faces, joint_coords (127 joints) |
+| `skeleton` | SKELETON | joint_positions, joint_rotations, params |
+| `debug_image` | IMAGE | Visualization |
+
+Our nodes accept `mesh_data` (SAM3D_OUTPUT) to accumulate per-frame data.
 
 ## 📥 Installation
 
 1. Copy `ComfyUI-SAM3DBody2abc` to `ComfyUI/custom_nodes/`
-2. Requires: **ComfyUI-SAM3** (for segmentation)
-3. Requires: **ComfyUI-SAM3DBody** (for body reconstruction)
-4. Requires: **Blender** (bundled with SAM3DBody or system install)
+2. Requires:
+   - **ComfyUI-SAM3** (segmentation)
+   - **ComfyUI-SAM3DBody** (body reconstruction)
+   - **Blender** (bundled with SAM3DBody or system)
 
-## ⚙️ Settings
+## ⚙️ Options
 
 **Video Batch Processor:**
 | Option | Default | Description |
 |--------|---------|-------------|
-| `smoothing_strength` | 0.5 | Temporal smoothing (0=none, 2=heavy) |
+| `smoothing_strength` | 0.5 | Temporal smoothing (0=none) |
 | `skip_frames` | 1 | Process every Nth frame |
-| `inference_type` | full | `full` (body+hands) or `body` (faster) |
+| `inference_type` | full | `full` (body+hands) or `body` |
 
 **Export Animated FBX:**
 | Option | Default | Description |
 |--------|---------|-------------|
-| `filename` | animation | Output filename |
+| `include_mesh` | true | Include mesh with shape keys |
 | `fps` | 24.0 | Animation framerate |
 
 ## 🎯 Fixed Settings
 
 - **Scale:** 1.0
 - **Up axis:** Y
-- **Coordinate system:** Blender/Maya compatible
+- **Coordinate flip:** Same as SAM3DBody (-X, -Y, -Z)
 
-## 📋 Output
+## 📋 Output FBX Contains
 
-The animated FBX contains:
-- Armature with 127 joints (MHR skeleton)
-- Joint hierarchy from SAM3DBody
-- Keyframed joint positions for each frame
+- **Mesh** with shape keys (one per frame for vertex animation)
+- **Armature** with 127 joints
+- **Keyframed** joint positions per frame
 
-## 🔗 Integration with SAM3DBody Native Nodes
+## 📝 Workflows
 
-This extension works alongside SAM3DBody's native nodes:
-- `SAM3DBodyProcess` → outputs SKELETON
-- `SAM3DBodySaveSkeleton` → saves to JSON/BVH/FBX (single frame)
-- `SAM3DBodyExportFBX` → exports mesh + skeleton (single frame)
-
-Our extension adds **video/animation** support:
-- Process multiple frames
-- Temporal smoothing
-- Export animated FBX with keyframes
-
-## 📝 Version History
-
-### v3.0.0 (Fresh Build)
-- Clean architecture using SAM3DBody's native SKELETON output
-- Video batch processor with temporal smoothing
-- Animated FBX export with proper joint hierarchy
-- Fixed scale=1.0, up axis=Y
+1. `video_to_animated_fbx.json` - Full video pipeline with SAM3 segmentation
+2. `manual_with_native_nodes.json` - Shows both native SAM3DBody export and our accumulator
 
 ## 📄 License
 

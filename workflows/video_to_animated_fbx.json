@@ -6,7 +6,7 @@
       "id": 1,
       "type": "VHS_LoadVideo",
       "pos": [50, 150],
-      "size": {"0": 315, "1": 250},
+      "size": [315, 250],
       "flags": {},
       "order": 0,
       "mode": 0,
@@ -16,43 +16,39 @@
         {"name": "AUDIO", "type": "AUDIO", "links": null},
         {"name": "VHS_VIDEOINFO", "type": "VHS_VIDEOINFO", "links": null}
       ],
-      "title": "🎥 Load Video",
-      "properties": {}
+      "title": "🎥 Load Video"
     },
     {
       "id": 2,
       "type": "LoadSAM3Model",
       "pos": [50, 450],
-      "size": {"0": 315, "1": 82},
+      "size": [315, 82],
       "flags": {},
       "order": 1,
       "mode": 0,
       "outputs": [
         {"name": "sam3_model", "type": "SAM3_MODEL", "links": [3]}
       ],
-      "title": "🎭 Load SAM3 Model",
-      "properties": {},
-      "widgets_values": ["models/sam3/sam3.pt", ""]
+      "title": "🎭 Load SAM3 Model"
     },
     {
       "id": 3,
       "type": "LoadSAM3DBodyModel",
       "pos": [50, 580],
-      "size": {"0": 315, "1": 82},
+      "size": [315, 82],
       "flags": {},
       "order": 2,
       "mode": 0,
       "outputs": [
         {"name": "model", "type": "SAM3D_MODEL", "links": [4]}
       ],
-      "title": "🧍 Load SAM3DBody Model",
-      "properties": {}
+      "title": "🧍 Load SAM3DBody Model"
     },
     {
       "id": 4,
       "type": "SAM3VideoSegmentation",
       "pos": [450, 150],
-      "size": {"0": 350, "1": 150},
+      "size": [350, 150],
       "flags": {},
       "order": 3,
       "mode": 0,
@@ -64,14 +60,13 @@
         {"name": "video_state", "type": "SAM3_VIDEO_STATE", "links": [5]}
       ],
       "title": "🎭 SAM3 Video Segmentation",
-      "properties": {},
       "widgets_values": ["person", 0.5, 1]
     },
     {
       "id": 5,
       "type": "SAM3Propagate",
       "pos": [450, 350],
-      "size": {"0": 350, "1": 130},
+      "size": [350, 130],
       "flags": {},
       "order": 4,
       "mode": 0,
@@ -82,14 +77,13 @@
         {"name": "video_state", "type": "SAM3_VIDEO_STATE", "links": [6]}
       ],
       "title": "🎭 SAM3 Propagate",
-      "properties": {},
       "widgets_values": [0, -1, "forward"]
     },
     {
       "id": 6,
       "type": "SAM3ExtractMasks",
       "pos": [450, 530],
-      "size": {"0": 350, "1": 100},
+      "size": [350, 100],
       "flags": {},
       "order": 5,
       "mode": 0,
@@ -101,14 +95,13 @@
         {"name": "visualization", "type": "IMAGE", "links": null}
       ],
       "title": "🎭 SAM3 Extract Masks",
-      "properties": {},
       "widgets_values": [true]
     },
     {
       "id": 7,
       "type": "SAM3DBody2abc_VideoBatchProcessor",
       "pos": [900, 150],
-      "size": {"0": 400, "1": 320},
+      "size": [400, 320],
       "flags": {},
       "order": 6,
       "mode": 0,
@@ -118,25 +111,24 @@
         {"name": "mask", "type": "MASK", "link": 7}
       ],
       "outputs": [
-        {"name": "skeleton_sequence", "type": "SKELETON_SEQUENCE", "links": [8]},
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "links": [8]},
         {"name": "debug_images", "type": "IMAGE", "links": [9]},
         {"name": "frame_count", "type": "INT", "links": null},
         {"name": "status", "type": "STRING", "links": [10]}
       ],
       "title": "🎬 Video Batch Processor",
-      "properties": {},
       "widgets_values": [0.8, "full", 0.5, 0, -1, 1]
     },
     {
       "id": 8,
       "type": "SAM3DBody2abc_ExportAnimatedFBX",
       "pos": [900, 520],
-      "size": {"0": 400, "1": 130},
+      "size": [400, 150],
       "flags": {},
       "order": 7,
       "mode": 0,
       "inputs": [
-        {"name": "skeleton_sequence", "type": "SKELETON_SEQUENCE", "link": 8}
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 8}
       ],
       "outputs": [
         {"name": "fbx_path", "type": "STRING", "links": [11]},
@@ -144,36 +136,33 @@
         {"name": "frame_count", "type": "INT", "links": null}
       ],
       "title": "📦 Export Animated FBX",
-      "properties": {},
-      "widgets_values": ["animation", 24.0, ""]
+      "widgets_values": ["animation", 24.0, true, ""]
     },
     {
       "id": 9,
       "type": "PreviewImage",
       "pos": [1400, 150],
-      "size": {"0": 350, "1": 300},
+      "size": [350, 300],
       "flags": {},
       "order": 8,
       "mode": 0,
       "inputs": [
         {"name": "images", "type": "IMAGE", "link": 9}
       ],
-      "title": "🖼️ Debug Preview",
-      "properties": {}
+      "title": "🖼️ Debug Preview"
     },
     {
       "id": 10,
       "type": "ShowText|pysssss",
       "pos": [1400, 500],
-      "size": {"0": 350, "1": 150},
+      "size": [350, 150],
       "flags": {},
       "order": 9,
       "mode": 0,
       "inputs": [
         {"name": "text", "type": "STRING", "link": 10}
       ],
-      "title": "📊 Status",
-      "properties": {}
+      "title": "📊 Status"
     }
   ],
   "links": [
@@ -184,7 +173,7 @@
     [5, 4, 0, 5, 0, "SAM3_VIDEO_STATE"],
     [6, 5, 0, 6, 0, "SAM3_VIDEO_STATE"],
     [7, 6, 0, 7, 2, "MASK"],
-    [8, 7, 0, 8, 0, "SKELETON_SEQUENCE"],
+    [8, 7, 0, 8, 0, "MESH_SEQUENCE"],
     [9, 7, 1, 9, 0, "IMAGE"],
     [10, 7, 3, 10, 0, "STRING"],
     [11, 8, 0, 10, 0, "STRING"],
@@ -193,7 +182,7 @@
   "groups": [
     {"title": "📥 INPUT / MODELS", "bounding": [30, 80, 380, 620], "color": "#3f789e"},
     {"title": "🎭 SAM3 VIDEO SEGMENTATION", "bounding": [430, 80, 420, 600], "color": "#8A6F2F"},
-    {"title": "🧍 SAM3DBODY PROCESS + EXPORT", "bounding": [880, 80, 450, 600], "color": "#8AA62F"},
+    {"title": "🧍 SAM3DBODY + EXPORT", "bounding": [880, 80, 450, 620], "color": "#8AA62F"},
     {"title": "📊 OUTPUT", "bounding": [1380, 80, 400, 600], "color": "#a1a462"}
   ],
   "config": {},

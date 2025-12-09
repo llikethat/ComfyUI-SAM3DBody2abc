@@ -4,8 +4,16 @@ SAM3DBody2abc - Video to Animated FBX Export
 Extends SAM3DBody with video processing and animated FBX export.
 
 Workflow:
-    Option 1 (Batch): Load Video → 🎬 Video Batch Processor → 📦 Export Animated FBX
-    Option 2 (Manual): SAM3DBody Process → 📋 Skeleton Accumulator → 📦 Export Animated FBX
+    Load Video → SAM3 Segmentation → SAM3 Extract Masks
+                                            ↓
+    Load SAM3DBody → 🎬 Video Batch Processor ←──┘
+                              ↓
+                   📦 Export Animated FBX
+
+Outputs match SAM3DBody Process:
+- mesh_data (SAM3D_OUTPUT) → vertices, faces, joint_coords
+- Uses SAM3DBodyExportFBX format for single frames
+- Animated FBX has shape keys + skeleton keyframes
 
 Fixed settings:
 - Scale: 1.0
@@ -38,29 +46,28 @@ def _load_module(name: str, path: str):
     return None
 
 
-# Paths
 _base = os.path.dirname(os.path.abspath(__file__))
 _nodes = os.path.join(_base, "nodes")
 
 # Load modules
-_skeleton_acc = _load_module("sam3d2abc_skeleton_acc", os.path.join(_nodes, "skeleton_accumulator.py"))
+_accumulator = _load_module("sam3d2abc_accumulator", os.path.join(_nodes, "accumulator.py"))
 _fbx_export = _load_module("sam3d2abc_fbx_export", os.path.join(_nodes, "fbx_export.py"))
 _video_proc = _load_module("sam3d2abc_video_proc", os.path.join(_nodes, "video_processor.py"))
 
-# Register skeleton accumulator
-if _skeleton_acc:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SkeletonAccumulator"] = _skeleton_acc.SkeletonAccumulator
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportSkeletonJSON"] = _skeleton_acc.ExportSkeletonSequenceJSON
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ClearAccumulator"] = _skeleton_acc.ClearAccumulator
+# Register accumulator nodes
+if _accumulator:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MeshAccumulator"] = _accumulator.MeshDataAccumulator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportJSON"] = _accumulator.ExportMeshSequenceJSON
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Clear"] = _accumulator.ClearAccumulator
     
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SkeletonAccumulator"] = "📋 Skeleton Accumulator"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportSkeletonJSON"] = "💾 Export Skeleton JSON"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ClearAccumulator"] = "🗑️ Clear Accumulator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MeshAccumulator"] = "📋 Mesh Data Accumulator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportJSON"] = "💾 Export Sequence JSON"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Clear"] = "🗑️ Clear Accumulator"
 
-# Register FBX export
+# Register FBX export nodes
 if _fbx_export:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportAnimatedFBX"] = _fbx_export.ExportAnimatedFBX
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportFBXFromJSON"] = _fbx_export.ExportAnimatedFBXFromJSON
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportFBXFromJSON"] = _fbx_export.ExportFBXFromJSON
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportAnimatedFBX"] = "📦 Export Animated FBX"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportFBXFromJSON"] = "📦 Export FBX from JSON"

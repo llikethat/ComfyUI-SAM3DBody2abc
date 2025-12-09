@@ -1,6 +1,10 @@
 """
-FBX Export Node for SAM3DBody2abc
-Exports skeleton sequence to animated FBX using Blender.
+Animated FBX Export for SAM3DBody2abc
+Exports MESH_SEQUENCE to animated FBX using Blender.
+
+The exported FBX contains:
+- Mesh with shape keys (vertex animation per frame)
+- Armature with keyframed joint positions
 
 Settings:
 - Scale: 1.0 (fixed)
@@ -8,7 +12,6 @@ Settings:
 """
 
 import os
-import sys
 import json
 import subprocess
 import shutil
@@ -19,15 +22,12 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
 
-# Timeout for Blender
 BLENDER_TIMEOUT = 600
 
-# Path to Blender script
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _lib_dir = os.path.join(os.path.dirname(_current_dir), "lib")
 BLENDER_SCRIPT = os.path.join(_lib_dir, "blender_animated_fbx.py")
 
-# Blender path cache
 _BLENDER_PATH = None
 
 
@@ -45,7 +45,7 @@ def find_blender() -> Optional[str]:
         "/Applications/Blender.app/Contents/MacOS/Blender",
     ]
     
-    # Check ComfyUI SAM3DBody bundled Blender
+    # Check SAM3DBody bundled Blender
     try:
         custom_nodes = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         patterns = [
@@ -71,8 +71,8 @@ def find_blender() -> Optional[str]:
     return None
 
 
-def convert_to_serializable(obj):
-    """Convert numpy/torch to JSON-serializable types."""
+def to_list(obj):
+    """Convert to JSON-serializable list."""
     if obj is None:
         return None
     if isinstance(obj, torch.Tensor):
@@ -84,27 +84,28 @@ def convert_to_serializable(obj):
     if isinstance(obj, (np.int32, np.int64)):
         return int(obj)
     if isinstance(obj, dict):
-        return {k: convert_to_serializable(v) for k, v in obj.items()}
+        return {k: to_list(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [convert_to_serializable(v) for v in obj]
+        return [to_list(v) for v in obj]
     return obj
 
 
 class ExportAnimatedFBX:
     """
-    Export skeleton sequence to animated FBX.
+    Export MESH_SEQUENCE to animated FBX.
     
-    Uses Blender to create armature with keyframed joint positions.
+    Creates FBX with:
+    - Mesh + shape keys (vertex animation)
+    - Armature + keyframed joints
     """
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "skeleton_sequence": ("SKELETON_SEQUENCE",),
+                "mesh_sequence": ("MESH_SEQUENCE",),
                 "filename": ("STRING", {
                     "default": "animation",
-                    "multiline": False,
                 }),
                 "fps": ("FLOAT", {
                     "default": 24.0,
@@ -113,6 +114,10 @@ class ExportAnimatedFBX:
                 }),
             },
             "optional": {
+                "include_mesh": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include mesh with shape keys"
+                }),
                 "output_dir": ("STRING", {
                     "default": "",
                 }),
@@ -127,51 +132,49 @@ class ExportAnimatedFBX:
     
     def export_fbx(
         self,
-        skeleton_sequence: Dict,
+        mesh_sequence: Dict,
         filename: str = "animation",
         fps: float = 24.0,
+        include_mesh: bool = True,
         output_dir: str = "",
     ) -> Tuple[str, str, int]:
         """Export to animated FBX."""
         
-        frames = skeleton_sequence.get("frames", {})
-        
+        frames = mesh_sequence.get("frames", {})
         if not frames:
             return ("", "Error: No frames", 0)
         
-        # Find Blender
         blender_path = find_blender()
         if not blender_path:
             return ("", "Error: Blender not found", 0)
         
         if not os.path.exists(BLENDER_SCRIPT):
-            return ("", f"Error: Blender script not found: {BLENDER_SCRIPT}", 0)
+            return ("", f"Error: Script not found: {BLENDER_SCRIPT}", 0)
         
-        # Output directory
         if not output_dir:
             output_dir = folder_paths.get_output_directory()
         os.makedirs(output_dir, exist_ok=True)
         
-        # Sort frames
         sorted_indices = sorted(frames.keys())
         
         # Build JSON for Blender
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
-            "joint_parents": convert_to_serializable(skeleton_sequence.get("joint_parents")),
-            "joint_names": skeleton_sequence.get("joint_names"),
+            "faces": to_list(mesh_sequence.get("faces")),
+            "joint_parents": to_list(mesh_sequence.get("joint_parents")),
             "frames": [],
         }
         
         for idx in sorted_indices:
             frame = frames[idx]
-            export_data["frames"].append({
+            frame_data = {
                 "frame_index": idx,
-                "joint_positions": convert_to_serializable(frame.get("joint_positions")),
-                "joint_rotations": convert_to_serializable(frame.get("joint_rotations")),
-                "global_rot": convert_to_serializable(frame.get("global_rot")),
-            })
+                "joint_coords": to_list(frame.get("joint_coords")),
+            }
+            if include_mesh:
+                frame_data["vertices"] = to_list(frame.get("vertices"))
+            export_data["frames"].append(frame_data)
         
         # Write temp JSON
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -181,7 +184,6 @@ class ExportAnimatedFBX:
         fbx_path = os.path.join(output_dir, f"{filename}.fbx")
         
         try:
-            # Run Blender
             cmd = [
                 blender_path,
                 "--background",
@@ -189,6 +191,7 @@ class ExportAnimatedFBX:
                 "--",
                 json_path,
                 fbx_path,
+                "1" if include_mesh else "0",
             ]
             
             print(f"[FBX Export] Exporting {len(sorted_indices)} frames...")
@@ -208,13 +211,15 @@ class ExportAnimatedFBX:
             if not os.path.exists(fbx_path):
                 return ("", "Error: FBX not created", 0)
             
-            status = f"Exported {len(sorted_indices)} frames to {filename}.fbx"
-            print(f"[FBX Export] {status}")
+            status = f"Exported {len(sorted_indices)} frames"
+            if not include_mesh:
+                status += " (skeleton only)"
             
+            print(f"[FBX Export] {status}")
             return (fbx_path, status, len(sorted_indices))
             
         except subprocess.TimeoutExpired:
-            return ("", f"Error: Blender timed out after {BLENDER_TIMEOUT}s", 0)
+            return ("", "Error: Blender timed out", 0)
         except Exception as e:
             return ("", f"Error: {str(e)}", 0)
         finally:
@@ -222,26 +227,21 @@ class ExportAnimatedFBX:
                 os.unlink(json_path)
 
 
-class ExportAnimatedFBXFromJSON:
+class ExportFBXFromJSON:
     """
-    Export animated FBX from a previously saved skeleton JSON file.
+    Export animated FBX from saved JSON file.
     """
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "json_path": ("STRING", {
-                    "forceInput": True,
-                }),
+                "json_path": ("STRING", {"forceInput": True}),
             },
             "optional": {
-                "output_dir": ("STRING", {
-                    "default": "",
-                }),
-                "filename": ("STRING", {
-                    "default": "animation",
-                }),
+                "filename": ("STRING", {"default": "animation"}),
+                "include_mesh": ("BOOLEAN", {"default": True}),
+                "output_dir": ("STRING", {"default": ""}),
             }
         }
     
@@ -254,8 +254,9 @@ class ExportAnimatedFBXFromJSON:
     def export_fbx(
         self,
         json_path: str,
-        output_dir: str = "",
         filename: str = "animation",
+        include_mesh: bool = True,
+        output_dir: str = "",
     ) -> Tuple[str, str]:
         """Convert JSON to FBX."""
         
@@ -266,12 +267,8 @@ class ExportAnimatedFBXFromJSON:
         if not blender_path:
             return ("", "Error: Blender not found")
         
-        if not os.path.exists(BLENDER_SCRIPT):
-            return ("", f"Error: Script not found: {BLENDER_SCRIPT}")
-        
         if not output_dir:
             output_dir = folder_paths.get_output_directory()
-        os.makedirs(output_dir, exist_ok=True)
         
         fbx_path = os.path.join(output_dir, f"{filename}.fbx")
         
@@ -283,27 +280,18 @@ class ExportAnimatedFBXFromJSON:
                 "--",
                 json_path,
                 fbx_path,
+                "1" if include_mesh else "0",
             ]
             
-            print(f"[FBX Export] Converting JSON to FBX...")
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=BLENDER_TIMEOUT,
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=BLENDER_TIMEOUT)
             
             if result.returncode != 0:
-                error = result.stderr[:500] if result.stderr else "Unknown error"
-                return ("", f"Blender error: {error}")
+                return ("", f"Blender error: {result.stderr[:500]}")
             
             if not os.path.exists(fbx_path):
                 return ("", "Error: FBX not created")
             
             return (fbx_path, f"Exported to {filename}.fbx")
             
-        except subprocess.TimeoutExpired:
-            return ("", f"Error: Blender timed out")
         except Exception as e:
             return ("", f"Error: {str(e)}")
