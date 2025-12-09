@@ -251,12 +251,17 @@ class VideoBatchProcessor:
                             except Exception:
                                 pass
                         
-                        # Store frame data
+                        # Store frame data including camera
+                        focal_length = output.get("focal_length")
+                        if focal_length is not None and hasattr(focal_length, 'item'):
+                            focal_length = float(focal_length.item()) if hasattr(focal_length, 'item') else float(focal_length)
+                        
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
                             "joint_coords": to_numpy(output.get("pred_joint_coords")),
-                            "camera": to_numpy(output.get("pred_cam_t")),
-                            "focal_length": output.get("focal_length"),
+                            "pred_cam_t": to_numpy(output.get("pred_cam_t")),
+                            "focal_length": focal_length,
+                            "global_rot": to_numpy(output.get("global_rot")),
                         }
                         
                         debug_images.append(img_tensor)

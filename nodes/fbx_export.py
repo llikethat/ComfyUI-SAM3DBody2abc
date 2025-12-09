@@ -97,9 +97,11 @@ class ExportAnimatedFBX:
     Creates FBX with:
     - Mesh + shape keys (vertex animation)
     - Armature + keyframed joints (properly connected hierarchy)
+    - Camera with estimated focal length
     
     Options:
     - up_axis: Y (default), Z, -Y, -Z
+    - include_camera: Include camera with focal length from SAM3DBody
     """
     
     @classmethod
@@ -120,6 +122,10 @@ class ExportAnimatedFBX:
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include mesh with shape keys"
+                }),
+                "include_camera": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include camera with focal length from SAM3DBody"
                 }),
                 "up_axis": (["Y", "Z", "-Y", "-Z"], {
                     "default": "Y",
@@ -143,6 +149,7 @@ class ExportAnimatedFBX:
         filename: str = "animation",
         fps: float = 24.0,
         include_mesh: bool = True,
+        include_camera: bool = True,
         up_axis: str = "Y",
         output_dir: str = "",
     ) -> Tuple[str, str, int]:
@@ -179,6 +186,8 @@ class ExportAnimatedFBX:
             frame_data = {
                 "frame_index": idx,
                 "joint_coords": to_list(frame.get("joint_coords")),
+                "pred_cam_t": to_list(frame.get("pred_cam_t")),
+                "focal_length": frame.get("focal_length"),
             }
             if include_mesh:
                 frame_data["vertices"] = to_list(frame.get("vertices"))
@@ -201,9 +210,10 @@ class ExportAnimatedFBX:
                 fbx_path,
                 up_axis,
                 "1" if include_mesh else "0",
+                "1" if include_camera else "0",
             ]
             
-            print(f"[FBX Export] Exporting {len(sorted_indices)} frames (up={up_axis})...")
+            print(f"[FBX Export] Exporting {len(sorted_indices)} frames (up={up_axis}, camera={include_camera})...")
             
             result = subprocess.run(
                 cmd,
@@ -223,6 +233,8 @@ class ExportAnimatedFBX:
             status = f"Exported {len(sorted_indices)} frames (up={up_axis})"
             if not include_mesh:
                 status += " skeleton only"
+            if include_camera:
+                status += " +camera"
             
             print(f"[FBX Export] {status}")
             return (fbx_path, status, len(sorted_indices))
@@ -250,6 +262,7 @@ class ExportFBXFromJSON:
             "optional": {
                 "filename": ("STRING", {"default": "animation"}),
                 "include_mesh": ("BOOLEAN", {"default": True}),
+                "include_camera": ("BOOLEAN", {"default": True}),
                 "up_axis": (["Y", "Z", "-Y", "-Z"], {"default": "Y"}),
                 "output_dir": ("STRING", {"default": ""}),
             }
@@ -266,6 +279,7 @@ class ExportFBXFromJSON:
         json_path: str,
         filename: str = "animation",
         include_mesh: bool = True,
+        include_camera: bool = True,
         up_axis: str = "Y",
         output_dir: str = "",
     ) -> Tuple[str, str]:
@@ -293,6 +307,7 @@ class ExportFBXFromJSON:
                 fbx_path,
                 up_axis,
                 "1" if include_mesh else "0",
+                "1" if include_camera else "0",
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=BLENDER_TIMEOUT)

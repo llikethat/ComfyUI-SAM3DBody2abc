@@ -247,7 +247,7 @@ def export_fbx(output_path, axis_forward, axis_up):
         apply_scale_options='FBX_SCALE_ALL',
         axis_forward=axis_forward,
         axis_up=axis_up,
-        object_types={'MESH', 'ARMATURE'},
+        object_types={'MESH', 'ARMATURE', 'CAMERA'},
         use_mesh_modifiers=True,
         mesh_smooth_type='FACE',
         use_armature_deform_only=False,
@@ -263,6 +263,77 @@ def export_fbx(output_path, axis_forward, axis_up):
     print(f"[Blender] Export complete")
 
 
+def create_camera(focal_length, cam_t, all_frames, fps, transform_func):
+    """
+    Create a camera with the estimated focal length and optional animation.
+    
+    Args:
+        focal_length: Focal length in pixels (will be converted to mm)
+        cam_t: Camera translation [tx, ty, tz]
+        all_frames: All frames data for animation
+        fps: Frames per second
+        transform_func: Coordinate transformation function
+    """
+    # Create camera
+    cam_data = bpy.data.cameras.new("Camera")
+    camera = bpy.data.objects.new("Camera", cam_data)
+    bpy.context.collection.objects.link(camera)
+    
+    # Set focal length (convert from pixels to mm assuming 36mm sensor width)
+    # focal_length_mm = focal_length_px * sensor_width / image_width
+    # Assuming standard 1920px width and 36mm sensor
+    sensor_width = 36.0  # mm
+    image_width = 1920.0  # pixels (typical)
+    
+    if focal_length:
+        focal_mm = (focal_length * sensor_width) / image_width
+        cam_data.lens = max(1.0, min(focal_mm, 500.0))  # Clamp to reasonable range
+        cam_data.sensor_width = sensor_width
+        print(f"[Blender] Camera focal length: {focal_length:.1f}px -> {cam_data.lens:.1f}mm")
+    else:
+        cam_data.lens = 50.0  # Default 50mm
+        print("[Blender] Using default 50mm focal length")
+    
+    # Position camera
+    if cam_t is not None:
+        # Camera looks at the subject from a distance
+        # pred_cam_t is [tx, ty, tz] where tz is the depth
+        cam_pos = transform_func(cam_t)
+        # Camera should be positioned looking at origin, so we offset
+        camera.location = Vector((0, 0, cam_t[2] if len(cam_t) > 2 else 3.0))
+    else:
+        camera.location = Vector((0, 0, 3.0))
+    
+    # Point camera at origin
+    camera.rotation_euler = (math.radians(90), 0, 0)
+    
+    # Animate camera if we have per-frame data
+    has_animation = False
+    for frame_idx, frame_data in enumerate(all_frames):
+        frame_cam_t = frame_data.get("pred_cam_t")
+        frame_focal = frame_data.get("focal_length")
+        
+        if frame_cam_t is not None:
+            bpy.context.scene.frame_set(frame_idx)
+            # Update camera position based on subject translation
+            camera.location.z = frame_cam_t[2] if len(frame_cam_t) > 2 else 3.0
+            camera.keyframe_insert(data_path="location", frame=frame_idx)
+            has_animation = True
+        
+        if frame_focal is not None and frame_focal != focal_length:
+            bpy.context.scene.frame_set(frame_idx)
+            cam_data.lens = (frame_focal * sensor_width) / image_width
+            cam_data.keyframe_insert(data_path="lens", frame=frame_idx)
+            has_animation = True
+    
+    if has_animation:
+        print(f"[Blender] Camera animated over {len(all_frames)} frames")
+    else:
+        print("[Blender] Camera created (static)")
+    
+    return camera
+
+
 def main():
     argv = sys.argv
     try:
@@ -273,18 +344,20 @@ def main():
         sys.exit(1)
     
     if len(args) < 2:
-        print("[Blender] Usage: blender --background --python script.py -- input.json output.fbx [up_axis] [include_mesh]")
+        print("[Blender] Usage: blender --background --python script.py -- input.json output.fbx [up_axis] [include_mesh] [include_camera]")
         sys.exit(1)
     
     input_json = args[0]
     output_fbx = args[1]
     up_axis = args[2] if len(args) > 2 else "Y"
     include_mesh = args[3] == "1" if len(args) > 3 else True
+    include_camera = args[4] == "1" if len(args) > 4 else True
     
     print(f"[Blender] Input: {input_json}")
     print(f"[Blender] Output: {output_fbx}")
     print(f"[Blender] Up axis: {up_axis}")
     print(f"[Blender] Include mesh: {include_mesh}")
+    print(f"[Blender] Include camera: {include_camera}")
     
     if not os.path.exists(input_json):
         print(f"[Blender] Error: File not found: {input_json}")
@@ -311,6 +384,8 @@ def main():
     
     first_verts = frames[0].get("vertices")
     first_joints = frames[0].get("joint_coords")
+    first_focal = frames[0].get("focal_length")
+    first_cam_t = frames[0].get("pred_cam_t")
     
     clear_scene()
     
@@ -321,6 +396,10 @@ def main():
     # Create animated skeleton with proper hierarchy
     if first_joints:
         armature = create_armature(first_joints, joint_parents, frames, fps, transform_func)
+    
+    # Create camera with focal length
+    if include_camera and first_focal:
+        create_camera(first_focal, first_cam_t, frames, fps, transform_func)
     
     export_fbx(output_fbx, axis_forward, axis_up_export)
     print("[Blender] Done!")

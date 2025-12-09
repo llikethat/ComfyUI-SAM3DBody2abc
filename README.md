@@ -77,8 +77,16 @@ Works with SAM3DBody Process node outputs:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `include_mesh` | true | Include mesh with shape keys |
+| `include_camera` | true | Include camera with focal length from SAM3DBody |
 | `up_axis` | Y | Which axis points up (Y, Z, -Y, -Z) |
 | `fps` | 24.0 | Animation framerate |
+
+## 📷 Camera Export
+
+SAM3DBody estimates the camera focal length for each frame. The export includes:
+- **Focal length** converted from pixels to mm (assuming 36mm sensor)
+- **Camera position** based on subject depth
+- **Per-frame animation** if focal length varies
 
 ## 📋 Output FBX Contains
 
@@ -86,6 +94,7 @@ Works with SAM3DBody Process node outputs:
 - **Armature** with 127 joints in proper hierarchy
 - **Keyframed** joint positions per frame
 - **Parent-child** bone connections
+- **Camera** with estimated focal length (optional)
 
 ## 🎬 Sample Workflow
 
