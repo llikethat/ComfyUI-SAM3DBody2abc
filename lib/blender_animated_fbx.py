@@ -171,16 +171,11 @@ def create_armature(first_joints, joint_parents, all_frames, fps, transform_func
         bone.tail = Vector((pos[0], pos[1], pos[2] + 0.02))
         bones.append(bone)
     
-    # Set parent hierarchy and adjust bone tails
+    # Set parent hierarchy and adjust bone tails (VISUAL ONLY - no transform inheritance)
+    # Note: We DON'T set bone.parent to avoid location inheritance issues
+    # Each bone animates independently with absolute positions
     if joint_parents and len(joint_parents) == num_joints:
         for i in range(num_joints):
-            parent_idx = joint_parents[i]
-            
-            # Set parent (skip root and invalid parents)
-            if parent_idx >= 0 and parent_idx < num_joints and parent_idx != i:
-                bones[i].parent = bones[parent_idx]
-                bones[i].use_connect = False  # Don't force connection
-            
             # Adjust bone tail to point toward first child (better visualization)
             if i in children_map and len(children_map[i]) > 0:
                 # Point toward first child
@@ -203,8 +198,8 @@ def create_armature(first_joints, joint_parents, all_frames, fps, transform_func
     
     print(f"[Blender] Animating {num_joints} joints over {len(all_frames)} frames...")
     
-    # Store rest positions
-    rest_positions = [Vector(arm_data.bones[i].head_local) for i in range(num_joints)]
+    # Get rest head positions in armature space
+    rest_heads = [Vector(armature.pose.bones[i].bone.head_local) for i in range(num_joints)]
     
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
@@ -213,15 +208,14 @@ def create_armature(first_joints, joint_parents, all_frames, fps, transform_func
         
         bpy.context.scene.frame_set(frame_idx)
         
-        for bone_idx, pose_bone in enumerate(armature.pose.bones):
-            if bone_idx >= len(joints):
-                break
+        for bone_idx in range(min(num_joints, len(joints))):
+            pose_bone = armature.pose.bones[bone_idx]
             
             pos = joints[bone_idx]
-            new_pos = Vector(transform_func(pos))
+            target_armature = Vector(transform_func(pos))
             
-            # Calculate offset from rest pose
-            offset = new_pos - rest_positions[bone_idx]
+            # Simple offset from rest position
+            offset = target_armature - rest_heads[bone_idx]
             
             pose_bone.location = offset
             pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
@@ -230,7 +224,7 @@ def create_armature(first_joints, joint_parents, all_frames, fps, transform_func
             print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames")
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created animated skeleton with proper hierarchy")
+    print(f"[Blender] Created animated skeleton")
     return armature
 
 
@@ -263,7 +257,7 @@ def export_fbx(output_path, axis_forward, axis_up):
     print(f"[Blender] Export complete")
 
 
-def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis="Y"):
+def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis="Y", sensor_width=36.0):
     """
     Create a camera with the estimated focal length and optional animation.
     
@@ -274,26 +268,28 @@ def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis=
         fps: Frames per second
         transform_func: Coordinate transformation function
         up_axis: Which axis is up (Y, Z, -Y, -Z)
+        sensor_width: Camera sensor width in mm (default 36mm = Full Frame)
     """
     # Create camera
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
     bpy.context.collection.objects.link(camera)
     
-    # Set focal length (convert from pixels to mm assuming 36mm sensor width)
+    # Set sensor width
+    cam_data.sensor_width = sensor_width
+    
+    # Convert focal length from pixels to mm
     # focal_length_mm = focal_length_px * sensor_width / image_width
-    # Assuming standard 1920px width and 36mm sensor
-    sensor_width = 36.0  # mm
+    # Assuming standard 1920px width
     image_width = 1920.0  # pixels (typical)
     
     if focal_length:
         focal_mm = (focal_length * sensor_width) / image_width
         cam_data.lens = max(1.0, min(focal_mm, 500.0))  # Clamp to reasonable range
-        cam_data.sensor_width = sensor_width
-        print(f"[Blender] Camera focal length: {focal_length:.1f}px -> {cam_data.lens:.1f}mm")
+        print(f"[Blender] Camera: {focal_length:.1f}px -> {cam_data.lens:.1f}mm (sensor={sensor_width}mm)")
     else:
         cam_data.lens = 50.0  # Default 50mm
-        print("[Blender] Using default 50mm focal length")
+        print(f"[Blender] Using default 50mm focal length (sensor={sensor_width}mm)")
     
     # Get camera distance from pred_cam_t (z component is depth)
     cam_distance = 3.0
@@ -394,8 +390,10 @@ def main():
     frames = data.get("frames", [])
     faces = data.get("faces")
     joint_parents = data.get("joint_parents")
+    sensor_width = data.get("sensor_width", 36.0)
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
+    print(f"[Blender] Sensor width: {sensor_width}mm")
     if joint_parents:
         print(f"[Blender] Joint parents available: {len(joint_parents)} joints")
     
@@ -423,7 +421,7 @@ def main():
     
     # Create camera with focal length
     if include_camera and first_focal:
-        create_camera(first_focal, first_cam_t, frames, fps, transform_func, up_axis)
+        create_camera(first_focal, first_cam_t, frames, fps, transform_func, up_axis, sensor_width)
     
     export_fbx(output_fbx, axis_forward, axis_up_export)
     print("[Blender] Done!")

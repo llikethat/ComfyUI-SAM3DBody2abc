@@ -88,4 +88,7 @@ print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:"
 for name in NODE_CLASS_MAPPINGS:
     print(f"  - {NODE_DISPLAY_NAME_MAPPINGS.get(name, name)}")
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
+
+# Web extension directory
+WEB_DIRECTORY = "./web"

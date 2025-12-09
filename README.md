@@ -103,9 +103,26 @@ Works with SAM3DBody Process node outputs:
 ## 📷 Camera Export
 
 SAM3DBody estimates the camera focal length for each frame. The export includes:
-- **Focal length** converted from pixels to mm (assuming 36mm sensor)
+- **Focal length** converted from pixels to mm
 - **Camera position** based on subject depth
 - **Per-frame animation** if focal length varies
+
+### Sensor Width Options
+
+| Camera Type | Sensor Width | Notes |
+|-------------|--------------|-------|
+| Full Frame | 36.0 mm | Default, matches most DSLR/mirrorless |
+| APS-C (Canon) | 22.3 mm | Canon crop sensor |
+| APS-C (Nikon/Sony) | 23.6 mm | Nikon/Sony crop sensor |
+| Micro Four Thirds | 17.3 mm | Olympus/Panasonic |
+| 1-inch | 13.2 mm | Compact cameras |
+| iPhone/Smartphone | 5-7 mm | Varies by model |
+
+### Focal Length Conversion
+```
+focal_mm = focal_px × (sensor_width / image_width)
+Example: 1500px × (36mm / 1920px) = ~28mm
+```
 
 ## 📋 Output FBX Contains
 

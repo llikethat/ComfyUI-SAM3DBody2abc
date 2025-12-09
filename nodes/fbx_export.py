@@ -102,6 +102,7 @@ class ExportAnimatedFBX:
     Options:
     - up_axis: Y (default), Z, -Y, -Z
     - include_camera: Include camera with focal length from SAM3DBody
+    - sensor_width: Camera sensor width in mm (for focal length conversion)
     """
     
     @classmethod
@@ -131,6 +132,13 @@ class ExportAnimatedFBX:
                     "default": "Y",
                     "tooltip": "Which axis points up in the output"
                 }),
+                "sensor_width": ("FLOAT", {
+                    "default": 36.0,
+                    "min": 1.0,
+                    "max": 100.0,
+                    "step": 0.1,
+                    "tooltip": "Camera sensor width in mm (Full Frame=36, APS-C=23.6, MFT=17.3)"
+                }),
                 "output_dir": ("STRING", {
                     "default": "",
                 }),
@@ -151,6 +159,7 @@ class ExportAnimatedFBX:
         include_mesh: bool = True,
         include_camera: bool = True,
         up_axis: str = "Y",
+        sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int]:
         """Export to animated FBX."""
@@ -178,6 +187,7 @@ class ExportAnimatedFBX:
             "frame_count": len(sorted_indices),
             "faces": to_list(mesh_sequence.get("faces")),
             "joint_parents": to_list(mesh_sequence.get("joint_parents")),
+            "sensor_width": sensor_width,
             "frames": [],
         }
         
@@ -213,7 +223,7 @@ class ExportAnimatedFBX:
                 "1" if include_camera else "0",
             ]
             
-            print(f"[FBX Export] Exporting {len(sorted_indices)} frames (up={up_axis}, camera={include_camera})...")
+            print(f"[FBX Export] Exporting {len(sorted_indices)} frames (up={up_axis}, camera={include_camera}, sensor={sensor_width}mm)...")
             
             result = subprocess.run(
                 cmd,
