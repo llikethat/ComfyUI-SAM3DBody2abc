@@ -1,34 +1,31 @@
 """
-SAM3DBody2abc - Video to Animated FBX Export Extension
+SAM3DBody2abc - Video to Animated FBX Export
 
-This extension works with SAM3DBody's Process Image node to:
-1. Accumulate frames with temporal smoothing
-2. Export to JSON (intermediate format)
-3. Convert to animated FBX
+Extends SAM3DBody with video processing and animated FBX export.
 
 Workflow:
-    Load Video → SAM3DBody Process Image (frame by frame) → Frame Accumulator → Apply Smoothing → Export FBX
+    Option 1 (Batch): Load Video → 🎬 Video Batch Processor → 📦 Export Animated FBX
+    Option 2 (Manual): SAM3DBody Process → 📋 Skeleton Accumulator → 📦 Export Animated FBX
 
 Fixed settings:
 - Scale: 1.0
 - Up axis: Y
 
-Version: 2.6.0
+Version: 3.0.0
 """
 
-__version__ = "2.6.0"
+__version__ = "3.0.0"
 
 import os
 import sys
 import importlib.util
 
-# Track loaded modules
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
 
 def _load_module(name: str, path: str):
-    """Dynamically load a module from path."""
+    """Load module from path."""
     try:
         spec = importlib.util.spec_from_file_location(name, path)
         if spec and spec.loader:
@@ -41,56 +38,41 @@ def _load_module(name: str, path: str):
     return None
 
 
-# Get base path
-_base_path = os.path.dirname(os.path.abspath(__file__))
-_nodes_path = os.path.join(_base_path, "nodes")
+# Paths
+_base = os.path.dirname(os.path.abspath(__file__))
+_nodes = os.path.join(_base, "nodes")
 
 # Load modules
-_frame_accumulator = _load_module(
-    "sam3dbody2abc_frame_accumulator",
-    os.path.join(_nodes_path, "frame_accumulator.py")
-)
+_skeleton_acc = _load_module("sam3d2abc_skeleton_acc", os.path.join(_nodes, "skeleton_accumulator.py"))
+_fbx_export = _load_module("sam3d2abc_fbx_export", os.path.join(_nodes, "fbx_export.py"))
+_video_proc = _load_module("sam3d2abc_video_proc", os.path.join(_nodes, "video_processor.py"))
 
-_fbx_export = _load_module(
-    "sam3dbody2abc_fbx_export",
-    os.path.join(_nodes_path, "fbx_export.py")
-)
-
-_batch_process = _load_module(
-    "sam3dbody2abc_batch_process",
-    os.path.join(_nodes_path, "batch_process.py")
-)
-
-# Register Frame Accumulator nodes
-if _frame_accumulator:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_FrameAccumulator"] = _frame_accumulator.FrameAccumulator
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ApplySmoothing"] = _frame_accumulator.ApplySmoothing
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportJSON"] = _frame_accumulator.ExportSequenceJSON
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ClearSequences"] = _frame_accumulator.ClearSequences
+# Register skeleton accumulator
+if _skeleton_acc:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SkeletonAccumulator"] = _skeleton_acc.SkeletonAccumulator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportSkeletonJSON"] = _skeleton_acc.ExportSkeletonSequenceJSON
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ClearAccumulator"] = _skeleton_acc.ClearAccumulator
     
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FrameAccumulator"] = "📋 Frame Accumulator"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ApplySmoothing"] = "〰️ Apply Smoothing"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportJSON"] = "💾 Export JSON"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ClearSequences"] = "🗑️ Clear Sequences"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SkeletonAccumulator"] = "📋 Skeleton Accumulator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportSkeletonJSON"] = "💾 Export Skeleton JSON"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ClearAccumulator"] = "🗑️ Clear Accumulator"
 
-# Register FBX Export nodes
+# Register FBX export
 if _fbx_export:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportFBX"] = _fbx_export.ExportFBX
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportFBXDirect"] = _fbx_export.ExportFBXDirect
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportAnimatedFBX"] = _fbx_export.ExportAnimatedFBX
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportFBXFromJSON"] = _fbx_export.ExportAnimatedFBXFromJSON
     
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportFBX"] = "📦 Export FBX (from JSON)"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportFBXDirect"] = "📦 Export FBX Direct"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportAnimatedFBX"] = "📦 Export Animated FBX"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportFBXFromJSON"] = "📦 Export FBX from JSON"
 
-# Register Batch Process node
-if _batch_process:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_BatchProcess"] = _batch_process.BatchProcess
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_BatchProcess"] = "🎬 Batch Process"
+# Register video processor
+if _video_proc:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_VideoBatchProcessor"] = _video_proc.VideoBatchProcessor
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VideoBatchProcessor"] = "🎬 Video Batch Processor"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
 for name in NODE_CLASS_MAPPINGS:
-    display = NODE_DISPLAY_NAME_MAPPINGS.get(name, name)
-    print(f"  - {display}")
+    print(f"  - {NODE_DISPLAY_NAME_MAPPINGS.get(name, name)}")
 
-# ComfyUI requires these
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
