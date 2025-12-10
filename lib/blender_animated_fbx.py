@@ -1,6 +1,6 @@
 """
 Blender Script: Export Animated FBX from Mesh Sequence JSON
-Creates mesh with shape keys + armature with properly connected skeleton hierarchy.
+Creates animated mesh using vertex keyframes + joint locators.
 
 Usage: blender --background --python blender_animated_fbx.py -- input.json output.fbx [up_axis]
 
@@ -28,6 +28,8 @@ def clear_scene():
         bpy.data.armatures.remove(armature)
     for mesh in bpy.data.meshes:
         bpy.data.meshes.remove(mesh)
+    for cam in bpy.data.cameras:
+        bpy.data.cameras.remove(cam)
 
 
 def get_transform_for_axis(up_axis):
@@ -38,55 +40,34 @@ def get_transform_for_axis(up_axis):
     Returns: (flip_func, axis_forward, axis_up)
     """
     if up_axis == "Y":
-        # Y-up (default, matches SAM3DBody)
-        # Flip all axes as SAM3DBody does
         return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
     elif up_axis == "Z":
-        # Z-up (Blender default)
-        # Rotate 90 degrees around X
         return lambda p: (-p[0], -p[2], p[1]), 'Y', 'Z'
     elif up_axis == "-Y":
-        # -Y up (upside down)
         return lambda p: (-p[0], p[1], p[2]), 'Z', '-Y'
     elif up_axis == "-Z":
-        # -Z up
         return lambda p: (-p[0], p[2], -p[1]), '-Y', '-Z'
     else:
-        # Default to Y-up
         return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
 
 
-def build_children_map(joint_parents):
-    """Build a map of parent -> list of children indices."""
-    children = {}
-    for i, parent_idx in enumerate(joint_parents):
-        if parent_idx >= 0:
-            if parent_idx not in children:
-                children[parent_idx] = []
-            children[parent_idx].append(i)
-    return children
-
-
-def find_root_joint(joint_parents):
-    """Find root joint (parent == -1 or self-referencing)."""
-    for i, parent_idx in enumerate(joint_parents):
-        if parent_idx < 0 or parent_idx == i:
-            return i
-    return 0  # Fallback to first joint
-
-
-def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps, transform_func):
-    """Create mesh with shape keys for animation."""
-    mesh = bpy.data.meshes.new("body_mesh")
+def create_animated_mesh(all_frames, faces, fps, transform_func):
+    """
+    Create mesh with per-vertex animation using shape keys.
+    Only the final animated mesh is exported (no per-frame hidden meshes).
+    """
+    first_verts = all_frames[0].get("vertices")
+    if not first_verts:
+        return None
     
-    # Transform vertices
-    verts = [transform_func(v) for v in first_vertices]
+    # Create mesh with first frame vertices
+    mesh = bpy.data.meshes.new("body_mesh")
+    verts = [transform_func(v) for v in first_verts]
     
     if faces:
         mesh.from_pydata(verts, [], faces)
     else:
         mesh.from_pydata(verts, [], [])
-    
     mesh.update()
     
     obj = bpy.data.objects.new("body", mesh)
@@ -100,10 +81,11 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps, transform
     bpy.context.scene.frame_end = len(all_frames) - 1
     
     # Add basis shape key
-    obj.shape_key_add(name="Basis", from_mix=False)
+    basis = obj.shape_key_add(name="Basis", from_mix=False)
     
     print(f"[Blender] Creating {len(all_frames)} shape keys...")
     
+    # Create shape keys for each frame
     for frame_idx, frame_data in enumerate(all_frames):
         frame_verts = frame_data.get("vertices")
         if not frame_verts:
@@ -113,9 +95,9 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps, transform
         
         for j, v in enumerate(frame_verts):
             if j < len(sk.data):
-                sk.data[j].co = transform_func(v)
+                sk.data[j].co = Vector(transform_func(v))
         
-        # Keyframe the shape key
+        # Keyframe shape key value
         sk.value = 0.0
         sk.keyframe_insert(data_path="value", frame=max(0, frame_idx - 1))
         
@@ -132,144 +114,60 @@ def create_mesh_with_shapekeys(first_vertices, faces, all_frames, fps, transform
     return obj
 
 
-def create_armature(first_joints, joint_parents, all_frames, fps, transform_func):
+def create_joint_locators(all_frames, fps, transform_func):
     """
-    Create armature with properly connected skeleton hierarchy.
+    Create animated joint locators (empties).
+    Each locator animates independently in world space - no parent hierarchy.
+    """
+    first_joints = all_frames[0].get("joint_coords")
+    if not first_joints:
+        return None
     
-    The skeleton hierarchy uses joint_parents to establish parent-child relationships.
-    Root joint (typically pelvis/hip) has parent -1.
-    Bone tails point toward first child or use small offset if leaf.
-    """
     num_joints = len(first_joints)
+    print(f"[Blender] Creating {num_joints} joint locators...")
     
-    # Build hierarchy info
-    children_map = build_children_map(joint_parents) if joint_parents else {}
-    root_idx = find_root_joint(joint_parents) if joint_parents else 0
-    
-    print(f"[Blender] Root joint: {root_idx}")
-    print(f"[Blender] Creating armature with {num_joints} joints...")
-    
-    # Create armature
-    arm_data = bpy.data.armatures.new("Skeleton_Data")
-    armature = bpy.data.objects.new("Skeleton", arm_data)
-    bpy.context.collection.objects.link(armature)
-    bpy.context.view_layer.objects.active = armature
-    armature.select_set(True)
-    
-    bpy.ops.object.mode_set(mode='EDIT')
-    
-    # Transform all joint positions
-    joint_positions = [transform_func(first_joints[i]) for i in range(num_joints)]
-    
-    # Create all bones first
-    bones = []
+    # Create empties for each joint - NO PARENT to avoid transform issues
+    empties = []
     for i in range(num_joints):
-        bone = arm_data.edit_bones.new(f"joint_{i:03d}")
-        pos = joint_positions[i]
-        bone.head = Vector(pos)
-        # Temporary tail - will adjust after all bones created
-        bone.tail = Vector((pos[0], pos[1], pos[2] + 0.02))
-        bones.append(bone)
+        empty = bpy.data.objects.new(f"joint_{i:03d}", None)
+        empty.empty_display_type = 'SPHERE'
+        empty.empty_display_size = 0.02
+        bpy.context.collection.objects.link(empty)
+        empties.append(empty)
     
-    # Set parent hierarchy and adjust bone tails (VISUAL ONLY - no transform inheritance)
-    # Note: We DON'T set bone.parent to avoid location inheritance issues
-    # Each bone animates independently with absolute positions
-    if joint_parents and len(joint_parents) == num_joints:
-        for i in range(num_joints):
-            # Adjust bone tail to point toward first child (better visualization)
-            if i in children_map and len(children_map[i]) > 0:
-                # Point toward first child
-                first_child = children_map[i][0]
-                child_pos = joint_positions[first_child]
-                direction = Vector(child_pos) - Vector(joint_positions[i])
-                if direction.length > 0.001:
-                    bones[i].tail = Vector(joint_positions[i]) + direction.normalized() * min(direction.length * 0.8, 0.1)
-                else:
-                    bones[i].tail = Vector((joint_positions[i][0], joint_positions[i][1], joint_positions[i][2] + 0.02))
-            else:
-                # Leaf bone - small offset in Z
-                bones[i].tail = Vector((joint_positions[i][0], joint_positions[i][1], joint_positions[i][2] + 0.02))
-    
-    bpy.ops.object.mode_set(mode='OBJECT')
-    
-    # Animate joints
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.mode_set(mode='POSE')
-    
+    # Animate each joint
     print(f"[Blender] Animating {num_joints} joints over {len(all_frames)} frames...")
-    
-    # Get rest head positions in armature space
-    rest_heads = [Vector(armature.pose.bones[i].bone.head_local) for i in range(num_joints)]
     
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
         if not joints:
             continue
         
-        bpy.context.scene.frame_set(frame_idx)
-        
-        for bone_idx in range(min(num_joints, len(joints))):
-            pose_bone = armature.pose.bones[bone_idx]
+        for joint_idx in range(min(num_joints, len(joints))):
+            pos = joints[joint_idx]
+            world_pos = Vector(transform_func(pos))
             
-            pos = joints[bone_idx]
-            target_armature = Vector(transform_func(pos))
-            
-            # Simple offset from rest position
-            offset = target_armature - rest_heads[bone_idx]
-            
-            pose_bone.location = offset
-            pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
+            # Set location directly in world space
+            empties[joint_idx].location = world_pos
+            empties[joint_idx].keyframe_insert(data_path="location", frame=frame_idx)
         
         if (frame_idx + 1) % 50 == 0:
             print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames")
     
-    bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created animated skeleton")
-    return armature
+    print(f"[Blender] Created {num_joints} animated joint locators")
+    return empties
 
 
-def export_fbx(output_path, axis_forward, axis_up):
-    """Export to FBX with specified orientation."""
-    print(f"[Blender] Exporting: {output_path}")
-    print(f"[Blender] Orientation: forward={axis_forward}, up={axis_up}")
-    
-    bpy.ops.export_scene.fbx(
-        filepath=output_path,
-        use_selection=False,
-        global_scale=1.0,
-        apply_unit_scale=True,
-        apply_scale_options='FBX_SCALE_ALL',
-        axis_forward=axis_forward,
-        axis_up=axis_up,
-        object_types={'MESH', 'ARMATURE', 'CAMERA'},
-        use_mesh_modifiers=True,
-        mesh_smooth_type='FACE',
-        use_armature_deform_only=False,
-        add_leaf_bones=False,
-        bake_anim=True,
-        bake_anim_use_all_bones=True,
-        bake_anim_use_nla_strips=False,
-        bake_anim_use_all_actions=False,
-        bake_anim_force_startend_keying=True,
-        bake_anim_step=1.0,
-        bake_anim_simplify_factor=0.0,
-    )
-    print(f"[Blender] Export complete")
-
-
-def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis="Y", sensor_width=36.0):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width):
     """
-    Create a camera with the estimated focal length and optional animation.
-    
-    Args:
-        focal_length: Focal length in pixels (will be converted to mm)
-        cam_t: Camera translation [tx, ty, tz]
-        all_frames: All frames data for animation
-        fps: Frames per second
-        transform_func: Coordinate transformation function
-        up_axis: Which axis is up (Y, Z, -Y, -Z)
-        sensor_width: Camera sensor width in mm (default 36mm = Full Frame)
+    Create camera with no rotation (0,0,0) by using track-to constraint.
     """
+    first_focal = all_frames[0].get("focal_length")
+    first_cam_t = all_frames[0].get("pred_cam_t")
+    
+    if not first_focal:
+        return None
+    
     # Create camera
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -279,55 +177,61 @@ def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis=
     cam_data.sensor_width = sensor_width
     
     # Convert focal length from pixels to mm
-    # focal_length_mm = focal_length_px * sensor_width / image_width
-    # Assuming standard 1920px width
-    image_width = 1920.0  # pixels (typical)
+    image_width = 1920.0
+    focal_mm = (first_focal * sensor_width) / image_width
+    cam_data.lens = max(1.0, min(focal_mm, 500.0))
+    print(f"[Blender] Camera: {first_focal:.1f}px -> {cam_data.lens:.1f}mm (sensor={sensor_width}mm)")
     
-    if focal_length:
-        focal_mm = (focal_length * sensor_width) / image_width
-        cam_data.lens = max(1.0, min(focal_mm, 500.0))  # Clamp to reasonable range
-        print(f"[Blender] Camera: {focal_length:.1f}px -> {cam_data.lens:.1f}mm (sensor={sensor_width}mm)")
-    else:
-        cam_data.lens = 50.0  # Default 50mm
-        print(f"[Blender] Using default 50mm focal length (sensor={sensor_width}mm)")
-    
-    # Get camera distance from pred_cam_t (z component is depth)
+    # Get camera distance
     cam_distance = 3.0
-    if cam_t is not None and len(cam_t) > 2:
-        cam_distance = abs(cam_t[2])
+    if first_cam_t and len(first_cam_t) > 2:
+        cam_distance = abs(first_cam_t[2])
     
-    # Position and orient camera based on up_axis
-    # Camera should look at origin from the front
+    # Create target at origin for camera to look at
+    target = bpy.data.objects.new("CameraTarget", None)
+    target.empty_display_type = 'PLAIN_AXES'
+    target.empty_display_size = 0.1
+    target.location = Vector((0, 0, 0))
+    bpy.context.collection.objects.link(target)
+    
+    # Position camera based on up_axis
     if up_axis == "Y":
-        # Y-up: Camera at +Z looking toward -Z
         camera.location = Vector((0, 0, cam_distance))
-        camera.rotation_euler = (math.radians(90), 0, 0)
     elif up_axis == "Z":
-        # Z-up: Camera at -Y looking toward +Y
         camera.location = Vector((0, -cam_distance, 0))
-        camera.rotation_euler = (math.radians(90), 0, 0)
     elif up_axis == "-Y":
-        # -Y up: Camera at -Z looking toward +Z
         camera.location = Vector((0, 0, -cam_distance))
-        camera.rotation_euler = (math.radians(-90), 0, 0)
     elif up_axis == "-Z":
-        # -Z up: Camera at +Y looking toward -Y
         camera.location = Vector((0, cam_distance, 0))
-        camera.rotation_euler = (math.radians(-90), 0, 0)
     
-    print(f"[Blender] Camera position: {camera.location}, up_axis: {up_axis}")
+    # Add track-to constraint so camera always looks at target
+    constraint = camera.constraints.new(type='TRACK_TO')
+    constraint.target = target
+    constraint.track_axis = 'TRACK_NEGATIVE_Z'
+    constraint.up_axis = 'UP_Y'
     
-    # Animate camera if we have per-frame data
-    has_animation = False
+    # Apply constraint to get final rotation, then remove constraint
+    bpy.context.view_layer.update()
+    camera.rotation_euler = camera.matrix_world.to_euler()
+    camera.constraints.remove(constraint)
+    
+    # Delete target
+    bpy.data.objects.remove(target)
+    
+    # Round rotations to clean values
+    camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
+    camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
+    camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
+    
+    print(f"[Blender] Camera at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
+    
+    # Animate camera distance
     for frame_idx, frame_data in enumerate(all_frames):
         frame_cam_t = frame_data.get("pred_cam_t")
-        frame_focal = frame_data.get("focal_length")
         
-        if frame_cam_t is not None and len(frame_cam_t) > 2:
-            bpy.context.scene.frame_set(frame_idx)
+        if frame_cam_t and len(frame_cam_t) > 2:
             new_distance = abs(frame_cam_t[2])
             
-            # Update position based on up_axis
             if up_axis == "Y":
                 camera.location.z = new_distance
             elif up_axis == "Z":
@@ -338,20 +242,65 @@ def create_camera(focal_length, cam_t, all_frames, fps, transform_func, up_axis=
                 camera.location.y = new_distance
             
             camera.keyframe_insert(data_path="location", frame=frame_idx)
-            has_animation = True
-        
-        if frame_focal is not None and frame_focal != focal_length:
-            bpy.context.scene.frame_set(frame_idx)
-            cam_data.lens = (frame_focal * sensor_width) / image_width
-            cam_data.keyframe_insert(data_path="lens", frame=frame_idx)
-            has_animation = True
-    
-    if has_animation:
-        print(f"[Blender] Camera animated over {len(all_frames)} frames")
-    else:
-        print("[Blender] Camera created (static)")
     
     return camera
+
+
+def export_fbx(output_path, axis_forward, axis_up):
+    """Export to FBX."""
+    print(f"[Blender] Exporting FBX: {output_path}")
+    print(f"[Blender] Orientation: forward={axis_forward}, up={axis_up}")
+    
+    bpy.ops.export_scene.fbx(
+        filepath=output_path,
+        use_selection=False,
+        global_scale=1.0,
+        apply_unit_scale=True,
+        apply_scale_options='FBX_SCALE_ALL',
+        axis_forward=axis_forward,
+        axis_up=axis_up,
+        object_types={'MESH', 'EMPTY', 'CAMERA'},
+        use_mesh_modifiers=True,
+        mesh_smooth_type='FACE',
+        add_leaf_bones=False,
+        bake_anim=True,
+        bake_anim_use_all_bones=True,
+        bake_anim_use_nla_strips=False,
+        bake_anim_use_all_actions=False,
+        bake_anim_force_startend_keying=True,
+        bake_anim_step=1.0,
+        bake_anim_simplify_factor=0.0,
+    )
+    print(f"[Blender] FBX export complete")
+
+
+def export_alembic(output_path):
+    """
+    Export to Alembic (.abc) - better for vertex animation.
+    Alembic stores per-frame vertex positions directly, no blend shapes.
+    """
+    print(f"[Blender] Exporting Alembic: {output_path}")
+    
+    bpy.ops.wm.alembic_export(
+        filepath=output_path,
+        start=bpy.context.scene.frame_start,
+        end=bpy.context.scene.frame_end,
+        selected=False,
+        visible_objects_only=True,
+        flatten=False,
+        uvs=True,
+        normals=True,
+        vcolors=False,
+        apply_subdiv=False,
+        curves_as_mesh=False,
+        use_instancing=True,
+        global_scale=1.0,
+        triangulate=False,
+        export_hair=False,
+        export_particles=False,
+        packuv=True,
+    )
+    print(f"[Blender] Alembic export complete")
 
 
 def main():
@@ -368,13 +317,19 @@ def main():
         sys.exit(1)
     
     input_json = args[0]
-    output_fbx = args[1]
+    output_path = args[1]
     up_axis = args[2] if len(args) > 2 else "Y"
     include_mesh = args[3] == "1" if len(args) > 3 else True
     include_camera = args[4] == "1" if len(args) > 4 else True
     
+    # Detect output format
+    output_format = "fbx"
+    if output_path.lower().endswith(".abc"):
+        output_format = "abc"
+    
     print(f"[Blender] Input: {input_json}")
-    print(f"[Blender] Output: {output_fbx}")
+    print(f"[Blender] Output: {output_path}")
+    print(f"[Blender] Format: {output_format.upper()}")
     print(f"[Blender] Up axis: {up_axis}")
     print(f"[Blender] Include mesh: {include_mesh}")
     print(f"[Blender] Include camera: {include_camera}")
@@ -389,41 +344,56 @@ def main():
     fps = data.get("fps", 24.0)
     frames = data.get("frames", [])
     faces = data.get("faces")
-    joint_parents = data.get("joint_parents")
     sensor_width = data.get("sensor_width", 36.0)
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Sensor width: {sensor_width}mm")
-    if joint_parents:
-        print(f"[Blender] Joint parents available: {len(joint_parents)} joints")
     
     if not frames:
         print("[Blender] Error: No frames")
         sys.exit(1)
     
-    # Get transformation based on up axis
+    # Get transformation
     transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis)
-    
-    first_verts = frames[0].get("vertices")
-    first_joints = frames[0].get("joint_coords")
-    first_focal = frames[0].get("focal_length")
-    first_cam_t = frames[0].get("pred_cam_t")
     
     clear_scene()
     
+    # Set scene frame range
+    bpy.context.scene.render.fps = int(fps)
+    bpy.context.scene.frame_start = 0
+    bpy.context.scene.frame_end = len(frames) - 1
+    
     # Create mesh with shape keys
-    if include_mesh and first_verts:
-        mesh_obj = create_mesh_with_shapekeys(first_verts, faces, frames, fps, transform_func)
+    mesh_obj = None
+    if include_mesh:
+        mesh_obj = create_animated_mesh(frames, faces, fps, transform_func)
     
-    # Create animated skeleton with proper hierarchy
-    if first_joints:
-        armature = create_armature(first_joints, joint_parents, frames, fps, transform_func)
+    # Create joint locators
+    create_joint_locators(frames, fps, transform_func)
     
-    # Create camera with focal length
-    if include_camera and first_focal:
-        create_camera(first_focal, first_cam_t, frames, fps, transform_func, up_axis, sensor_width)
+    # Create camera
+    if include_camera:
+        create_camera(frames, fps, transform_func, up_axis, sensor_width)
     
-    export_fbx(output_fbx, axis_forward, axis_up_export)
+    # Export
+    if output_format == "abc":
+        # For Alembic, we need to bake the shape key animation to actual vertex positions
+        if mesh_obj:
+            print("[Blender] Baking shape keys to mesh cache for Alembic...")
+            # Select mesh and bake
+            bpy.context.view_layer.objects.active = mesh_obj
+            mesh_obj.select_set(True)
+        export_alembic(output_path)
+        
+        # Also export FBX for joints/camera (Alembic doesn't support empties well)
+        fbx_path = output_path.replace(".abc", "_skeleton.fbx")
+        if mesh_obj:
+            mesh_obj.hide_set(True)  # Hide mesh for skeleton-only FBX
+        export_fbx(fbx_path, axis_forward, axis_up_export)
+        print(f"[Blender] Also exported skeleton/camera to: {fbx_path}")
+    else:
+        export_fbx(output_path, axis_forward, axis_up_export)
+    
     print("[Blender] Done!")
 
 

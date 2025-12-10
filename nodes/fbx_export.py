@@ -92,12 +92,16 @@ def to_list(obj):
 
 class ExportAnimatedFBX:
     """
-    Export MESH_SEQUENCE to animated FBX.
+    Export MESH_SEQUENCE to animated FBX or Alembic.
     
-    Creates FBX with:
-    - Mesh + shape keys (vertex animation)
-    - Armature + keyframed joints (properly connected hierarchy)
+    Creates export with:
+    - Mesh + shape keys (FBX) or vertex cache (ABC)
+    - Joint locators with keyframed positions
     - Camera with estimated focal length
+    
+    Output Formats:
+    - FBX: Uses blend shapes for mesh animation (may show hidden per-frame geometry in Maya)
+    - ABC: Uses vertex cache for mesh animation (better for Maya, cleaner playback)
     
     Options:
     - up_axis: Y (default), Z, -Y, -Z
@@ -120,9 +124,13 @@ class ExportAnimatedFBX:
                 }),
             },
             "optional": {
+                "output_format": (["FBX", "ABC (Alembic)"], {
+                    "default": "FBX",
+                    "tooltip": "FBX: blend shapes, ABC: vertex cache (better for Maya)"
+                }),
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Include mesh with shape keys"
+                    "tooltip": "Include mesh with animation"
                 }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
@@ -146,7 +154,7 @@ class ExportAnimatedFBX:
         }
     
     RETURN_TYPES = ("STRING", "STRING", "INT")
-    RETURN_NAMES = ("fbx_path", "status", "frame_count")
+    RETURN_NAMES = ("output_path", "status", "frame_count")
     FUNCTION = "export_fbx"
     CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
@@ -156,13 +164,14 @@ class ExportAnimatedFBX:
         mesh_sequence: Dict,
         filename: str = "animation",
         fps: float = 24.0,
+        output_format: str = "FBX",
         include_mesh: bool = True,
         include_camera: bool = True,
         up_axis: str = "Y",
         sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int]:
-        """Export to animated FBX."""
+        """Export to animated FBX or Alembic."""
         
         frames = mesh_sequence.get("frames", {})
         if not frames:
@@ -180,6 +189,10 @@ class ExportAnimatedFBX:
         os.makedirs(output_dir, exist_ok=True)
         
         sorted_indices = sorted(frames.keys())
+        
+        # Determine output extension
+        use_alembic = "ABC" in output_format
+        ext = ".abc" if use_alembic else ".fbx"
         
         # Build JSON for Blender
         export_data = {
@@ -208,7 +221,7 @@ class ExportAnimatedFBX:
             json.dump(export_data, f)
             json_path = f.name
         
-        fbx_path = os.path.join(output_dir, f"{filename}.fbx")
+        output_path = os.path.join(output_dir, f"{filename}{ext}")
         
         try:
             cmd = [
@@ -217,13 +230,14 @@ class ExportAnimatedFBX:
                 "--python", BLENDER_SCRIPT,
                 "--",
                 json_path,
-                fbx_path,
+                output_path,
                 up_axis,
                 "1" if include_mesh else "0",
                 "1" if include_camera else "0",
             ]
             
-            print(f"[FBX Export] Exporting {len(sorted_indices)} frames (up={up_axis}, camera={include_camera}, sensor={sensor_width}mm)...")
+            format_name = "Alembic" if use_alembic else "FBX"
+            print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name} (up={up_axis}, camera={include_camera}, sensor={sensor_width}mm)...")
             
             result = subprocess.run(
                 cmd,
@@ -234,20 +248,20 @@ class ExportAnimatedFBX:
             
             if result.returncode != 0:
                 error = result.stderr[:500] if result.stderr else "Unknown error"
-                print(f"[FBX Export] Blender error: {error}")
+                print(f"[Export] Blender error: {error}")
                 return ("", f"Blender error: {error}", 0)
             
-            if not os.path.exists(fbx_path):
-                return ("", "Error: FBX not created", 0)
+            if not os.path.exists(output_path):
+                return ("", f"Error: {format_name} not created", 0)
             
-            status = f"Exported {len(sorted_indices)} frames (up={up_axis})"
+            status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis})"
             if not include_mesh:
                 status += " skeleton only"
             if include_camera:
                 status += " +camera"
             
-            print(f"[FBX Export] {status}")
-            return (fbx_path, status, len(sorted_indices))
+            print(f"[Export] {status}")
+            return (output_path, status, len(sorted_indices))
             
         except subprocess.TimeoutExpired:
             return ("", "Error: Blender timed out", 0)

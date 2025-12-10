@@ -47,11 +47,11 @@ This gives accurate per-frame masks that follow the character's movement.
 
 ## 🆕 Features in v3.0.0
 
-### ✅ Properly Connected Skeleton Hierarchy
-- Joints are connected using parent-child relationships from MHR model
-- Root joint (pelvis/hip) correctly identified
-- Bone tails point toward children for better visualization
-- 127-joint skeleton with proper hierarchy
+### ✅ Accurate Joint Animation
+- Joints use empties (locators) instead of bones
+- Direct world space positioning for exact joint locations
+- No parent-child transform accumulation issues
+- 127-joint skeleton matches mesh animation
 
 ### ✅ Orientation Options
 Choose which axis points up:
@@ -100,6 +100,36 @@ Works with SAM3DBody Process node outputs:
 | `up_axis` | Y | Which axis points up (Y, Z, -Y, -Z) |
 | `fps` | 24.0 | Animation framerate |
 
+## ⚠️ Known Limitations
+
+### Mesh Flattening on Extreme Rotations
+When the character spins or flips significantly, the mesh may lose volume and flatten. This is a fundamental limitation of SAM3DBody's single-view 3D reconstruction - it cannot maintain consistent depth when the viewing angle changes dramatically.
+
+**Workarounds:**
+- Use footage with minimal rotation
+- Export skeleton-only for retargeting to a proper 3D character
+- Use multiple camera angles (requires multi-view reconstruction)
+
+### FBX File Size / Load Time
+FBX shape keys store per-frame vertex data, which can result in large files and slow loading in Maya/other DCCs. Maya may also show hidden per-frame geometry from blend shape targets.
+
+**Workarounds:**
+- **Use Alembic (.abc) format** - cleaner vertex animation, no hidden geometry
+- Set `include_mesh=false` to export skeleton-only (fast, small)
+- Use `skip_frames` > 1 in Video Batch Processor to reduce frame count
+
+## 📦 Output Formats
+
+### FBX (Default)
+- Uses blend shapes (shape keys) for mesh animation
+- Contains: mesh, joint locators, camera
+- Note: Maya may show hidden per-frame geometry from blend shape targets
+
+### Alembic (.abc)
+- Uses vertex cache for mesh animation  
+- Cleaner playback in Maya
+- Also exports `_skeleton.fbx` with joints and camera
+
 ## 📷 Camera Export
 
 SAM3DBody estimates the camera focal length for each frame. The export includes:
@@ -127,9 +157,8 @@ Example: 1500px × (36mm / 1920px) = ~28mm
 ## 📋 Output FBX Contains
 
 - **Mesh** with shape keys (one per frame for vertex animation)
-- **Armature** with 127 joints in proper hierarchy
+- **Skeleton** with 127 joint locators (empties/nulls)
 - **Keyframed** joint positions per frame
-- **Parent-child** bone connections
 - **Camera** with estimated focal length (optional)
 
 ## 🎬 Sample Workflow
@@ -145,13 +174,14 @@ Node sequence:
 6. **Video Batch Processor** - Process with SAM3DBody
 7. **Export Animated FBX** - Export with mesh + skeleton + camera
 
-## 🔧 Skeleton Hierarchy
+## 🔧 Skeleton (Joint Locators)
 
-The skeleton uses MHR's 127-joint model:
-- **Root**: Pelvis/Hip (joint 0 or identified from joint_parents)
-- **Hierarchy**: Established via `joint_parents` array
-- **Bones**: Tails point toward first child for visualization
-- **Animation**: Location keyframes on each joint
+The skeleton uses empties (locators/nulls) instead of bones:
+- **Direct world space animation** - joints animate at exact positions
+- **No bone local space issues** - avoids parent-child transform accumulation
+- **127 joint locators** organized under "Skeleton" parent
+- **Exports as nulls** in Maya, locators in other DCCs
+- **Easy retargeting** - can be used to drive a rigged character
 
 ## 📄 License
 
