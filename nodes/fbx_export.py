@@ -122,12 +122,16 @@ class ExportAnimatedFBX:
                     "min": 1.0,
                     "max": 120.0,
                 }),
-            },
-            "optional": {
                 "output_format": (["FBX", "ABC (Alembic)"], {
                     "default": "FBX",
                     "tooltip": "FBX: blend shapes, ABC: vertex cache (better for Maya)"
                 }),
+                "up_axis": (["Y", "Z", "-Y", "-Z"], {
+                    "default": "Y",
+                    "tooltip": "Which axis points up in the output"
+                }),
+            },
+            "optional": {
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include mesh with animation"
@@ -135,10 +139,6 @@ class ExportAnimatedFBX:
                 "include_camera": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include camera with focal length from SAM3DBody"
-                }),
-                "up_axis": (["Y", "Z", "-Y", "-Z"], {
-                    "default": "Y",
-                    "tooltip": "Which axis points up in the output"
                 }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
@@ -274,7 +274,7 @@ class ExportAnimatedFBX:
 
 class ExportFBXFromJSON:
     """
-    Export animated FBX from saved JSON file.
+    Export animated FBX or Alembic from saved JSON file.
     """
     
     @classmethod
@@ -282,18 +282,19 @@ class ExportFBXFromJSON:
         return {
             "required": {
                 "json_path": ("STRING", {"forceInput": True}),
+                "output_format": (["FBX", "ABC (Alembic)"], {"default": "FBX"}),
+                "up_axis": (["Y", "Z", "-Y", "-Z"], {"default": "Y"}),
             },
             "optional": {
                 "filename": ("STRING", {"default": "animation"}),
                 "include_mesh": ("BOOLEAN", {"default": True}),
                 "include_camera": ("BOOLEAN", {"default": True}),
-                "up_axis": (["Y", "Z", "-Y", "-Z"], {"default": "Y"}),
                 "output_dir": ("STRING", {"default": ""}),
             }
         }
     
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("fbx_path", "status")
+    RETURN_NAMES = ("output_path", "status")
     FUNCTION = "export_fbx"
     CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
@@ -301,13 +302,14 @@ class ExportFBXFromJSON:
     def export_fbx(
         self,
         json_path: str,
+        output_format: str = "FBX",
+        up_axis: str = "Y",
         filename: str = "animation",
         include_mesh: bool = True,
         include_camera: bool = True,
-        up_axis: str = "Y",
         output_dir: str = "",
     ) -> Tuple[str, str]:
-        """Convert JSON to FBX."""
+        """Convert JSON to FBX or Alembic."""
         
         if not os.path.exists(json_path):
             return ("", f"Error: JSON not found: {json_path}")
@@ -319,7 +321,10 @@ class ExportFBXFromJSON:
         if not output_dir:
             output_dir = folder_paths.get_output_directory()
         
-        fbx_path = os.path.join(output_dir, f"{filename}.fbx")
+        # Determine output extension
+        use_alembic = "ABC" in output_format
+        ext = ".abc" if use_alembic else ".fbx"
+        output_path = os.path.join(output_dir, f"{filename}{ext}")
         
         try:
             cmd = [
@@ -328,21 +333,22 @@ class ExportFBXFromJSON:
                 "--python", BLENDER_SCRIPT,
                 "--",
                 json_path,
-                fbx_path,
+                output_path,
                 up_axis,
                 "1" if include_mesh else "0",
                 "1" if include_camera else "0",
             ]
             
+            format_name = "Alembic" if use_alembic else "FBX"
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=BLENDER_TIMEOUT)
             
             if result.returncode != 0:
                 return ("", f"Blender error: {result.stderr[:500]}")
             
-            if not os.path.exists(fbx_path):
-                return ("", "Error: FBX not created")
+            if not os.path.exists(output_path):
+                return ("", f"Error: {format_name} not created")
             
-            return (fbx_path, f"Exported to {filename}.fbx (up={up_axis})")
+            return (output_path, f"Exported to {filename}{ext} (up={up_axis})")
             
         except Exception as e:
             return ("", f"Error: {str(e)}")

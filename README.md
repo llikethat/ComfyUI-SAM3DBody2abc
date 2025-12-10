@@ -95,9 +95,11 @@ Works with SAM3DBody Process node outputs:
 ### Export Animated FBX
 | Option | Default | Description |
 |--------|---------|-------------|
-| `include_mesh` | true | Include mesh with shape keys |
-| `include_camera` | true | Include camera with focal length from SAM3DBody |
+| `output_format` | FBX | Export format: FBX (blend shapes) or ABC (Alembic vertex cache) |
 | `up_axis` | Y | Which axis points up (Y, Z, -Y, -Z) |
+| `include_mesh` | true | Include mesh with animation |
+| `include_camera` | true | Include camera with focal length from SAM3DBody |
+| `sensor_width` | 36.0 | Camera sensor width in mm |
 | `fps` | 24.0 | Animation framerate |
 
 ## ⚠️ Known Limitations
