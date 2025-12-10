@@ -130,6 +130,10 @@ class ExportAnimatedFBX:
                     "default": "Y",
                     "tooltip": "Which axis points up in the output"
                 }),
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Root Locator", "Separate Track"], {
+                    "default": "None (Body at Origin)",
+                    "tooltip": "How to handle character movement through world space"
+                }),
             },
             "optional": {
                 "include_mesh": ("BOOLEAN", {
@@ -165,9 +169,10 @@ class ExportAnimatedFBX:
         filename: str = "animation",
         fps: float = 24.0,
         output_format: str = "FBX",
+        up_axis: str = "Y",
+        world_translation: str = "None (Body at Origin)",
         include_mesh: bool = True,
         include_camera: bool = True,
-        up_axis: str = "Y",
         sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int]:
@@ -194,6 +199,15 @@ class ExportAnimatedFBX:
         use_alembic = "ABC" in output_format
         ext = ".abc" if use_alembic else ".fbx"
         
+        # Map world_translation option to mode
+        translation_mode = "none"
+        if "Baked" in world_translation:
+            translation_mode = "baked"
+        elif "Root" in world_translation:
+            translation_mode = "root"
+        elif "Separate" in world_translation:
+            translation_mode = "separate"
+        
         # Build JSON for Blender
         export_data = {
             "fps": fps,
@@ -201,6 +215,7 @@ class ExportAnimatedFBX:
             "faces": to_list(mesh_sequence.get("faces")),
             "joint_parents": to_list(mesh_sequence.get("joint_parents")),
             "sensor_width": sensor_width,
+            "world_translation_mode": translation_mode,
             "frames": [],
         }
         
@@ -237,7 +252,7 @@ class ExportAnimatedFBX:
             ]
             
             format_name = "Alembic" if use_alembic else "FBX"
-            print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name} (up={up_axis}, camera={include_camera}, sensor={sensor_width}mm)...")
+            print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name} (up={up_axis}, translation={translation_mode}, camera={include_camera})...")
             
             result = subprocess.run(
                 cmd,
@@ -284,6 +299,9 @@ class ExportFBXFromJSON:
                 "json_path": ("STRING", {"forceInput": True}),
                 "output_format": (["FBX", "ABC (Alembic)"], {"default": "FBX"}),
                 "up_axis": (["Y", "Z", "-Y", "-Z"], {"default": "Y"}),
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Root Locator", "Separate Track"], {
+                    "default": "None (Body at Origin)",
+                }),
             },
             "optional": {
                 "filename": ("STRING", {"default": "animation"}),
@@ -304,6 +322,7 @@ class ExportFBXFromJSON:
         json_path: str,
         output_format: str = "FBX",
         up_axis: str = "Y",
+        world_translation: str = "None (Body at Origin)",
         filename: str = "animation",
         include_mesh: bool = True,
         include_camera: bool = True,
@@ -326,13 +345,32 @@ class ExportFBXFromJSON:
         ext = ".abc" if use_alembic else ".fbx"
         output_path = os.path.join(output_dir, f"{filename}{ext}")
         
+        # Map world_translation option to mode
+        translation_mode = "none"
+        if "Baked" in world_translation:
+            translation_mode = "baked"
+        elif "Root" in world_translation:
+            translation_mode = "root"
+        elif "Separate" in world_translation:
+            translation_mode = "separate"
+        
+        # Read JSON and add translation mode
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        data["world_translation_mode"] = translation_mode
+        
+        # Write to temp file with updated mode
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(data, f)
+            temp_json = f.name
+        
         try:
             cmd = [
                 blender_path,
                 "--background",
                 "--python", BLENDER_SCRIPT,
                 "--",
-                json_path,
+                temp_json,
                 output_path,
                 up_axis,
                 "1" if include_mesh else "0",
@@ -348,7 +386,10 @@ class ExportFBXFromJSON:
             if not os.path.exists(output_path):
                 return ("", f"Error: {format_name} not created")
             
-            return (output_path, f"Exported to {filename}{ext} (up={up_axis})")
+            return (output_path, f"Exported to {filename}{ext} (up={up_axis}, translation={translation_mode})")
             
         except Exception as e:
             return ("", f"Error: {str(e)}")
+        finally:
+            if os.path.exists(temp_json):
+                os.unlink(temp_json)

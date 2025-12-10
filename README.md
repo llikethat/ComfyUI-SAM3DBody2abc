@@ -47,11 +47,11 @@ This gives accurate per-frame masks that follow the character's movement.
 
 ## 🆕 Features in v3.0.0
 
-### ✅ Accurate Joint Animation
-- Joints use empties (locators) instead of bones
-- Direct world space positioning for exact joint locations
-- No parent-child transform accumulation issues
-- 127-joint skeleton matches mesh animation
+### ✅ Proper Skeleton with Bones
+- Uses armature with 127 bones (not empties)
+- Standard rigging structure for Maya/Blender
+- Compatible with retargeting tools
+- Animated via bone location keyframes
 
 ### ✅ Orientation Options
 Choose which axis points up:
@@ -97,10 +97,30 @@ Works with SAM3DBody Process node outputs:
 |--------|---------|-------------|
 | `output_format` | FBX | Export format: FBX (blend shapes) or ABC (Alembic vertex cache) |
 | `up_axis` | Y | Which axis points up (Y, Z, -Y, -Z) |
+| `world_translation` | None | How character moves through world space (see below) |
 | `include_mesh` | true | Include mesh with animation |
 | `include_camera` | true | Include camera with focal length from SAM3DBody |
 | `sensor_width` | 36.0 | Camera sensor width in mm |
 | `fps` | 24.0 | Animation framerate |
+
+## 🌍 World Translation Options
+
+SAM3DBody outputs body-centric coordinates (body always at origin). Use `world_translation` to capture character movement through space:
+
+| Option | Description | Use Case |
+|--------|-------------|----------|
+| **None (Body at Origin)** | Body stays at origin, only pose changes | Retargeting, mocap cleanup |
+| **Baked into Mesh/Joints** | World offset baked into vertex/joint positions | Direct playback, what-you-see-is-what-you-get |
+| **Root Locator** | Root locator carries translation, body is child | Professional rigging, easy path editing |
+| **Separate Track** | Body at origin + separate locator showing path | Maximum flexibility, manual control |
+
+### How It Works
+SAM3DBody provides `pred_cam_t = [tx, ty, tz]`:
+- `tx` = horizontal position (-1 to +1)
+- `ty` = vertical position (-1 to +1)
+- `tz` = depth/distance from camera
+
+These are converted to world-space offsets based on `up_axis`.
 
 ## ⚠️ Known Limitations
 
@@ -159,8 +179,9 @@ Example: 1500px × (36mm / 1920px) = ~28mm
 ## 📋 Output FBX Contains
 
 - **Mesh** with shape keys (one per frame for vertex animation)
-- **Skeleton** with 127 joint locators (empties/nulls)
-- **Keyframed** joint positions per frame
+- **Armature** with 127 bones (animated via location keyframes)
+- **Root Locator** (empty) for world translation (optional)
+- **Translation Track** (empty) showing character path (optional)
 - **Camera** with estimated focal length (optional)
 
 ## 🎬 Sample Workflow
@@ -176,14 +197,23 @@ Node sequence:
 6. **Video Batch Processor** - Process with SAM3DBody
 7. **Export Animated FBX** - Export with mesh + skeleton + camera
 
-## 🔧 Skeleton (Joint Locators)
+## 🔧 Skeleton
 
-The skeleton uses empties (locators/nulls) instead of bones:
-- **Direct world space animation** - joints animate at exact positions
-- **No bone local space issues** - avoids parent-child transform accumulation
-- **127 joint locators** organized under "Skeleton" parent
-- **Exports as nulls** in Maya, locators in other DCCs
-- **Easy retargeting** - can be used to drive a rigged character
+The skeleton uses a proper armature with bones:
+- **127 bones** matching SAM3DBody's joint structure
+- **Animated via location keyframes** on each bone
+- **Compatible with retargeting** tools in Maya/Blender
+- **Root Locator** (optional) is an empty/null that carries world translation
+
+When using "Root Locator" world translation:
+```
+root_locator (empty - world translation)
+    └── Skeleton (armature)
+        └── joint_000 (bone - local animation)
+        └── joint_001 (bone - local animation)
+        └── ...
+    └── body (mesh)
+```
 
 ## 📄 License
 
