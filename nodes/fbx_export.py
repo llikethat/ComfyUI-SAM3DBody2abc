@@ -4,11 +4,11 @@ Exports MESH_SEQUENCE to animated FBX using Blender.
 
 The exported FBX contains:
 - Mesh with shape keys (vertex animation per frame)
-- Armature with keyframed joint positions
+- Armature with keyframed bone rotations (from MHR) or positions
 
 Settings:
-- Scale: 1.0 (fixed)
-- Up axis: Y (fixed)
+- skeleton_mode: "Rotations" uses true joint rotations from MHR model
+                 "Positions" uses joint positions (legacy)
 """
 
 import os
@@ -96,17 +96,18 @@ class ExportAnimatedFBX:
     
     Creates export with:
     - Mesh + shape keys (FBX) or vertex cache (ABC)
-    - Joint locators with keyframed positions
+    - Skeleton with rotation animation (from MHR) or position animation
     - Camera with estimated focal length
     
     Output Formats:
     - FBX: Uses blend shapes for mesh animation (may show hidden per-frame geometry in Maya)
     - ABC: Uses vertex cache for mesh animation (better for Maya, cleaner playback)
     
-    Options:
-    - up_axis: Y (default), Z, -Y, -Z
-    - include_camera: Include camera with focal length from SAM3DBody
-    - sensor_width: Camera sensor width in mm (for focal length conversion)
+    Skeleton Modes:
+    - Rotations (Recommended): Uses true joint rotation matrices from MHR model.
+      This produces proper bone rotations for retargeting and animation editing.
+    - Positions (Legacy): Uses joint positions only. Bones animate via location offset.
+      Limited for retargeting but shows exact joint positions.
     """
     
     @classmethod
@@ -130,7 +131,11 @@ class ExportAnimatedFBX:
                     "default": "Y",
                     "tooltip": "Which axis points up in the output"
                 }),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Root Locator", "Separate Track"], {
+                "skeleton_mode": (["Rotations (Recommended)", "Positions (Legacy)"], {
+                    "default": "Rotations (Recommended)",
+                    "tooltip": "Rotations: proper bone rotations for retargeting. Positions: exact joint locations."
+                }),
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Separate Track"], {
                     "default": "None (Body at Origin)",
                     "tooltip": "How to handle character movement through world space"
                 }),
@@ -170,6 +175,7 @@ class ExportAnimatedFBX:
         fps: float = 24.0,
         output_format: str = "FBX",
         up_axis: str = "Y",
+        skeleton_mode: str = "Rotations (Recommended)",
         world_translation: str = "None (Body at Origin)",
         include_mesh: bool = True,
         include_camera: bool = True,
@@ -201,12 +207,25 @@ class ExportAnimatedFBX:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Baked" in world_translation:
+        if "Baked into Mesh" in world_translation:
             translation_mode = "baked"
+        elif "Baked into Camera" in world_translation:
+            translation_mode = "camera"
         elif "Root" in world_translation:
             translation_mode = "root"
         elif "Separate" in world_translation:
             translation_mode = "separate"
+        
+        # Map skeleton_mode option
+        use_rotations = "Rotations" in skeleton_mode
+        
+        # Check if rotation data is available
+        first_frame = frames[sorted_indices[0]]
+        has_rotations = first_frame.get("joint_rotations") is not None
+        
+        if use_rotations and not has_rotations:
+            print("[Export] Warning: Rotation mode requested but no rotation data available. Falling back to positions.")
+            use_rotations = False
         
         # Build JSON for Blender
         export_data = {
@@ -216,6 +235,7 @@ class ExportAnimatedFBX:
             "joint_parents": to_list(mesh_sequence.get("joint_parents")),
             "sensor_width": sensor_width,
             "world_translation_mode": translation_mode,
+            "skeleton_mode": "rotations" if use_rotations else "positions",
             "frames": [],
         }
         
@@ -224,11 +244,13 @@ class ExportAnimatedFBX:
             frame_data = {
                 "frame_index": idx,
                 "joint_coords": to_list(frame.get("joint_coords")),
-                "pred_cam_t": to_list(frame.get("pred_cam_t")),
+                "pred_cam_t": to_list(frame.get("pred_cam_t") or frame.get("camera")),
                 "focal_length": frame.get("focal_length"),
             }
             if include_mesh:
                 frame_data["vertices"] = to_list(frame.get("vertices"))
+            if use_rotations:
+                frame_data["joint_rotations"] = to_list(frame.get("joint_rotations"))
             export_data["frames"].append(frame_data)
         
         # Write temp JSON
@@ -252,7 +274,9 @@ class ExportAnimatedFBX:
             ]
             
             format_name = "Alembic" if use_alembic else "FBX"
-            print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name} (up={up_axis}, translation={translation_mode}, camera={include_camera})...")
+            skel_mode_str = "rotations" if use_rotations else "positions"
+            print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name}")
+            print(f"[Export] Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
             
             result = subprocess.run(
                 cmd,
@@ -269,7 +293,7 @@ class ExportAnimatedFBX:
             if not os.path.exists(output_path):
                 return ("", f"Error: {format_name} not created", 0)
             
-            status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis})"
+            status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis}, skeleton={skel_mode_str})"
             if not include_mesh:
                 status += " skeleton only"
             if include_camera:
@@ -299,7 +323,10 @@ class ExportFBXFromJSON:
                 "json_path": ("STRING", {"forceInput": True}),
                 "output_format": (["FBX", "ABC (Alembic)"], {"default": "FBX"}),
                 "up_axis": (["Y", "Z", "-Y", "-Z"], {"default": "Y"}),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Root Locator", "Separate Track"], {
+                "skeleton_mode": (["Rotations (Recommended)", "Positions (Legacy)"], {
+                    "default": "Rotations (Recommended)",
+                }),
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Separate Track"], {
                     "default": "None (Body at Origin)",
                 }),
             },
@@ -322,6 +349,7 @@ class ExportFBXFromJSON:
         json_path: str,
         output_format: str = "FBX",
         up_axis: str = "Y",
+        skeleton_mode: str = "Rotations (Recommended)",
         world_translation: str = "None (Body at Origin)",
         filename: str = "animation",
         include_mesh: bool = True,
@@ -347,19 +375,25 @@ class ExportFBXFromJSON:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Baked" in world_translation:
+        if "Baked into Mesh" in world_translation:
             translation_mode = "baked"
+        elif "Baked into Camera" in world_translation:
+            translation_mode = "camera"
         elif "Root" in world_translation:
             translation_mode = "root"
         elif "Separate" in world_translation:
             translation_mode = "separate"
         
-        # Read JSON and add translation mode
+        # Map skeleton_mode option
+        use_rotations = "Rotations" in skeleton_mode
+        
+        # Read JSON and add modes
         with open(json_path, 'r') as f:
             data = json.load(f)
         data["world_translation_mode"] = translation_mode
+        data["skeleton_mode"] = "rotations" if use_rotations else "positions"
         
-        # Write to temp file with updated mode
+        # Write to temp file with updated modes
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(data, f)
             temp_json = f.name
@@ -378,6 +412,7 @@ class ExportFBXFromJSON:
             ]
             
             format_name = "Alembic" if use_alembic else "FBX"
+            skel_mode_str = "rotations" if use_rotations else "positions"
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=BLENDER_TIMEOUT)
             
             if result.returncode != 0:
@@ -386,7 +421,7 @@ class ExportFBXFromJSON:
             if not os.path.exists(output_path):
                 return ("", f"Error: {format_name} not created")
             
-            return (output_path, f"Exported to {filename}{ext} (up={up_axis}, translation={translation_mode})")
+            return (output_path, f"Exported to {filename}{ext} (up={up_axis}, skeleton={skel_mode_str}, translation={translation_mode})")
             
         except Exception as e:
             return ("", f"Error: {str(e)}")

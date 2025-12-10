@@ -1,220 +1,138 @@
-# SAM3DBody2abc v3.0.0 - Video to Animated FBX
+# ComfyUI-SAM3DBody2abc
 
-Export video sequences to animated FBX with mesh shape keys and properly connected skeleton hierarchy.
+Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya, Blender, and other 3D applications.
 
-## 🔧 Workflow
+## Features
 
+### Export Formats
+- **FBX** - Blend shapes for mesh animation, widely compatible
+- **Alembic (.abc)** - Vertex cache for mesh animation, cleaner Maya workflow
+
+### Skeleton Animation Modes (v3.1.0)
+- **Rotations (Recommended)** - Uses true joint rotation matrices from MHR model
+  - Proper bone rotations for retargeting to other characters
+  - Standard animation workflow compatible
+  - Better for editing in animation software
+- **Positions (Legacy)** - Uses joint positions with location offsets
+  - Shows exact joint positions
+  - Limited retargeting capability
+
+### World Translation Modes
+- **None (Body at Origin)** - Character centered at origin, static camera
+- **Baked into Mesh/Joints** - World offset baked into vertex and joint positions
+- **Baked into Camera** - Body at origin, camera moves to preserve original framing
+- **Root Locator** - Root empty carries translation, body/skeleton as children
+- **Separate Track** - Body at origin + separate locator showing world path
+
+### Camera Export
+- Focal length conversion from SAM3DBody pixel values to mm
+- Configurable sensor width (Full Frame 36mm, APS-C 23.6mm, etc.)
+- Animated distance based on depth estimation
+
+### Up Axis Options
+- Y, Z, -Y, -Z (configurable per DCC application requirements)
+
+## Installation
+
+1. Clone or download to your ComfyUI `custom_nodes` directory
+2. Requires Blender installed and accessible via PATH
+3. Requires ComfyUI-SAM3DBody for mesh data
+
+## Usage
+
+### Basic Workflow
+1. **Load Model** → SAM 3D Body: Load Model
+2. **Process Frames** → SAM 3D Body: Process Image (loop over video frames)
+3. **Accumulate** → Mesh Data Accumulator (collect frames into sequence)
+4. **Export** → Export Animated FBX
+
+### Export Settings
+
+#### Skeleton Mode
+- **Rotations (Recommended)**: Uses the 127 joint rotation matrices output by MHR (Meta's body model). Produces proper bone rotations that can be retargeted to other character rigs and edited in animation software.
+- **Positions (Legacy)**: Animates bones using location offsets from rest positions. Shows exact joint positions but limited for retargeting.
+
+#### World Translation
+Choose how character movement through space is handled:
+- For retargeting: Use "None" or "Baked into Camera"
+- For full scene recreation: Use "Baked into Mesh/Joints"
+- For flexibility: Use "Root Locator" (translation on parent, animation on bones)
+
+## Technical Details
+
+### Data Flow
 ```
-VHS_LoadVideo ──┬──→ SAM3BBoxCollector → SAM3VideoSegmentation
-                │                                  ↓
-                │                          SAM3Propagate
-                │                                  ↓
-                │                          SAM3VideoOutput → per-frame masks
-                │                                                    ↓
-                └──→ 🎬 Video Batch Processor ←──────────────────────┘
-                              ↑
-                    LoadSAM3DBodyModel
-                              ↓
-                   📦 Export Animated FBX
-                              ↓
-                   🎥 FBX Animation Viewer
-```
-
-Uses SAM3's built-in video propagation for accurate per-frame character tracking.
-
-## 📦 Nodes
-
-| Node | Description |
-|------|-------------|
-| **🎬 Video Batch Processor** | Process video with SAM3DBody, collect mesh_data per frame |
-| **📦 Export Animated FBX** | Export with mesh shape keys + skeleton keyframes |
-| **🎥 FBX Animation Viewer** | Preview animated FBX (requires MotionCapture extension) |
-| **📋 Mesh Data Accumulator** | Manually accumulate mesh_data from SAM3DBody Process |
-| **💾 Export Sequence JSON** | Save sequence to JSON |
-| **📦 Export FBX from JSON** | Convert JSON to FBX |
-| **🗑️ Clear Accumulator** | Clear data |
-
-## 🎯 Character Tracking
-
-Use SAM3's video segmentation nodes:
-
-1. **SAM3BBoxCollector** - Draw bbox around character on first frame
-2. **SAM3VideoSegmentation** - Initialize video tracking
-3. **SAM3Propagate** - Propagate mask across all frames
-4. **SAM3VideoOutput** - Get per-frame MASK output
-
-This gives accurate per-frame masks that follow the character's movement.
-
-## 🆕 Features in v3.0.0
-
-### ✅ Proper Skeleton with Bones
-- Uses armature with 127 bones (not empties)
-- Standard rigging structure for Maya/Blender
-- Compatible with retargeting tools
-- Animated via bone location keyframes
-
-### ✅ Orientation Options
-Choose which axis points up:
-- **Y** (default) - Standard Y-up orientation
-- **Z** - Blender default Z-up
-- **-Y** - Inverted Y
-- **-Z** - Inverted Z
-
-### ✅ FBX Animation Viewer
-Preview animated FBX files directly in ComfyUI. Works with ComfyUI-MotionCapture web extension for full playback controls.
-
-## 🔗 SAM3DBody Integration
-
-Works with SAM3DBody Process node outputs:
-
-| Output | Type | Description |
-|--------|------|-------------|
-| `mesh_data` | SAM3D_OUTPUT | vertices, faces, joint_coords (127 joints) |
-| `skeleton` | SKELETON | joint_positions, joint_rotations, params |
-| `debug_image` | IMAGE | Visualization |
-
-## 📥 Installation
-
-1. Copy `ComfyUI-SAM3DBody2abc` to `ComfyUI/custom_nodes/`
-2. Dependencies:
-   - **ComfyUI-SAM3** (segmentation)
-   - **ComfyUI-SAM3DBody** (body reconstruction)
-   - **Blender** (bundled with SAM3DBody or system)
-3. Optional:
-   - **ComfyUI-MotionCapture** (for FBX viewer web extension)
-
-## ⚙️ Options
-
-### Video Batch Processor
-| Option | Default | Description |
-|--------|---------|-------------|
-| `smoothing_strength` | 0.5 | Temporal smoothing (0=none) |
-| `skip_frames` | 1 | Process every Nth frame |
-| `inference_type` | full | `full` (body+hands) or `body` |
-
-### Export Animated FBX
-| Option | Default | Description |
-|--------|---------|-------------|
-| `output_format` | FBX | Export format: FBX (blend shapes) or ABC (Alembic vertex cache) |
-| `up_axis` | Y | Which axis points up (Y, Z, -Y, -Z) |
-| `world_translation` | None | How character moves through world space (see below) |
-| `include_mesh` | true | Include mesh with animation |
-| `include_camera` | true | Include camera with focal length from SAM3DBody |
-| `sensor_width` | 36.0 | Camera sensor width in mm |
-| `fps` | 24.0 | Animation framerate |
-
-## 🌍 World Translation Options
-
-SAM3DBody outputs body-centric coordinates (body always at origin). Use `world_translation` to capture character movement through space:
-
-| Option | Description | Use Case |
-|--------|-------------|----------|
-| **None (Body at Origin)** | Body stays at origin, only pose changes | Retargeting, mocap cleanup |
-| **Baked into Mesh/Joints** | World offset baked into vertex/joint positions | Direct playback, what-you-see-is-what-you-get |
-| **Root Locator** | Root locator carries translation, body is child | Professional rigging, easy path editing |
-| **Separate Track** | Body at origin + separate locator showing path | Maximum flexibility, manual control |
-
-### How It Works
-SAM3DBody provides `pred_cam_t = [tx, ty, tz]`:
-- `tx` = horizontal position (-1 to +1)
-- `ty` = vertical position (-1 to +1)
-- `tz` = depth/distance from camera
-
-These are converted to world-space offsets based on `up_axis`.
-
-## ⚠️ Known Limitations
-
-### Mesh Flattening on Extreme Rotations
-When the character spins or flips significantly, the mesh may lose volume and flatten. This is a fundamental limitation of SAM3DBody's single-view 3D reconstruction - it cannot maintain consistent depth when the viewing angle changes dramatically.
-
-**Workarounds:**
-- Use footage with minimal rotation
-- Export skeleton-only for retargeting to a proper 3D character
-- Use multiple camera angles (requires multi-view reconstruction)
-
-### FBX File Size / Load Time
-FBX shape keys store per-frame vertex data, which can result in large files and slow loading in Maya/other DCCs. Maya may also show hidden per-frame geometry from blend shape targets.
-
-**Workarounds:**
-- **Use Alembic (.abc) format** - cleaner vertex animation, no hidden geometry
-- Set `include_mesh=false` to export skeleton-only (fast, small)
-- Use `skip_frames` > 1 in Video Batch Processor to reduce frame count
-
-## 📦 Output Formats
-
-### FBX (Default)
-- Uses blend shapes (shape keys) for mesh animation
-- Contains: mesh, joint locators, camera
-- Note: Maya may show hidden per-frame geometry from blend shape targets
-
-### Alembic (.abc)
-- Uses vertex cache for mesh animation  
-- Cleaner playback in Maya
-- Also exports `_skeleton.fbx` with joints and camera
-
-## 📷 Camera Export
-
-SAM3DBody estimates the camera focal length for each frame. The export includes:
-- **Focal length** converted from pixels to mm
-- **Camera position** based on subject depth
-- **Per-frame animation** if focal length varies
-
-### Sensor Width Options
-
-| Camera Type | Sensor Width | Notes |
-|-------------|--------------|-------|
-| Full Frame | 36.0 mm | Default, matches most DSLR/mirrorless |
-| APS-C (Canon) | 22.3 mm | Canon crop sensor |
-| APS-C (Nikon/Sony) | 23.6 mm | Nikon/Sony crop sensor |
-| Micro Four Thirds | 17.3 mm | Olympus/Panasonic |
-| 1-inch | 13.2 mm | Compact cameras |
-| iPhone/Smartphone | 5-7 mm | Varies by model |
-
-### Focal Length Conversion
-```
-focal_mm = focal_px × (sensor_width / image_width)
-Example: 1500px × (36mm / 1920px) = ~28mm
+SAM3DBody Process
+    ↓
+mesh_data (SAM3D_OUTPUT)
+    - vertices: [N, 3] mesh vertices
+    - faces: [F, 3] face indices  
+    - joint_coords: [127, 3] joint positions
+    - joint_rotations: [127, 3, 3] rotation matrices  ← NEW in v3.1
+    - camera: [3] pred_cam_t (tx, ty, tz)
+    - focal_length: pixel focal length
+    ↓
+Mesh Data Accumulator
+    ↓
+MESH_SEQUENCE
+    ↓
+Export Animated FBX
+    ↓
+.fbx / .abc file
 ```
 
-## 📋 Output FBX Contains
+### Joint Rotation Data
+SAM3DBody uses Meta's MHR (Momentum Human Rig) body model internally. The `joint_rotations` output contains:
+- 127 joints with 3x3 rotation matrices
+- Global (world-space) rotations per joint
+- Quaternion conversion in Blender for smooth interpolation
 
-- **Mesh** with shape keys (one per frame for vertex animation)
-- **Armature** with 127 bones (animated via location keyframes)
-- **Root Locator** (empty) for world translation (optional)
-- **Translation Track** (empty) showing character path (optional)
-- **Camera** with estimated focal length (optional)
-
-## 🎬 Sample Workflow
-
-Included: `workflows/animation_workflow.json`
-
-Node sequence:
-1. **VHS_LoadVideo** - Load video file
-2. **SAM3BBoxCollector** - Draw bbox on first frame
-3. **SAM3VideoSegmentation** - Initialize tracking
-4. **SAM3Propagate** - Track mask across frames
-5. **SAM3VideoOutput** - Get per-frame masks
-6. **Video Batch Processor** - Process with SAM3DBody
-7. **Export Animated FBX** - Export with mesh + skeleton + camera
-
-## 🔧 Skeleton
-
-The skeleton uses a proper armature with bones:
-- **127 bones** matching SAM3DBody's joint structure
-- **Animated via location keyframes** on each bone
-- **Compatible with retargeting** tools in Maya/Blender
-- **Root Locator** (optional) is an empty/null that carries world translation
-
-When using "Root Locator" world translation:
+### Skeleton Structure
 ```
-root_locator (empty - world translation)
-    └── Skeleton (armature)
-        └── joint_000 (bone - local animation)
-        └── joint_001 (bone - local animation)
-        └── ...
-    └── body (mesh)
+Skeleton (Armature)
+├── joint_000 (bone with rotation keyframes)
+├── joint_001
+├── ...
+└── joint_126
 ```
 
-## 📄 License
+For "Root Locator" mode:
+```
+root_locator (empty with translation keyframes)
+└── Skeleton (Armature)
+    ├── joint_000
+    └── ...
+```
+
+## Changelog
+
+### v3.1.0
+- **NEW**: Rotation-based skeleton animation using MHR joint rotation matrices
+- Added `skeleton_mode` option: "Rotations (Recommended)" vs "Positions (Legacy)"
+- Accumulator now stores `joint_rotations` per frame
+- Bones animate with quaternion rotation keyframes (smoother interpolation)
+- Better compatibility with retargeting tools
+
+### v3.0.0
+- World translation modes (5 options)
+- Camera "Baked into Camera" mode with animated position
+- Skeleton uses armature bones instead of empties
+- Up axis options (Y, Z, -Y, -Z)
+
+### v2.0.0
+- Alembic export support
+- Camera export with focal length
+- Multiple people support
+
+### v1.0.0
+- Initial release with FBX export
+
+## Requirements
+
+- ComfyUI
+- ComfyUI-SAM3DBody
+- Blender 3.6+ (system installation or bundled with SAM3DBody)
+
+## License
 
 MIT License

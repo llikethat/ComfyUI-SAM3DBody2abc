@@ -3,7 +3,7 @@ Mesh Data Accumulator for SAM3DBody2abc
 Accumulates SAM3D_OUTPUT (mesh_data) from SAM3DBody Process node.
 
 SAM3DBody Process outputs:
-- mesh_data (SAM3D_OUTPUT): vertices, faces, joints, joint_coords, etc.
+- mesh_data (SAM3D_OUTPUT): vertices, faces, joints, joint_coords, joint_rotations, etc.
 - skeleton (SKELETON): joint_positions, joint_rotations, pose_params
 - debug_image (IMAGE)
 
@@ -54,7 +54,9 @@ class MeshDataAccumulator:
     
     Stores per-frame:
     - vertices (for shape keys)
-    - joint_coords (127 joints for skeleton animation)
+    - joint_coords (127 joints for skeleton animation - positions)
+    - joint_rotations (127 joints for skeleton animation - rotation matrices 3x3)
+    - pred_cam_t (camera translation for world positioning)
     
     Stores once (from first frame):
     - faces
@@ -117,11 +119,13 @@ class MeshDataAccumulator:
         
         seq = self._sequences[sequence_id]
         
-        # Store per-frame data
+        # Store per-frame data - including joint_rotations now
         frame = {
             "vertices": to_numpy(mesh_data.get("vertices")),
             "joint_coords": to_numpy(mesh_data.get("joint_coords")),
+            "joint_rotations": to_numpy(mesh_data.get("joint_rotations")),
             "camera": to_numpy(mesh_data.get("camera")),
+            "pred_cam_t": to_numpy(mesh_data.get("camera")),  # Alias for compatibility
             "focal_length": mesh_data.get("focal_length"),
         }
         seq["frames"][frame_index] = frame
@@ -151,7 +155,8 @@ class MeshDataAccumulator:
         }
         
         frame_count = len(seq["frames"])
-        status = f"Frame {frame_index} added. Total: {frame_count}"
+        has_rotations = frame.get("joint_rotations") is not None
+        status = f"Frame {frame_index} added (rotations={'yes' if has_rotations else 'no'}). Total: {frame_count}"
         
         return (mesh_sequence, frame_count, status)
     
@@ -185,6 +190,10 @@ class ExportMeshSequenceJSON:
                     "default": True,
                     "tooltip": "Include mesh vertices for shape keys"
                 }),
+                "include_rotations": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include joint rotations (3x3 matrices)"
+                }),
             }
         }
     
@@ -200,6 +209,7 @@ class ExportMeshSequenceJSON:
         filename: str = "mesh_animation",
         fps: float = 24.0,
         include_vertices: bool = True,
+        include_rotations: bool = True,
     ) -> Tuple[str, str, int]:
         """Export to JSON."""
         
@@ -214,6 +224,7 @@ class ExportMeshSequenceJSON:
             "fps": fps,
             "frame_count": len(sorted_indices),
             "include_vertices": include_vertices,
+            "include_rotations": include_rotations,
             "faces": to_list(mesh_sequence.get("faces")),
             "joint_parents": to_list(mesh_sequence.get("joint_parents")),
             "mhr_path": mesh_sequence.get("mhr_path"),
@@ -228,6 +239,8 @@ class ExportMeshSequenceJSON:
             }
             if include_vertices:
                 frame_data["vertices"] = to_list(frame.get("vertices"))
+            if include_rotations:
+                frame_data["joint_rotations"] = to_list(frame.get("joint_rotations"))
             export_data["frames"].append(frame_data)
         
         json_path = os.path.join(output_dir, f"{filename}.json")
@@ -235,6 +248,8 @@ class ExportMeshSequenceJSON:
             json.dump(export_data, f)
         
         status = f"Exported {len(sorted_indices)} frames"
+        if include_rotations:
+            status += " (with rotations)"
         print(f"[SAM3DBody2abc] {status} to {filename}.json")
         
         return (json_path, status, len(sorted_indices))

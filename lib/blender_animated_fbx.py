@@ -1,6 +1,10 @@
 """
 Blender Script: Export Animated FBX from Mesh Sequence JSON
-Creates animated mesh using vertex keyframes + joint locators.
+Creates animated mesh using vertex keyframes + joint skeleton.
+
+Supports two skeleton animation modes:
+- Rotations: Uses true joint rotation matrices from MHR model (recommended for retargeting)
+- Positions: Uses joint position offsets (legacy mode)
 
 Usage: blender --background --python blender_animated_fbx.py -- input.json output.fbx [up_axis]
 
@@ -14,7 +18,7 @@ import bpy
 import json
 import sys
 import os
-from mathutils import Vector, Matrix
+from mathutils import Vector, Matrix, Euler, Quaternion
 import math
 
 
@@ -51,16 +55,74 @@ def get_transform_for_axis(up_axis):
         return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
 
 
+def get_rotation_transform_matrix(up_axis):
+    """
+    Get rotation transformation matrix for converting MHR rotations to Blender.
+    """
+    if up_axis == "Y":
+        # Flip X, Y, Z -> mirror across origin
+        return Matrix((
+            (-1, 0, 0),
+            (0, -1, 0),
+            (0, 0, -1)
+        ))
+    elif up_axis == "Z":
+        # X stays, Y<->Z swap with sign changes
+        return Matrix((
+            (-1, 0, 0),
+            (0, 0, 1),
+            (0, -1, 0)
+        ))
+    elif up_axis == "-Y":
+        return Matrix((
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, 0, 1)
+        ))
+    elif up_axis == "-Z":
+        return Matrix((
+            (-1, 0, 0),
+            (0, 0, -1),
+            (0, 1, 0)
+        ))
+    else:
+        return Matrix((
+            (-1, 0, 0),
+            (0, -1, 0),
+            (0, 0, -1)
+        ))
+
+
+def transform_rotation_matrix(rot_3x3, up_axis):
+    """
+    Transform a 3x3 rotation matrix from MHR space to Blender space.
+    
+    rot_3x3: List of lists [[r00,r01,r02], [r10,r11,r12], [r20,r21,r22]]
+    up_axis: Target up axis
+    
+    Returns: Blender Matrix (3x3)
+    """
+    # Convert to Blender Matrix
+    m = Matrix((
+        (rot_3x3[0][0], rot_3x3[0][1], rot_3x3[0][2]),
+        (rot_3x3[1][0], rot_3x3[1][1], rot_3x3[1][2]),
+        (rot_3x3[2][0], rot_3x3[2][1], rot_3x3[2][2])
+    ))
+    
+    # Get transformation matrix
+    T = get_rotation_transform_matrix(up_axis)
+    
+    # Transform: T * M * T^-1 (similarity transform)
+    # This transforms the rotation from MHR coordinate system to Blender's
+    T_inv = T.inverted()
+    transformed = T @ m @ T_inv
+    
+    return transformed
+
+
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     """
     Convert pred_cam_t [tx, ty, tz] to world space offset.
-    
-    pred_cam_t:
-    - tx: horizontal offset (normalized, -1 to +1)
-    - ty: vertical offset (normalized, -1 to +1)
-    - tz: depth/scale factor
-    
-    Returns: Vector(x, y, z) in world space based on up_axis
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
@@ -68,16 +130,13 @@ def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
     # Scale tx, ty by depth to get world units
-    # The factor is empirical - adjust based on your needs
     world_x = tx * abs(tz) * 0.5
     world_y = ty * abs(tz) * 0.5
     
     # Apply based on up_axis
     if up_axis == "Y":
-        # Y-up: X is horizontal, Y is vertical
         return Vector((-world_x, -world_y, 0))
     elif up_axis == "Z":
-        # Z-up: X is horizontal, Z is vertical
         return Vector((-world_x, 0, world_y))
     elif up_axis == "-Y":
         return Vector((-world_x, world_y, 0))
@@ -90,12 +149,6 @@ def get_world_offset_from_cam_t(pred_cam_t, up_axis):
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y"):
     """
     Create mesh with per-vertex animation using shape keys.
-    
-    world_translation_mode:
-    - "none": body at origin (default)
-    - "baked": world offset baked into vertex positions
-    - "root": no offset here (root locator handles it)
-    - "separate": no offset here (separate track shows path)
     """
     first_verts = all_frames[0].get("vertices")
     if not first_verts:
@@ -175,24 +228,26 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     return obj
 
 
-def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None):
+def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None):
     """
-    Create animated skeleton using armature with bones.
+    Create animated skeleton using armature with ROTATION keyframes.
     
-    world_translation_mode:
-    - "none": body at origin (default)
-    - "baked": world offset baked into joint positions
-    - "root": armature parented to root_locator (no offset in joint positions)
-    - "separate": no offset here (separate track shows path)
-    
-    root_locator: parent object for "root" mode
+    This uses the true joint rotation matrices from MHR model.
+    Produces proper bone rotations for retargeting and animation editing.
     """
     first_joints = all_frames[0].get("joint_coords")
+    first_rotations = all_frames[0].get("joint_rotations")
+    
     if not first_joints:
+        print("[Blender] No joint_coords in first frame, skipping skeleton")
         return None
     
+    if not first_rotations:
+        print("[Blender] No joint_rotations available, falling back to position-based skeleton")
+        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
+    
     num_joints = len(first_joints)
-    print(f"[Blender] Creating armature with {num_joints} bones (translation={world_translation_mode})...")
+    print(f"[Blender] Creating rotation-based armature with {num_joints} bones...")
     
     # Create armature
     arm_data = bpy.data.armatures.new("Skeleton")
@@ -224,17 +279,126 @@ def create_skeleton(all_frames, fps, transform_func, world_translation_mode="non
             head_pos += first_offset
         
         bone.head = head_pos
-        # Small tail offset to make bone visible (pointing in Y direction)
+        # Small tail offset pointing up in local space
         bone.tail = head_pos + Vector((0, 0.03, 0))
         bones.append(bone)
     
     bpy.ops.object.mode_set(mode='OBJECT')
     
-    # Animate bones in pose mode
+    # Animate bones in pose mode using ROTATION keyframes
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode='POSE')
     
-    print(f"[Blender] Animating {num_joints} bones over {len(all_frames)} frames...")
+    # Set rotation mode to quaternion for smoother interpolation
+    for pose_bone in armature.pose.bones:
+        pose_bone.rotation_mode = 'QUATERNION'
+    
+    print(f"[Blender] Animating {num_joints} bones with rotations over {len(all_frames)} frames...")
+    
+    for frame_idx, frame_data in enumerate(all_frames):
+        joints = frame_data.get("joint_coords")
+        rotations = frame_data.get("joint_rotations")
+        
+        if not joints or not rotations:
+            continue
+        
+        bpy.context.scene.frame_set(frame_idx)
+        
+        # Get world offset for this frame (for position updates)
+        frame_offset = Vector((0, 0, 0))
+        if world_translation_mode == "baked":
+            frame_cam_t = frame_data.get("pred_cam_t")
+            frame_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+        
+        for bone_idx in range(min(num_joints, len(joints), len(rotations))):
+            pose_bone = armature.pose.bones[bone_idx]
+            
+            # Get rotation matrix and transform to Blender space
+            rot_3x3 = rotations[bone_idx]
+            if rot_3x3 is None:
+                continue
+            
+            # Transform rotation matrix from MHR to Blender coordinate system
+            blender_rot = transform_rotation_matrix(rot_3x3, up_axis)
+            
+            # Convert to quaternion
+            quat = blender_rot.to_quaternion()
+            
+            # Apply rotation
+            pose_bone.rotation_quaternion = quat
+            pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame_idx)
+            
+            # Also update location for world translation modes
+            if world_translation_mode == "baked":
+                pos = joints[bone_idx]
+                target = Vector(transform_func(pos)) + frame_offset
+                rest_head = Vector(armature.data.bones[bone_idx].head_local)
+                offset = target - rest_head
+                pose_bone.location = offset
+                pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
+        
+        if (frame_idx + 1) % 50 == 0:
+            print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (rotations)")
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    print(f"[Blender] Created rotation-based skeleton with {num_joints} bones")
+    return armature
+
+
+def create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None):
+    """
+    Create animated skeleton using armature with POSITION keyframes.
+    
+    This is the legacy mode - bones animate via location offset from rest position.
+    Shows exact joint positions but limited for retargeting.
+    """
+    first_joints = all_frames[0].get("joint_coords")
+    if not first_joints:
+        return None
+    
+    num_joints = len(first_joints)
+    print(f"[Blender] Creating position-based armature with {num_joints} bones...")
+    
+    # Create armature
+    arm_data = bpy.data.armatures.new("Skeleton")
+    armature = bpy.data.objects.new("Skeleton", arm_data)
+    bpy.context.collection.objects.link(armature)
+    bpy.context.view_layer.objects.active = armature
+    armature.select_set(True)
+    
+    # Parent to root locator if in "root" mode
+    if world_translation_mode == "root" and root_locator:
+        armature.parent = root_locator
+    
+    # Get first frame world offset for initial bone positions
+    first_offset = Vector((0, 0, 0))
+    if world_translation_mode == "baked":
+        first_cam_t = all_frames[0].get("pred_cam_t")
+        first_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
+    
+    # Enter edit mode to create bones
+    bpy.ops.object.mode_set(mode='EDIT')
+    
+    bones = []
+    for i in range(num_joints):
+        bone = arm_data.edit_bones.new(f"joint_{i:03d}")
+        pos = first_joints[i]
+        head_pos = Vector(transform_func(pos))
+        
+        if world_translation_mode == "baked":
+            head_pos += first_offset
+        
+        bone.head = head_pos
+        bone.tail = head_pos + Vector((0, 0.03, 0))
+        bones.append(bone)
+    
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Animate bones in pose mode using LOCATION keyframes
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='POSE')
+    
+    print(f"[Blender] Animating {num_joints} bones with positions over {len(all_frames)} frames...")
     
     # Store rest positions for offset calculation
     rest_heads = [Vector(armature.pose.bones[i].bone.head_local) for i in range(num_joints)]
@@ -267,17 +431,30 @@ def create_skeleton(all_frames, fps, transform_func, world_translation_mode="non
             pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
         
         if (frame_idx + 1) % 50 == 0:
-            print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames")
+            print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (positions)")
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created animated skeleton with {num_joints} bones")
+    print(f"[Blender] Created position-based skeleton with {num_joints} bones")
     return armature
+
+
+def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations"):
+    """
+    Create animated skeleton - dispatcher function.
+    
+    skeleton_mode:
+    - "rotations": Use true joint rotation matrices from MHR (recommended)
+    - "positions": Use joint positions only (legacy)
+    """
+    if skeleton_mode == "rotations":
+        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
+    else:
+        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
 
 
 def create_root_locator(all_frames, fps, up_axis):
     """
     Create a root locator that carries the world translation.
-    Used in "root" mode - mesh and joints are parented to this.
     """
     print("[Blender] Creating root locator with world translation...")
     
@@ -301,7 +478,6 @@ def create_root_locator(all_frames, fps, up_axis):
 def create_translation_track(all_frames, fps, up_axis):
     """
     Create a separate locator that shows the world path.
-    Used in "separate" mode - body stays at origin, this shows where it would be.
     """
     print("[Blender] Creating separate translation track...")
     
@@ -310,7 +486,6 @@ def create_translation_track(all_frames, fps, up_axis):
     track.empty_display_size = 0.15
     bpy.context.collection.objects.link(track)
     
-    # Animate track position based on pred_cam_t
     for frame_idx, frame_data in enumerate(all_frames):
         frame_cam_t = frame_data.get("pred_cam_t")
         world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
@@ -322,17 +497,12 @@ def create_translation_track(all_frames, fps, up_axis):
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none"):
     """
-    Create camera with no rotation (0,0,0) by using track-to constraint.
+    Create animated camera with focal length from SAM3DBody.
     """
-    first_focal = all_frames[0].get("focal_length")
-    first_cam_t = all_frames[0].get("pred_cam_t")
+    print("[Blender] Creating camera...")
     
-    if not first_focal:
-        return None
-    
-    # Create camera
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
     bpy.context.collection.objects.link(camera)
@@ -340,78 +510,103 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width):
     # Set sensor width
     cam_data.sensor_width = sensor_width
     
-    # Convert focal length from pixels to mm
-    image_width = 1920.0
-    focal_mm = (first_focal * sensor_width) / image_width
-    cam_data.lens = max(1.0, min(focal_mm, 500.0))
-    print(f"[Blender] Camera: {first_focal:.1f}px -> {cam_data.lens:.1f}mm (sensor={sensor_width}mm)")
+    # Get focal length from first frame
+    first_focal = all_frames[0].get("focal_length")
+    if first_focal:
+        if isinstance(first_focal, (list, tuple)):
+            focal_px = first_focal[0]
+        else:
+            focal_px = first_focal
+        
+        image_width = 1920  # Assume HD
+        focal_mm = focal_px * (sensor_width / image_width)
+        cam_data.lens = focal_mm
+        print(f"[Blender] Focal length: {focal_px}px -> {focal_mm:.1f}mm")
     
-    # Get camera distance
+    # Create target for camera orientation
+    target = bpy.data.objects.new("cam_target", None)
+    target.location = (0, 0, 0)
+    bpy.context.collection.objects.link(target)
+    
+    # Position camera based on up axis
+    first_cam_t = all_frames[0].get("pred_cam_t")
     cam_distance = 3.0
     if first_cam_t and len(first_cam_t) > 2:
         cam_distance = abs(first_cam_t[2])
     
-    # Create target at origin for camera to look at
-    target = bpy.data.objects.new("CameraTarget", None)
-    target.empty_display_type = 'PLAIN_AXES'
-    target.empty_display_size = 0.1
-    target.location = Vector((0, 0, 0))
-    bpy.context.collection.objects.link(target)
-    
-    # Position camera based on up_axis
-    # Camera should be in FRONT of the character (facing the character's front)
-    # After coordinate transforms, we need to position camera opposite to where character faces
+    # Set camera direction based on up_axis
     if up_axis == "Y":
-        # Character faces +Z after transform, so camera at -Z
-        camera.location = Vector((0, 0, -cam_distance))
+        base_dir = Vector((0, 0, 1))
     elif up_axis == "Z":
-        # Character faces +Y after transform, so camera at -Y
-        camera.location = Vector((0, -cam_distance, 0))
+        base_dir = Vector((0, 1, 0))
     elif up_axis == "-Y":
-        # Character faces -Z after transform, so camera at +Z
-        camera.location = Vector((0, 0, cam_distance))
+        base_dir = Vector((0, 0, -1))
     elif up_axis == "-Z":
-        # Character faces +Y after transform, so camera at -Y
-        camera.location = Vector((0, -cam_distance, 0))
+        base_dir = Vector((0, -1, 0))
+    else:
+        base_dir = Vector((0, 0, 1))
     
-    # Add track-to constraint so camera always looks at target
-    constraint = camera.constraints.new(type='TRACK_TO')
-    constraint.target = target
-    constraint.track_axis = 'TRACK_NEGATIVE_Z'
-    constraint.up_axis = 'UP_Y'
-    
-    # Apply constraint to get final rotation, then remove constraint
-    bpy.context.view_layer.update()
-    camera.rotation_euler = camera.matrix_world.to_euler()
-    camera.constraints.remove(constraint)
-    
-    # Delete target
-    bpy.data.objects.remove(target)
-    
-    # Round rotations to clean values
-    camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
-    camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
-    camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
-    
-    print(f"[Blender] Camera at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
-    
-    # Animate camera distance
-    for frame_idx, frame_data in enumerate(all_frames):
-        frame_cam_t = frame_data.get("pred_cam_t")
+    # For "camera" mode: fixed rotation, animated position with offset
+    if world_translation_mode == "camera":
+        # Set fixed rotation pointing at origin
+        camera.location = base_dir * cam_distance
         
-        if frame_cam_t and len(frame_cam_t) > 2:
-            new_distance = abs(frame_cam_t[2])
+        constraint = camera.constraints.new(type='TRACK_TO')
+        constraint.target = target
+        constraint.track_axis = 'TRACK_NEGATIVE_Z'
+        constraint.up_axis = 'UP_Y'
+        
+        bpy.context.view_layer.update()
+        camera.rotation_euler = camera.matrix_world.to_euler()
+        camera.constraints.remove(constraint)
+        
+        camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
+        camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
+        camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
+        
+        # Animate camera position with negative world offset
+        for frame_idx, frame_data in enumerate(all_frames):
+            frame_cam_t = frame_data.get("pred_cam_t")
             
-            if up_axis == "Y":
-                camera.location.z = new_distance
-            elif up_axis == "Z":
-                camera.location.y = -new_distance
-            elif up_axis == "-Y":
-                camera.location.z = -new_distance
-            elif up_axis == "-Z":
-                camera.location.y = new_distance
+            frame_distance = cam_distance
+            if frame_cam_t and len(frame_cam_t) > 2:
+                frame_distance = abs(frame_cam_t[2])
             
+            world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+            camera.location = base_dir * frame_distance - world_offset
             camera.keyframe_insert(data_path="location", frame=frame_idx)
+        
+        bpy.data.objects.remove(target)
+        print(f"[Blender] Camera animated over {len(all_frames)} frames (fixed rotation, animated position)")
+    else:
+        # Static camera with distance animation
+        camera.location = base_dir * cam_distance
+        
+        constraint = camera.constraints.new(type='TRACK_TO')
+        constraint.target = target
+        constraint.track_axis = 'TRACK_NEGATIVE_Z'
+        constraint.up_axis = 'UP_Y'
+        
+        bpy.context.view_layer.update()
+        camera.rotation_euler = camera.matrix_world.to_euler()
+        camera.constraints.remove(constraint)
+        
+        bpy.data.objects.remove(target)
+        
+        camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
+        camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
+        camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
+        
+        print(f"[Blender] Camera at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
+        
+        # Animate camera distance only
+        for frame_idx, frame_data in enumerate(all_frames):
+            frame_cam_t = frame_data.get("pred_cam_t")
+            
+            if frame_cam_t and len(frame_cam_t) > 2:
+                new_distance = abs(frame_cam_t[2])
+                camera.location = base_dir * new_distance
+                camera.keyframe_insert(data_path="location", frame=frame_idx)
     
     return camera
 
@@ -446,10 +641,7 @@ def export_fbx(output_path, axis_forward, axis_up):
 
 
 def export_alembic(output_path):
-    """
-    Export to Alembic (.abc) - better for vertex animation.
-    Alembic stores per-frame vertex positions directly, no blend shapes.
-    """
+    """Export to Alembic (.abc)."""
     print(f"[Blender] Exporting Alembic: {output_path}")
     
     bpy.ops.wm.alembic_export(
@@ -517,14 +709,24 @@ def main():
     faces = data.get("faces")
     sensor_width = data.get("sensor_width", 36.0)
     world_translation_mode = data.get("world_translation_mode", "none")
+    skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Sensor width: {sensor_width}mm")
     print(f"[Blender] World translation mode: {world_translation_mode}")
+    print(f"[Blender] Skeleton mode: {skeleton_mode}")
     
     if not frames:
         print("[Blender] Error: No frames")
         sys.exit(1)
+    
+    # Check if rotation data is available
+    has_rotations = frames[0].get("joint_rotations") is not None
+    print(f"[Blender] Rotation data available: {has_rotations}")
+    
+    if skeleton_mode == "rotations" and not has_rotations:
+        print("[Blender] Warning: Rotation mode requested but no data available. Falling back to positions.")
+        skeleton_mode = "positions"
     
     # Get transformation
     transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis)
@@ -550,7 +752,7 @@ def main():
             mesh_obj.parent = root_locator
     
     # Create skeleton (armature with bones)
-    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
+    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":
@@ -558,22 +760,20 @@ def main():
     
     # Create camera
     if include_camera:
-        create_camera(frames, fps, transform_func, up_axis, sensor_width)
+        create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode)
     
     # Export
     if output_format == "abc":
-        # For Alembic, we need to bake the shape key animation to actual vertex positions
         if mesh_obj:
             print("[Blender] Baking shape keys to mesh cache for Alembic...")
-            # Select mesh and bake
             bpy.context.view_layer.objects.active = mesh_obj
             mesh_obj.select_set(True)
         export_alembic(output_path)
         
-        # Also export FBX for joints/camera (Alembic doesn't support empties well)
+        # Also export FBX for joints/camera
         fbx_path = output_path.replace(".abc", "_skeleton.fbx")
         if mesh_obj:
-            mesh_obj.hide_set(True)  # Hide mesh for skeleton-only FBX
+            mesh_obj.hide_set(True)
         export_fbx(fbx_path, axis_forward, axis_up_export)
         print(f"[Blender] Also exported skeleton/camera to: {fbx_path}")
     else:
