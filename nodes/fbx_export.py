@@ -246,11 +246,19 @@ class ExportAnimatedFBX:
             print(f"[Export] Rotation data available: {has_rotations}, using rotations: {use_rotations}")
         
         # Build JSON for Blender
+        joint_parents = mesh_sequence.get("joint_parents")
+        print(f"[Export] joint_parents in mesh_sequence: {joint_parents is not None}")
+        if joint_parents is not None:
+            if hasattr(joint_parents, 'shape'):
+                print(f"[Export] joint_parents shape: {joint_parents.shape}")
+            elif isinstance(joint_parents, list):
+                print(f"[Export] joint_parents length: {len(joint_parents)}")
+        
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
             "faces": to_list(mesh_sequence.get("faces")),
-            "joint_parents": to_list(mesh_sequence.get("joint_parents")),
+            "joint_parents": to_list(joint_parents),
             "sensor_width": sensor_width,
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",

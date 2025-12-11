@@ -44,7 +44,16 @@ class VideoBatchProcessor:
             },
             "optional": {
                 "mask": ("MASK", {
-                    "tooltip": "Per-frame segmentation masks from SAM3 Propagation"
+                    "tooltip": "Single mask (MASK type)"
+                }),
+                "masks": ("MASKS", {
+                    "tooltip": "Multiple masks from SAM3 Propagation (MASKS type)"
+                }),
+                "object_id": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 10,
+                    "tooltip": "Which object ID to use when masks (plural) is connected"
                 }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
@@ -143,6 +152,8 @@ class VideoBatchProcessor:
         model: Dict,
         images: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        masks: Optional[torch.Tensor] = None,
+        object_id: int = 0,
         bbox_threshold: float = 0.8,
         inference_type: str = "full",
         smoothing_strength: float = 0.5,
@@ -154,12 +165,54 @@ class VideoBatchProcessor:
         
         Uses per-frame masks from SAM3 Propagation for character tracking.
         Each frame gets its own mask, allowing accurate tracking as the character moves.
+        
+        Accepts either:
+        - mask: Single MASK type (already selected object)
+        - masks: MASKS type from SAM3 Propagate (multiple objects, select by object_id)
         """
         
         try:
             from sam_3d_body import SAM3DBodyEstimator
         except ImportError:
             return ({}, images[:1], 0, "Error: SAM3DBody not installed")
+        
+        # Handle masks input - extract single object by ID
+        active_mask = mask
+        if masks is not None and mask is None:
+            print(f"[SAM3DBody2abc] Received MASKS input, extracting object_id={object_id}")
+            # masks shape could be [num_frames, num_objects, H, W] or [num_objects, num_frames, H, W]
+            # or it could be a dict with object IDs as keys
+            if isinstance(masks, dict):
+                # Dict format: {obj_id: mask_tensor}
+                if object_id in masks:
+                    active_mask = masks[object_id]
+                    print(f"[SAM3DBody2abc] Extracted mask for object {object_id} from dict")
+                else:
+                    print(f"[SAM3DBody2abc] Warning: object_id {object_id} not in masks dict. Available: {list(masks.keys())}")
+            elif isinstance(masks, torch.Tensor):
+                print(f"[SAM3DBody2abc] masks tensor shape: {masks.shape}")
+                # Try to extract the right object
+                if masks.ndim == 4:
+                    # Could be [frames, objects, H, W] or [objects, frames, H, W]
+                    if masks.shape[1] < masks.shape[0]:
+                        # Likely [frames, objects, H, W]
+                        if object_id < masks.shape[1]:
+                            active_mask = masks[:, object_id, :, :]
+                            print(f"[SAM3DBody2abc] Extracted mask[:, {object_id}, :, :] -> shape {active_mask.shape}")
+                    else:
+                        # Likely [objects, frames, H, W]
+                        if object_id < masks.shape[0]:
+                            active_mask = masks[object_id, :, :, :]
+                            print(f"[SAM3DBody2abc] Extracted mask[{object_id}, :, :, :] -> shape {active_mask.shape}")
+                elif masks.ndim == 3:
+                    # [frames, H, W] - single object already
+                    active_mask = masks
+                    print(f"[SAM3DBody2abc] Using masks directly (single object): shape {active_mask.shape}")
+        
+        if active_mask is not None:
+            print(f"[SAM3DBody2abc] Using mask with shape: {active_mask.shape if hasattr(active_mask, 'shape') else 'unknown'}")
+        else:
+            print(f"[SAM3DBody2abc] No mask provided - will use auto-detection")
         
         total_frames = images.shape[0]
         actual_end = total_frames if end_frame == -1 else min(end_frame + 1, total_frames)
@@ -169,8 +222,9 @@ class VideoBatchProcessor:
             return ({}, images[:1], 0, "Error: No frames")
         
         print(f"[SAM3DBody2abc] Processing {len(frame_indices)} frames...")
-        if mask is not None:
-            print(f"[SAM3DBody2abc] Using per-frame masks ({mask.shape[0]} masks available)")
+        if active_mask is not None:
+            mask_frames = active_mask.shape[0] if hasattr(active_mask, 'shape') and active_mask.ndim >= 1 else 1
+            print(f"[SAM3DBody2abc] Using per-frame masks ({mask_frames} masks available)")
         
         sam_3d_model = model["model"]
         model_cfg = model["model_cfg"]
@@ -208,16 +262,28 @@ class VideoBatchProcessor:
                     frame_bbox = None
                     use_mask = False
                     
-                    if mask is not None and frame_idx < mask.shape[0]:
-                        mask_np = mask[frame_idx].cpu().numpy()
+                    if active_mask is not None:
+                        # Determine which mask frame to use
+                        mask_idx = frame_idx
+                        if hasattr(active_mask, 'shape'):
+                            if active_mask.ndim >= 1 and mask_idx >= active_mask.shape[0]:
+                                mask_idx = active_mask.shape[0] - 1  # Clamp to last available
+                        
+                        if hasattr(active_mask, 'shape') and active_mask.ndim >= 2:
+                            mask_np = active_mask[mask_idx].cpu().numpy() if hasattr(active_mask, 'cpu') else np.array(active_mask[mask_idx])
+                        else:
+                            mask_np = active_mask.cpu().numpy() if hasattr(active_mask, 'cpu') else np.array(active_mask)
+                        
                         # SAM3DBody expects 2D mask
                         if mask_np.ndim == 3:
-                            mask_np = mask_np[0]
+                            mask_np = mask_np[0] if mask_np.shape[0] == 1 else mask_np[:, :, 0]
                         
                         frame_bbox = self._compute_bbox_from_mask(mask_np)
                         if frame_bbox is not None:
                             frame_mask = mask_np
                             use_mask = True
+                            if i == 0:
+                                print(f"[SAM3DBody2abc] Frame 0 mask shape: {mask_np.shape}, bbox: {frame_bbox}")
                     
                     # Save temp image
                     with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -254,8 +320,10 @@ class VideoBatchProcessor:
                                         skel = mhr.character_torch.skeleton
                                         if hasattr(skel, 'joint_parents'):
                                             joint_parents = to_numpy(skel.joint_parents)
-                            except Exception:
-                                pass
+                                            print(f"[SAM3DBody2abc] Got joint_parents from mhr.character_torch.skeleton: {joint_parents.shape if hasattr(joint_parents, 'shape') else len(joint_parents)} joints")
+                                            print(f"[SAM3DBody2abc] First 10 parent indices: {joint_parents[:10] if joint_parents is not None else 'None'}")
+                            except Exception as e:
+                                print(f"[SAM3DBody2abc] Error getting joint_parents: {e}")
                         
                         # Store frame data including camera and rotations
                         focal_length = output.get("focal_length")
@@ -271,14 +339,30 @@ class VideoBatchProcessor:
                                     print(f"[SAM3DBody2abc] pred_global_rots shape: {pred_global_rots.shape}")
                             else:
                                 print(f"[SAM3DBody2abc] WARNING: pred_global_rots is None!")
+                            
+                            pred_kp_2d = output.get("pred_keypoints_2d")
+                            if pred_kp_2d is not None:
+                                if hasattr(pred_kp_2d, 'shape'):
+                                    print(f"[SAM3DBody2abc] pred_keypoints_2d shape: {pred_kp_2d.shape}")
+                                    # Print first few 2D keypoints to verify they're in image space
+                                    kp_np = pred_kp_2d.cpu().numpy() if hasattr(pred_kp_2d, 'cpu') else np.array(pred_kp_2d)
+                                    print(f"[SAM3DBody2abc] First 5 2D keypoints: {kp_np[:5]}")
+                            else:
+                                print(f"[SAM3DBody2abc] WARNING: pred_keypoints_2d is None!")
+                            
+                            bbox = output.get("bbox")
+                            if bbox is not None:
+                                print(f"[SAM3DBody2abc] Detection bbox: {bbox}")
                         
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
                             "joint_coords": to_numpy(output.get("pred_joint_coords")),
                             "joint_rotations": to_numpy(output.get("pred_global_rots")),  # Per-joint rotations!
+                            "pred_keypoints_2d": to_numpy(output.get("pred_keypoints_2d")),  # 2D keypoints for overlay
                             "pred_cam_t": to_numpy(output.get("pred_cam_t")),
                             "focal_length": focal_length,
                             "global_rot": to_numpy(output.get("global_rot")),  # Keep for compatibility
+                            "bbox": to_numpy(output.get("bbox")),  # Store bbox for debugging
                         }
                         
                         debug_images.append(img_tensor)

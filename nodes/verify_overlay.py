@@ -29,13 +29,13 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     """
     Project 3D points to 2D using SAM3DBody's camera model.
     
-    SAM3DBody uses weak perspective projection:
-    - cam_t = [tx, ty, tz] where tz is depth/scale
-    - Mesh is in camera space, offset by cam_t
-    - 180 degree X rotation applied
+    SAM3DBody uses a perspective camera model:
+    - Mesh vertices are in a normalized space
+    - cam_t = [tx, ty, tz] provides translation
+    - The renderer applies: flip X of cam_t, then 180° rotation around X
     
     Args:
-        points_3d: (N, 3) array of 3D points
+        points_3d: (N, 3) array of 3D points (vertices or joints)
         focal_length: focal length in pixels
         cam_t: camera translation [tx, ty, tz]
         image_width, image_height: image dimensions
@@ -46,32 +46,33 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     points_3d = np.array(points_3d)
     cam_t = np.array(cam_t)
     
-    # Apply camera translation
-    # SAM3DBody flips X in camera translation
+    # Camera center
+    cx = image_width / 2.0
+    cy = image_height / 2.0
+    
+    # SAM3DBody camera model (from renderer.py):
+    # 1. camera_translation[0] *= -1 (flip X)
+    # 2. Apply 180° rotation around X axis to mesh
+    # 3. Then add camera translation
+    
     camera_translation = cam_t.copy()
     camera_translation[0] *= -1.0
     
-    # Apply 180 degree rotation around X axis (same as renderer)
-    # This flips Y and Z
+    # Apply 180° X rotation: (x, y, z) -> (x, -y, -z)
     points_rotated = points_3d.copy()
     points_rotated[:, 1] *= -1
     points_rotated[:, 2] *= -1
     
     # Add camera translation
-    points_translated = points_rotated + camera_translation
+    points_cam = points_rotated + camera_translation
     
     # Perspective projection
-    # x_2d = fx * X / Z + cx
-    # y_2d = fy * Y / Z + cy
-    cx = image_width / 2.0
-    cy = image_height / 2.0
+    z = points_cam[:, 2]
+    # Ensure positive Z (in front of camera)
+    z = np.maximum(z, 0.001)
     
-    # Avoid division by zero
-    z = points_translated[:, 2]
-    z = np.where(np.abs(z) < 1e-6, 1e-6, z)
-    
-    x_2d = focal_length * points_translated[:, 0] / z + cx
-    y_2d = focal_length * points_translated[:, 1] / z + cy
+    x_2d = focal_length * points_cam[:, 0] / z + cx
+    y_2d = focal_length * points_cam[:, 1] / z + cy
     
     return np.stack([x_2d, y_2d], axis=1)
 
@@ -217,18 +218,33 @@ class VerifyOverlay:
         # Create overlay layer
         overlay = img_bgr.copy()
         
+        # Debug: print mesh_data keys
+        print(f"[VerifyOverlay] mesh_data keys: {list(mesh_data.keys())}")
+        
         # Get projection parameters
         focal_length = mesh_data.get("focal_length")
         cam_t = to_numpy(mesh_data.get("camera"))
         
+        # Also check for 2D keypoints (more reliable if available)
+        keypoints_2d = to_numpy(mesh_data.get("pred_keypoints_2d"))
+        
+        if keypoints_2d is not None:
+            print(f"[VerifyOverlay] Using pred_keypoints_2d directly (shape: {keypoints_2d.shape})")
+        
         if focal_length is None or cam_t is None:
-            return (image, "Error: Missing camera parameters (focal_length or camera)")
+            if keypoints_2d is None:
+                return (image, "Error: Missing camera parameters (focal_length or camera) and no pred_keypoints_2d")
         
         # Handle focal length format
-        if isinstance(focal_length, (list, tuple, np.ndarray)):
-            focal_length = float(focal_length[0]) if len(focal_length) > 0 else float(focal_length)
+        if focal_length is not None:
+            if isinstance(focal_length, (list, tuple, np.ndarray)):
+                focal_length = float(focal_length[0]) if len(focal_length) > 0 else float(focal_length)
         
-        info_parts = [f"Image: {w}x{h}", f"Focal: {focal_length:.1f}px", f"cam_t: [{cam_t[0]:.2f}, {cam_t[1]:.2f}, {cam_t[2]:.2f}]"]
+        info_parts = [f"Image: {w}x{h}"]
+        if focal_length is not None:
+            info_parts.append(f"Focal: {focal_length:.1f}px")
+        if cam_t is not None:
+            info_parts.append(f"cam_t: [{cam_t[0]:.2f}, {cam_t[1]:.2f}, {cam_t[2]:.2f}]")
         
         # Get colors
         joint_bgr = self._get_color(joint_color)
@@ -239,17 +255,34 @@ class VerifyOverlay:
         joint_coords = to_numpy(mesh_data.get("joint_coords"))
         joints_2d = None
         
-        if joint_coords is not None and (show_joints or show_skeleton):
-            joints_2d = project_points_to_2d(joint_coords, focal_length, cam_t, w, h)
-            info_parts.append(f"Joints: {len(joint_coords)}")
-            
+        if show_joints or show_skeleton:
+            # Prefer 2D keypoints if available (already in image coordinates)
+            if keypoints_2d is not None:
+                # pred_keypoints_2d might be (N, 2) or (N, 3) with confidence
+                if keypoints_2d.ndim == 2:
+                    joints_2d = keypoints_2d[:, :2] if keypoints_2d.shape[1] >= 2 else keypoints_2d
+                else:
+                    joints_2d = keypoints_2d
+                info_parts.append(f"Keypoints2D: {len(joints_2d)}")
+            elif joint_coords is not None and focal_length is not None and cam_t is not None:
+                # Fall back to projecting 3D joints
+                joints_2d = project_points_to_2d(joint_coords, focal_length, cam_t, w, h)
+                info_parts.append(f"Joints3D→2D: {len(joint_coords)}")
+                
+                # Debug: print some joint positions
+                print(f"[VerifyOverlay] First 5 joints 3D: {joint_coords[:5]}")
+                print(f"[VerifyOverlay] First 5 joints 2D: {joints_2d[:5]}")
+                print(f"[VerifyOverlay] cam_t: {cam_t}, focal: {focal_length}")
+        
+        if joints_2d is not None:
             if show_joints:
-                for i, (x, y) in enumerate(joints_2d):
+                for i, pt in enumerate(joints_2d):
+                    x, y = int(pt[0]), int(pt[1])
                     if 0 <= x < w and 0 <= y < h:
-                        cv2.circle(overlay, (int(x), int(y)), joint_radius, joint_bgr, -1)
+                        cv2.circle(overlay, (x, y), joint_radius, joint_bgr, -1)
                         # Draw joint index for first few joints
                         if i < 20:
-                            cv2.putText(overlay, str(i), (int(x)+5, int(y)-5), 
+                            cv2.putText(overlay, str(i), (x+5, y-5), 
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
             
             if show_skeleton and len(joints_2d) > 15:
@@ -268,7 +301,7 @@ class VerifyOverlay:
             vertices = to_numpy(mesh_data.get("vertices"))
             faces = to_numpy(mesh_data.get("faces"))
             
-            if vertices is not None and faces is not None:
+            if vertices is not None and faces is not None and focal_length is not None and cam_t is not None:
                 verts_2d = project_points_to_2d(vertices, focal_length, cam_t, w, h)
                 info_parts.append(f"Vertices: {len(vertices)}, Faces: {len(faces)}")
                 
@@ -302,78 +335,185 @@ class VerifyOverlay:
 
 class VerifyOverlayBatch:
     """
-    Create verification overlay for a batch/sequence of frames.
-    Useful for checking alignment across video frames.
+    Create verification overlay for ALL frames in a sequence.
+    Outputs a video/batch of overlay images.
     """
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                "image": ("IMAGE", {
-                    "tooltip": "Current frame image"
+                "images": ("IMAGE", {
+                    "tooltip": "All video frames (batch)"
                 }),
                 "mesh_sequence": ("MESH_SEQUENCE", {
                     "tooltip": "Accumulated mesh sequence"
                 }),
-                "frame_index": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "tooltip": "Frame index to visualize"
-                }),
             },
             "optional": {
                 "show_joints": ("BOOLEAN", {"default": True}),
+                "show_skeleton": ("BOOLEAN", {"default": True}),
                 "show_mesh": ("BOOLEAN", {"default": False}),
                 "joint_radius": ("INT", {"default": 5, "min": 1, "max": 20}),
+                "line_thickness": ("INT", {"default": 2, "min": 1, "max": 10}),
+                "joint_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "green"}),
+                "skeleton_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "cyan"}),
             }
         }
     
     RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("overlay_image", "info")
-    FUNCTION = "create_overlay"
+    RETURN_NAMES = ("overlay_images", "info")
+    FUNCTION = "create_overlay_batch"
     CATEGORY = "SAM3DBody2abc/Debug"
     
-    def create_overlay(
+    def _get_color(self, color_name):
+        """Convert color name to BGR tuple."""
+        colors = {
+            "red": (0, 0, 255),
+            "green": (0, 255, 0),
+            "blue": (255, 0, 0),
+            "yellow": (0, 255, 255),
+            "cyan": (255, 255, 0),
+            "magenta": (255, 0, 255),
+            "white": (255, 255, 255),
+        }
+        return colors.get(color_name, (0, 255, 0))
+    
+    def create_overlay_batch(
         self,
-        image,
+        images: torch.Tensor,
         mesh_sequence: Dict,
-        frame_index: int = 0,
         show_joints: bool = True,
+        show_skeleton: bool = True,
         show_mesh: bool = False,
         joint_radius: int = 5,
+        line_thickness: int = 2,
+        joint_color: str = "green",
+        skeleton_color: str = "cyan",
     ) -> Tuple[Any, str]:
-        """Create overlay from mesh sequence."""
+        """Create overlay for all frames."""
         
         frames = mesh_sequence.get("frames", {})
-        if frame_index not in frames:
-            return (image, f"Error: Frame {frame_index} not in sequence")
+        faces = mesh_sequence.get("faces")
         
-        frame = frames[frame_index]
+        if not frames:
+            return (images, "Error: No frames in mesh_sequence")
         
-        # Build mesh_data dict from frame
-        # Handle numpy array boolean check properly
-        pred_cam_t = frame.get("pred_cam_t")
-        if pred_cam_t is None:
-            pred_cam_t = frame.get("camera")
+        # Get colors
+        joint_bgr = self._get_color(joint_color)
+        skeleton_bgr = self._get_color(skeleton_color)
         
-        mesh_data = {
-            "vertices": frame.get("vertices"),
-            "joint_coords": frame.get("joint_coords"),
-            "camera": pred_cam_t,
-            "focal_length": frame.get("focal_length"),
-            "faces": mesh_sequence.get("faces"),
-        }
+        # Convert images to numpy
+        if isinstance(images, torch.Tensor):
+            images_np = images.cpu().numpy()
+        else:
+            images_np = np.array(images)
         
-        # Use the single frame overlay
-        overlay_node = VerifyOverlay()
-        return overlay_node.create_overlay(
-            image, mesh_data,
-            show_joints=show_joints,
-            show_skeleton=True,
-            show_mesh=show_mesh,
-            joint_radius=joint_radius,
-        )
+        num_images = images_np.shape[0]
+        h, w = images_np.shape[1], images_np.shape[2]
+        
+        print(f"[VerifyOverlayBatch] Processing {num_images} images, {len(frames)} frames in sequence")
+        
+        # Get sorted frame indices
+        sorted_frame_indices = sorted(frames.keys())
+        
+        result_frames = []
+        
+        for img_idx in range(num_images):
+            img_np = images_np[img_idx]
+            img_bgr = (img_np * 255).astype(np.uint8)
+            if img_bgr.shape[2] == 3:
+                img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_RGB2BGR)
+            
+            overlay = img_bgr.copy()
+            
+            # Find corresponding frame in mesh_sequence
+            # Try to match by index or use closest available
+            frame_idx = img_idx
+            if frame_idx not in frames:
+                # Find closest frame index
+                if sorted_frame_indices:
+                    frame_idx = min(sorted_frame_indices, key=lambda x: abs(x - img_idx))
+            
+            if frame_idx in frames:
+                frame = frames[frame_idx]
+                
+                # Debug first frame
+                if img_idx == 0:
+                    print(f"[VerifyOverlayBatch] Frame keys: {list(frame.keys())}")
+                
+                # Draw bounding box if available (helps debug detection)
+                bbox = frame.get("bbox")
+                if bbox is not None:
+                    bbox = np.array(bbox).flatten()
+                    if len(bbox) >= 4:
+                        x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                        cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Yellow bbox
+                        cv2.putText(overlay, "Detection", (x1, y1-5), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                        if img_idx == 0:
+                            print(f"[VerifyOverlayBatch] Detection bbox: [{x1}, {y1}, {x2}, {y2}]")
+                elif img_idx == 0:
+                    print(f"[VerifyOverlayBatch] No bbox in frame data")
+                
+                # Get 2D keypoints if available (most reliable)
+                keypoints_2d = frame.get("pred_keypoints_2d")
+                joint_coords = frame.get("joint_coords")
+                focal_length = frame.get("focal_length")
+                cam_t = frame.get("pred_cam_t")
+                if cam_t is None:
+                    cam_t = frame.get("camera")
+                
+                joints_2d = None
+                
+                if keypoints_2d is not None:
+                    # Use 2D keypoints directly
+                    keypoints_2d = np.array(keypoints_2d)
+                    if keypoints_2d.ndim == 2:
+                        joints_2d = keypoints_2d[:, :2] if keypoints_2d.shape[1] >= 2 else keypoints_2d
+                    if img_idx == 0:
+                        print(f"[VerifyOverlayBatch] Using pred_keypoints_2d: {joints_2d.shape}")
+                
+                elif joint_coords is not None and focal_length is not None and cam_t is not None:
+                    # Project 3D to 2D
+                    joint_coords = np.array(joint_coords)
+                    cam_t = np.array(cam_t)
+                    joints_2d = project_points_to_2d(joint_coords, focal_length, cam_t, w, h)
+                    if img_idx == 0:
+                        print(f"[VerifyOverlayBatch] Projecting 3D joints: focal={focal_length}, cam_t={cam_t}")
+                
+                # Draw joints
+                if joints_2d is not None:
+                    if show_joints:
+                        for i, pt in enumerate(joints_2d):
+                            x, y = int(pt[0]), int(pt[1])
+                            if 0 <= x < w and 0 <= y < h:
+                                cv2.circle(overlay, (x, y), joint_radius, joint_bgr, -1)
+                                if i < 20:
+                                    cv2.putText(overlay, str(i), (x+5, y-5), 
+                                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                    
+                    if show_skeleton and len(joints_2d) > 15:
+                        for (i, j) in SKELETON_CONNECTIONS:
+                            if i < len(joints_2d) and j < len(joints_2d):
+                                pt1 = (int(joints_2d[i][0]), int(joints_2d[i][1]))
+                                pt2 = (int(joints_2d[j][0]), int(joints_2d[j][1]))
+                                if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
+                                    0 <= pt2[0] < w and 0 <= pt2[1] < h):
+                                    cv2.line(overlay, pt1, pt2, skeleton_bgr, line_thickness)
+            
+            # Convert back to RGB
+            result_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+            result_float = result_rgb.astype(np.float32) / 255.0
+            result_frames.append(result_float)
+        
+        # Stack all frames
+        result_batch = torch.from_numpy(np.stack(result_frames, axis=0))
+        
+        info = f"Processed {num_images} frames with {len(frames)} mesh frames"
+        print(f"[VerifyOverlayBatch] {info}")
+        
+        return (result_batch, info)
 
 
 # Node registration
