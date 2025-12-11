@@ -4,6 +4,12 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
 
 ## Features
 
+### Verification Overlay (v3.1.0)
+- **🔍 Verify Overlay** - Project 3D mesh/skeleton back onto original image
+- Helps verify the correct person is being tracked (not mixing with others)
+- Shows joint positions and skeleton connections overlaid on the image
+- Optional mesh wireframe visualization
+
 ### Export Formats
 - **FBX** - Blend shapes for mesh animation, widely compatible
 - **Alembic (.abc)** - Vertex cache for mesh animation, cleaner Maya workflow
@@ -49,6 +55,19 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
 4. **Export** → Export Animated FBX
 
 ### Export Settings
+
+#### Verifying Correct Person Tracking
+Use the **🔍 Verify Overlay** node to check if SAM3DBody is tracking the correct person:
+
+1. Connect your original image and `mesh_data` output to the Verify Overlay node
+2. The output shows joints projected onto the image
+3. If joints don't align with your masked person, the tracking may be mixed with another person
+
+Options:
+- `show_joints` - Draw joint positions as circles
+- `show_skeleton` - Draw skeleton connections between joints
+- `show_mesh` - Draw mesh wireframe (can be slow)
+- Colors and sizes are customizable
 
 #### Skeleton Mode
 - **Rotations (Recommended)**: Uses the 127 joint rotation matrices output by MHR (Meta's body model). Produces proper bone rotations that can be retargeted to other character rigs and edited in animation software.
@@ -119,6 +138,7 @@ root_locator (empty with translation keyframes)
 ## Changelog
 
 ### v3.1.0
+- **NEW**: 🔍 Verify Overlay node - project mesh/skeleton onto image for verification
 - **NEW**: Rotation-based skeleton animation using MHR joint rotation matrices
 - **NEW**: Proper hierarchical bone structure using `joint_parents` from MHR
 - Added `skeleton_mode` option: "Rotations (Recommended)" vs "Positions (Legacy)"
@@ -127,6 +147,7 @@ root_locator (empty with translation keyframes)
 - Global rotations converted to local for proper FK chain
 - Bone tails point toward children for better visualization
 - Quaternion interpolation in Blender for smooth animation
+- Fixed numpy array boolean check error with pred_cam_t
 
 ### v3.0.0
 - World translation modes (5 options)

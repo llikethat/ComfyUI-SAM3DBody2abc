@@ -125,31 +125,61 @@ class MeshDataAccumulator:
         
         # Debug: print what data we're receiving on first frame
         if frame_index == 0:
+            print(f"[Accumulator] === DEBUG: mesh_data contents ===")
             print(f"[Accumulator] mesh_data keys: {list(mesh_data.keys())}")
+            
+            # Check each relevant field
+            for key in ["joint_rotations", "joint_coords", "vertices", "camera", "focal_length"]:
+                val = mesh_data.get(key)
+                if val is None:
+                    print(f"[Accumulator]   {key}: None")
+                elif hasattr(val, 'shape'):
+                    print(f"[Accumulator]   {key}: tensor/array shape {val.shape}")
+                elif isinstance(val, list):
+                    print(f"[Accumulator]   {key}: list len={len(val)}")
+                else:
+                    print(f"[Accumulator]   {key}: {type(val).__name__} = {val}")
+            
+            # Check if there's a pose_params dict that might contain rotations
+            pose_params = mesh_data.get("pose_params")
+            if pose_params:
+                print(f"[Accumulator]   pose_params keys: {list(pose_params.keys())}")
+            
+            # Check raw_output which might have the rotations
+            raw_output = mesh_data.get("raw_output")
+            if raw_output:
+                print(f"[Accumulator]   raw_output keys: {list(raw_output.keys())}")
+                if "pred_global_rots" in raw_output:
+                    rots = raw_output["pred_global_rots"]
+                    if hasattr(rots, 'shape'):
+                        print(f"[Accumulator]   raw_output['pred_global_rots']: shape {rots.shape}")
+            
             if skeleton is not None:
                 print(f"[Accumulator] skeleton keys: {list(skeleton.keys())}")
-            
-            # Check joint_rotations in both
-            jr_mesh = mesh_data.get("joint_rotations")
-            jr_skel = skeleton.get("joint_rotations") if skeleton else None
-            
-            if jr_mesh is not None:
-                if hasattr(jr_mesh, 'shape'):
-                    print(f"[Accumulator] joint_rotations from mesh_data: shape {jr_mesh.shape}")
-                elif isinstance(jr_mesh, list):
-                    print(f"[Accumulator] joint_rotations from mesh_data: list with {len(jr_mesh)} elements")
-            elif jr_skel is not None:
-                if hasattr(jr_skel, 'shape'):
-                    print(f"[Accumulator] joint_rotations from skeleton: shape {jr_skel.shape}")
-                elif isinstance(jr_skel, list):
-                    print(f"[Accumulator] joint_rotations from skeleton: list with {len(jr_skel)} elements")
-            else:
-                print("[Accumulator] Warning: No joint_rotations found in mesh_data or skeleton")
+                jr_skel = skeleton.get("joint_rotations")
+                if jr_skel is not None:
+                    if hasattr(jr_skel, 'shape'):
+                        print(f"[Accumulator]   skeleton joint_rotations: shape {jr_skel.shape}")
+                    elif isinstance(jr_skel, list):
+                        print(f"[Accumulator]   skeleton joint_rotations: list len={len(jr_skel)}")
+            print(f"[Accumulator] === END DEBUG ===")
         
-        # Get joint_rotations - prefer mesh_data, fallback to skeleton
+        # Get joint_rotations - try multiple sources
         joint_rots = mesh_data.get("joint_rotations")
+        
+        # Fallback 1: try skeleton input
         if joint_rots is None and skeleton is not None:
             joint_rots = skeleton.get("joint_rotations")
+            if joint_rots is not None and frame_index == 0:
+                print(f"[Accumulator] Got joint_rotations from skeleton input")
+        
+        # Fallback 2: try raw_output
+        if joint_rots is None:
+            raw_output = mesh_data.get("raw_output")
+            if raw_output:
+                joint_rots = raw_output.get("pred_global_rots")
+                if joint_rots is not None and frame_index == 0:
+                    print(f"[Accumulator] Got joint_rotations from raw_output['pred_global_rots']")
         
         # Store per-frame data - including joint_rotations
         frame = {
@@ -160,6 +190,14 @@ class MeshDataAccumulator:
             "pred_cam_t": to_numpy(mesh_data.get("camera")),  # Alias for compatibility
             "focal_length": mesh_data.get("focal_length"),
         }
+        
+        if frame_index == 0:
+            print(f"[Accumulator] Stored frame keys: {list(frame.keys())}")
+            jr_stored = frame.get("joint_rotations")
+            if jr_stored is not None:
+                print(f"[Accumulator] Stored joint_rotations: shape {jr_stored.shape if hasattr(jr_stored, 'shape') else 'N/A'}")
+            else:
+                print(f"[Accumulator] WARNING: joint_rotations is None after all fallbacks!")
         seq["frames"][frame_index] = frame
         
         # Store shared data (first frame)
