@@ -257,17 +257,28 @@ class VideoBatchProcessor:
                             except Exception:
                                 pass
                         
-                        # Store frame data including camera
+                        # Store frame data including camera and rotations
                         focal_length = output.get("focal_length")
                         if focal_length is not None and hasattr(focal_length, 'item'):
                             focal_length = float(focal_length.item()) if hasattr(focal_length, 'item') else float(focal_length)
                         
+                        # Debug first frame
+                        if i == 0:
+                            print(f"[SAM3DBody2abc] First frame output keys: {list(output.keys())}")
+                            pred_global_rots = output.get("pred_global_rots")
+                            if pred_global_rots is not None:
+                                if hasattr(pred_global_rots, 'shape'):
+                                    print(f"[SAM3DBody2abc] pred_global_rots shape: {pred_global_rots.shape}")
+                            else:
+                                print(f"[SAM3DBody2abc] WARNING: pred_global_rots is None!")
+                        
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
                             "joint_coords": to_numpy(output.get("pred_joint_coords")),
+                            "joint_rotations": to_numpy(output.get("pred_global_rots")),  # Per-joint rotations!
                             "pred_cam_t": to_numpy(output.get("pred_cam_t")),
                             "focal_length": focal_length,
-                            "global_rot": to_numpy(output.get("global_rot")),
+                            "global_rot": to_numpy(output.get("global_rot")),  # Keep for compatibility
                         }
                         
                         debug_images.append(img_tensor)

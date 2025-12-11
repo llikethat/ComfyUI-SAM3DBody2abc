@@ -352,10 +352,15 @@ class VerifyOverlayBatch:
         frame = frames[frame_index]
         
         # Build mesh_data dict from frame
+        # Handle numpy array boolean check properly
+        pred_cam_t = frame.get("pred_cam_t")
+        if pred_cam_t is None:
+            pred_cam_t = frame.get("camera")
+        
         mesh_data = {
             "vertices": frame.get("vertices"),
             "joint_coords": frame.get("joint_coords"),
-            "camera": frame.get("pred_cam_t") or frame.get("camera"),
+            "camera": pred_cam_t,
             "focal_length": frame.get("focal_length"),
             "faces": mesh_sequence.get("faces"),
         }
