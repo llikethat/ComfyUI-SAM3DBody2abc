@@ -60,7 +60,7 @@ class MeshDataAccumulator:
     
     Stores once (from first frame):
     - faces
-    - joint_parents (hierarchy)
+    - joint_parents (hierarchy) - from skeleton output
     - mhr_path (for skinning weights)
     """
     
@@ -84,6 +84,9 @@ class MeshDataAccumulator:
                 }),
             },
             "optional": {
+                "skeleton": ("SKELETON", {
+                    "tooltip": "skeleton from SAM3DBody Process node (provides joint_parents hierarchy)"
+                }),
                 "reset": ("BOOLEAN", {
                     "default": False,
                 }),
@@ -104,6 +107,7 @@ class MeshDataAccumulator:
         mesh_data: Dict,
         sequence_id: str = "animation",
         frame_index: int = 0,
+        skeleton: Dict = None,
         reset: bool = False,
     ) -> Tuple[Dict, int, str]:
         """Accumulate mesh_data frame."""
@@ -119,11 +123,39 @@ class MeshDataAccumulator:
         
         seq = self._sequences[sequence_id]
         
-        # Store per-frame data - including joint_rotations now
+        # Debug: print what data we're receiving on first frame
+        if frame_index == 0:
+            print(f"[Accumulator] mesh_data keys: {list(mesh_data.keys())}")
+            if skeleton is not None:
+                print(f"[Accumulator] skeleton keys: {list(skeleton.keys())}")
+            
+            # Check joint_rotations in both
+            jr_mesh = mesh_data.get("joint_rotations")
+            jr_skel = skeleton.get("joint_rotations") if skeleton else None
+            
+            if jr_mesh is not None:
+                if hasattr(jr_mesh, 'shape'):
+                    print(f"[Accumulator] joint_rotations from mesh_data: shape {jr_mesh.shape}")
+                elif isinstance(jr_mesh, list):
+                    print(f"[Accumulator] joint_rotations from mesh_data: list with {len(jr_mesh)} elements")
+            elif jr_skel is not None:
+                if hasattr(jr_skel, 'shape'):
+                    print(f"[Accumulator] joint_rotations from skeleton: shape {jr_skel.shape}")
+                elif isinstance(jr_skel, list):
+                    print(f"[Accumulator] joint_rotations from skeleton: list with {len(jr_skel)} elements")
+            else:
+                print("[Accumulator] Warning: No joint_rotations found in mesh_data or skeleton")
+        
+        # Get joint_rotations - prefer mesh_data, fallback to skeleton
+        joint_rots = mesh_data.get("joint_rotations")
+        if joint_rots is None and skeleton is not None:
+            joint_rots = skeleton.get("joint_rotations")
+        
+        # Store per-frame data - including joint_rotations
         frame = {
             "vertices": to_numpy(mesh_data.get("vertices")),
             "joint_coords": to_numpy(mesh_data.get("joint_coords")),
-            "joint_rotations": to_numpy(mesh_data.get("joint_rotations")),
+            "joint_rotations": to_numpy(joint_rots),
             "camera": to_numpy(mesh_data.get("camera")),
             "pred_cam_t": to_numpy(mesh_data.get("camera")),  # Alias for compatibility
             "focal_length": mesh_data.get("focal_length"),
@@ -137,13 +169,22 @@ class MeshDataAccumulator:
         if seq["mhr_path"] is None:
             seq["mhr_path"] = mesh_data.get("mhr_path")
         
-        # Get joint parents from mesh_data
+        # Get joint parents - prefer from skeleton input, fallback to mesh_data
         if seq["joint_parents"] is None:
-            joint_rotations = mesh_data.get("joint_rotations")
-            if isinstance(joint_rotations, dict) and "joint_parents" in joint_rotations:
-                seq["joint_parents"] = to_numpy(joint_rotations["joint_parents"])
+            # First try skeleton input (correct source)
+            if skeleton is not None and skeleton.get("joint_parents") is not None:
+                seq["joint_parents"] = to_numpy(skeleton.get("joint_parents"))
+                print(f"[Accumulator] Got joint_parents from skeleton: {seq['joint_parents'].shape if hasattr(seq['joint_parents'], 'shape') else len(seq['joint_parents'])} joints")
+            # Fallback to mesh_data (in case it's there)
             elif mesh_data.get("joint_parents") is not None:
                 seq["joint_parents"] = to_numpy(mesh_data.get("joint_parents"))
+                print(f"[Accumulator] Got joint_parents from mesh_data")
+            # Legacy: check if joint_rotations is a dict with joint_parents
+            else:
+                joint_rotations = mesh_data.get("joint_rotations")
+                if isinstance(joint_rotations, dict) and "joint_parents" in joint_rotations:
+                    seq["joint_parents"] = to_numpy(joint_rotations["joint_parents"])
+                    print(f"[Accumulator] Got joint_parents from joint_rotations dict")
         
         # Build output
         mesh_sequence = {

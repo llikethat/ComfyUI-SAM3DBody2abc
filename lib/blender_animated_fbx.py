@@ -228,12 +228,14 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     return obj
 
 
-def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None):
+def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None):
     """
     Create animated skeleton using armature with ROTATION keyframes.
     
     This uses the true joint rotation matrices from MHR model.
     Produces proper bone rotations for retargeting and animation editing.
+    
+    joint_parents: Array where joint_parents[i] = parent index of joint i (-1 for root)
     """
     first_joints = all_frames[0].get("joint_coords")
     first_rotations = all_frames[0].get("joint_rotations")
@@ -244,7 +246,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     
     if not first_rotations:
         print("[Blender] No joint_rotations available, falling back to position-based skeleton")
-        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
+        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents)
     
     num_joints = len(first_joints)
     print(f"[Blender] Creating rotation-based armature with {num_joints} bones...")
@@ -266,10 +268,10 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
         first_cam_t = all_frames[0].get("pred_cam_t")
         first_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
     
-    # Enter edit mode to create bones
+    # Enter edit mode to create bones WITH HIERARCHY
     bpy.ops.object.mode_set(mode='EDIT')
     
-    bones = []
+    edit_bones = []
     for i in range(num_joints):
         bone = arm_data.edit_bones.new(f"joint_{i:03d}")
         pos = first_joints[i]
@@ -279,9 +281,36 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             head_pos += first_offset
         
         bone.head = head_pos
-        # Small tail offset pointing up in local space
+        # Tail will be adjusted after hierarchy is set
         bone.tail = head_pos + Vector((0, 0.03, 0))
-        bones.append(bone)
+        edit_bones.append(bone)
+    
+    # Set up parent-child hierarchy
+    if joint_parents is not None:
+        print(f"[Blender] Setting up bone hierarchy from joint_parents...")
+        roots = []
+        for i in range(num_joints):
+            parent_idx = joint_parents[i]
+            if parent_idx >= 0 and parent_idx < num_joints:
+                edit_bones[i].parent = edit_bones[parent_idx]
+                # Optionally connect bones if close enough
+                # edit_bones[i].use_connect = False
+            else:
+                roots.append(i)
+        print(f"[Blender] Found {len(roots)} root bone(s): {roots}")
+        
+        # Adjust bone tails to point toward first child (makes visualization better)
+        for i in range(num_joints):
+            children = [j for j in range(num_joints) if joint_parents[j] == i]
+            if children:
+                # Point tail toward average of children positions
+                child_positions = [edit_bones[c].head for c in children]
+                avg_child_pos = sum(child_positions, Vector((0, 0, 0))) / len(children)
+                direction = avg_child_pos - edit_bones[i].head
+                if direction.length > 0.001:
+                    edit_bones[i].tail = edit_bones[i].head + direction.normalized() * 0.05
+    else:
+        print("[Blender] Warning: No joint_parents data, creating flat hierarchy")
     
     bpy.ops.object.mode_set(mode='OBJECT')
     
@@ -294,6 +323,9 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
         pose_bone.rotation_mode = 'QUATERNION'
     
     print(f"[Blender] Animating {num_joints} bones with rotations over {len(all_frames)} frames...")
+    
+    # Pre-compute parent indices for faster lookup
+    parent_indices = joint_parents if joint_parents is not None else [-1] * num_joints
     
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
@@ -310,26 +342,39 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             frame_cam_t = frame_data.get("pred_cam_t")
             frame_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
+        # First pass: compute all global rotations in Blender space
+        global_rots_blender = []
+        for bone_idx in range(min(num_joints, len(rotations))):
+            rot_3x3 = rotations[bone_idx]
+            if rot_3x3 is None:
+                global_rots_blender.append(Matrix.Identity(3))
+            else:
+                blender_rot = transform_rotation_matrix(rot_3x3, up_axis)
+                global_rots_blender.append(blender_rot)
+        
+        # Second pass: convert global rotations to local rotations and apply
         for bone_idx in range(min(num_joints, len(joints), len(rotations))):
             pose_bone = armature.pose.bones[bone_idx]
             
-            # Get rotation matrix and transform to Blender space
-            rot_3x3 = rotations[bone_idx]
-            if rot_3x3 is None:
-                continue
+            global_rot = global_rots_blender[bone_idx]
             
-            # Transform rotation matrix from MHR to Blender coordinate system
-            blender_rot = transform_rotation_matrix(rot_3x3, up_axis)
+            # Convert global rotation to local rotation
+            parent_idx = parent_indices[bone_idx]
+            if parent_idx >= 0 and parent_idx < len(global_rots_blender):
+                # Local = Parent_global^-1 * Global
+                parent_global_rot = global_rots_blender[parent_idx]
+                local_rot = parent_global_rot.inverted() @ global_rot
+            else:
+                # Root bone: local = global
+                local_rot = global_rot
             
-            # Convert to quaternion
-            quat = blender_rot.to_quaternion()
-            
-            # Apply rotation
+            # Convert to quaternion and apply
+            quat = local_rot.to_quaternion()
             pose_bone.rotation_quaternion = quat
             pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame_idx)
             
-            # Also update location for world translation modes
-            if world_translation_mode == "baked":
+            # Also update location for world translation modes (root bone only typically)
+            if world_translation_mode == "baked" and parent_idx < 0:
                 pos = joints[bone_idx]
                 target = Vector(transform_func(pos)) + frame_offset
                 rest_head = Vector(armature.data.bones[bone_idx].head_local)
@@ -341,11 +386,11 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (rotations)")
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created rotation-based skeleton with {num_joints} bones")
+    print(f"[Blender] Created hierarchical skeleton with {num_joints} bones")
     return armature
 
 
-def create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None):
+def create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None):
     """
     Create animated skeleton using armature with POSITION keyframes.
     
@@ -376,10 +421,10 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
         first_cam_t = all_frames[0].get("pred_cam_t")
         first_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
     
-    # Enter edit mode to create bones
+    # Enter edit mode to create bones WITH HIERARCHY
     bpy.ops.object.mode_set(mode='EDIT')
     
-    bones = []
+    edit_bones = []
     for i in range(num_joints):
         bone = arm_data.edit_bones.new(f"joint_{i:03d}")
         pos = first_joints[i]
@@ -390,7 +435,31 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
         
         bone.head = head_pos
         bone.tail = head_pos + Vector((0, 0.03, 0))
-        bones.append(bone)
+        edit_bones.append(bone)
+    
+    # Set up parent-child hierarchy
+    if joint_parents is not None:
+        print(f"[Blender] Setting up bone hierarchy from joint_parents...")
+        roots = []
+        for i in range(num_joints):
+            parent_idx = joint_parents[i]
+            if parent_idx >= 0 and parent_idx < num_joints:
+                edit_bones[i].parent = edit_bones[parent_idx]
+            else:
+                roots.append(i)
+        print(f"[Blender] Found {len(roots)} root bone(s): {roots}")
+        
+        # Adjust bone tails to point toward first child
+        for i in range(num_joints):
+            children = [j for j in range(num_joints) if joint_parents[j] == i]
+            if children:
+                child_positions = [edit_bones[c].head for c in children]
+                avg_child_pos = sum(child_positions, Vector((0, 0, 0))) / len(children)
+                direction = avg_child_pos - edit_bones[i].head
+                if direction.length > 0.001:
+                    edit_bones[i].tail = edit_bones[i].head + direction.normalized() * 0.05
+    else:
+        print("[Blender] Warning: No joint_parents data, creating flat hierarchy")
     
     bpy.ops.object.mode_set(mode='OBJECT')
     
@@ -438,18 +507,20 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
     return armature
 
 
-def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations"):
+def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations", joint_parents=None):
     """
     Create animated skeleton - dispatcher function.
     
     skeleton_mode:
     - "rotations": Use true joint rotation matrices from MHR (recommended)
     - "positions": Use joint positions only (legacy)
+    
+    joint_parents: Array defining bone hierarchy
     """
     if skeleton_mode == "rotations":
-        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
+        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents)
     else:
-        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator)
+        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents)
 
 
 def create_root_locator(all_frames, fps, up_axis):
@@ -707,6 +778,7 @@ def main():
     fps = data.get("fps", 24.0)
     frames = data.get("frames", [])
     faces = data.get("faces")
+    joint_parents = data.get("joint_parents")  # Get hierarchy data
     sensor_width = data.get("sensor_width", 36.0)
     world_translation_mode = data.get("world_translation_mode", "none")
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
@@ -715,6 +787,7 @@ def main():
     print(f"[Blender] Sensor width: {sensor_width}mm")
     print(f"[Blender] World translation mode: {world_translation_mode}")
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
+    print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
         print("[Blender] Error: No frames")
@@ -751,8 +824,8 @@ def main():
         if world_translation_mode == "root" and root_locator and mesh_obj:
             mesh_obj.parent = root_locator
     
-    # Create skeleton (armature with bones)
-    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode)
+    # Create skeleton (armature with bones and hierarchy)
+    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

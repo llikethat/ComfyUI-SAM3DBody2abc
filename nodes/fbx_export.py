@@ -219,13 +219,31 @@ class ExportAnimatedFBX:
         # Map skeleton_mode option
         use_rotations = "Rotations" in skeleton_mode
         
-        # Check if rotation data is available
+        # Check if rotation data is available (handle numpy arrays properly)
         first_frame = frames[sorted_indices[0]]
-        has_rotations = first_frame.get("joint_rotations") is not None
+        joint_rots = first_frame.get("joint_rotations")
+        
+        # Debug: print what data we have
+        print(f"[Export] First frame keys: {list(first_frame.keys())}")
+        print(f"[Export] joint_rotations type: {type(joint_rots)}")
+        if joint_rots is not None:
+            if isinstance(joint_rots, np.ndarray):
+                print(f"[Export] joint_rotations shape: {joint_rots.shape}, size: {joint_rots.size}")
+            elif isinstance(joint_rots, list):
+                print(f"[Export] joint_rotations is list with {len(joint_rots)} elements")
+        
+        has_rotations = joint_rots is not None
+        if has_rotations and isinstance(joint_rots, np.ndarray):
+            has_rotations = joint_rots.size > 0
+        elif has_rotations and isinstance(joint_rots, list):
+            has_rotations = len(joint_rots) > 0
         
         if use_rotations and not has_rotations:
             print("[Export] Warning: Rotation mode requested but no rotation data available. Falling back to positions.")
+            print("[Export] Note: Make sure you're using a recent version of ComfyUI-SAM3DBody that outputs joint_rotations.")
             use_rotations = False
+        else:
+            print(f"[Export] Rotation data available: {has_rotations}, using rotations: {use_rotations}")
         
         # Build JSON for Blender
         export_data = {
@@ -241,10 +259,16 @@ class ExportAnimatedFBX:
         
         for idx in sorted_indices:
             frame = frames[idx]
+            
+            # Handle pred_cam_t vs camera field (can't use 'or' with numpy arrays)
+            pred_cam_t = frame.get("pred_cam_t")
+            if pred_cam_t is None:
+                pred_cam_t = frame.get("camera")
+            
             frame_data = {
                 "frame_index": idx,
                 "joint_coords": to_list(frame.get("joint_coords")),
-                "pred_cam_t": to_list(frame.get("pred_cam_t") or frame.get("camera")),
+                "pred_cam_t": to_list(pred_cam_t),
                 "focal_length": frame.get("focal_length"),
             }
             if include_mesh:

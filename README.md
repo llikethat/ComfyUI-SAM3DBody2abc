@@ -44,6 +44,8 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
 1. **Load Model** → SAM 3D Body: Load Model
 2. **Process Frames** → SAM 3D Body: Process Image (loop over video frames)
 3. **Accumulate** → Mesh Data Accumulator (collect frames into sequence)
+   - Connect `mesh_data` output
+   - Connect `skeleton` output (provides joint_parents hierarchy and rotations)
 4. **Export** → Export Animated FBX
 
 ### Export Settings
@@ -64,54 +66,67 @@ Choose how character movement through space is handled:
 ```
 SAM3DBody Process
     ↓
-mesh_data (SAM3D_OUTPUT)
-    - vertices: [N, 3] mesh vertices
-    - faces: [F, 3] face indices  
-    - joint_coords: [127, 3] joint positions
-    - joint_rotations: [127, 3, 3] rotation matrices  ← NEW in v3.1
-    - camera: [3] pred_cam_t (tx, ty, tz)
-    - focal_length: pixel focal length
-    ↓
-Mesh Data Accumulator
-    ↓
-MESH_SEQUENCE
-    ↓
-Export Animated FBX
-    ↓
-.fbx / .abc file
+mesh_data (SAM3D_OUTPUT)          skeleton (SKELETON)
+    - vertices: [N, 3]                - joint_positions: [127, 3]
+    - faces: [F, 3]                   - joint_rotations: [127, 3, 3]  ← rotations
+    - joint_coords: [127, 3]          - joint_parents: [127]  ← hierarchy
+    - joint_rotations: [127, 3, 3]    - pose_params, shape_params, etc.
+    - camera: [3] pred_cam_t
+    - focal_length
+    ↓                                 ↓
+    └──────────┬──────────────────────┘
+               ↓
+    Mesh Data Accumulator
+               ↓
+    MESH_SEQUENCE
+               ↓
+    Export Animated FBX
+               ↓
+    .fbx / .abc file
+```
+
+### Skeleton Hierarchy
+The exported armature uses proper parent-child bone relationships from MHR's `joint_parents` array:
+```
+Skeleton (Armature)
+└── joint_000 (root - pelvis)
+    ├── joint_001 (spine)
+    │   ├── joint_002 (chest)
+    │   │   └── joint_003 (neck)
+    │   │       └── joint_004 (head)
+    │   └── ...
+    ├── joint_010 (left hip)
+    │   └── joint_011 (left knee)
+    │       └── joint_012 (left ankle)
+    └── joint_015 (right hip)
+        └── ...
 ```
 
 ### Joint Rotation Data
 SAM3DBody uses Meta's MHR (Momentum Human Rig) body model internally. The `joint_rotations` output contains:
 - 127 joints with 3x3 rotation matrices
 - Global (world-space) rotations per joint
-- Quaternion conversion in Blender for smooth interpolation
-
-### Skeleton Structure
-```
-Skeleton (Armature)
-├── joint_000 (bone with rotation keyframes)
-├── joint_001
-├── ...
-└── joint_126
-```
+- Converted to local rotations using parent hierarchy
+- Quaternion interpolation in Blender for smooth animation
 
 For "Root Locator" mode:
 ```
 root_locator (empty with translation keyframes)
 └── Skeleton (Armature)
-    ├── joint_000
-    └── ...
+    └── (hierarchical bone structure as above)
 ```
 
 ## Changelog
 
 ### v3.1.0
 - **NEW**: Rotation-based skeleton animation using MHR joint rotation matrices
+- **NEW**: Proper hierarchical bone structure using `joint_parents` from MHR
 - Added `skeleton_mode` option: "Rotations (Recommended)" vs "Positions (Legacy)"
-- Accumulator now stores `joint_rotations` per frame
-- Bones animate with quaternion rotation keyframes (smoother interpolation)
-- Better compatibility with retargeting tools
+- Added optional `skeleton` input to accumulator (provides joint_parents and rotations)
+- Bones are properly parented (child bones follow parent rotations)
+- Global rotations converted to local for proper FK chain
+- Bone tails point toward children for better visualization
+- Quaternion interpolation in Blender for smooth animation
 
 ### v3.0.0
 - World translation modes (5 options)
