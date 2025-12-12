@@ -77,20 +77,52 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     return np.stack([x_2d, y_2d], axis=1)
 
 
-# Define skeleton connections for visualization (based on common body keypoints)
-# These are approximate - actual MHR skeleton may differ
-SKELETON_CONNECTIONS = [
-    # Spine
-    (0, 1), (1, 2), (2, 3),
-    # Left arm
-    (2, 4), (4, 5), (5, 6),
-    # Right arm  
-    (2, 7), (7, 8), (8, 9),
-    # Left leg
-    (0, 10), (10, 11), (11, 12),
-    # Right leg
-    (0, 13), (13, 14), (14, 15),
+# Define key body joint indices for MHR model visualization
+# These are approximate mappings for the main body landmarks
+MHR_KEY_JOINTS = {
+    'pelvis': 0,
+    'spine1': 1,
+    'spine2': 2, 
+    'spine3': 3,
+    'neck': 4,
+    'head': 5,
+    'left_shoulder': 6,
+    'left_elbow': 7,
+    'left_wrist': 8,
+    'right_shoulder': 9,
+    'right_elbow': 10,
+    'right_wrist': 11,
+    'left_hip': 12,
+    'left_knee': 13,
+    'left_ankle': 14,
+    'right_hip': 15,
+    'right_knee': 16,
+    'right_ankle': 17,
+}
+
+# Fallback skeleton connections if joint_parents not available
+FALLBACK_SKELETON_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4), (4, 5),  # Spine to head
+    (3, 6), (6, 7), (7, 8),  # Left arm
+    (3, 9), (9, 10), (10, 11),  # Right arm
+    (0, 12), (12, 13), (13, 14),  # Left leg
+    (0, 15), (15, 16), (16, 17),  # Right leg
 ]
+
+
+def get_skeleton_connections(joint_parents):
+    """
+    Build skeleton connections from joint_parents array.
+    joint_parents[i] = parent index of joint i (-1 for root)
+    """
+    if joint_parents is None:
+        return FALLBACK_SKELETON_CONNECTIONS
+    
+    connections = []
+    for i, parent in enumerate(joint_parents):
+        if parent >= 0:
+            connections.append((int(parent), i))
+    return connections
 
 
 class VerifyOverlay:
@@ -395,9 +427,17 @@ class VerifyOverlayBatch:
         
         frames = mesh_sequence.get("frames", {})
         faces = mesh_sequence.get("faces")
+        joint_parents = mesh_sequence.get("joint_parents")
         
         if not frames:
             return (images, "Error: No frames in mesh_sequence")
+        
+        # Build skeleton connections from joint_parents
+        skeleton_connections = get_skeleton_connections(joint_parents)
+        if joint_parents is not None:
+            print(f"[VerifyOverlayBatch] Using {len(skeleton_connections)} skeleton connections from joint_parents")
+        else:
+            print(f"[VerifyOverlayBatch] Using fallback skeleton connections")
         
         # Get colors
         joint_bgr = self._get_color(joint_color)
@@ -494,13 +534,35 @@ class VerifyOverlayBatch:
                                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
                     
                     if show_skeleton and len(joints_2d) > 15:
-                        for (i, j) in SKELETON_CONNECTIONS:
+                        for (i, j) in skeleton_connections:
                             if i < len(joints_2d) and j < len(joints_2d):
                                 pt1 = (int(joints_2d[i][0]), int(joints_2d[i][1]))
                                 pt2 = (int(joints_2d[j][0]), int(joints_2d[j][1]))
                                 if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
                                     0 <= pt2[0] < w and 0 <= pt2[1] < h):
                                     cv2.line(overlay, pt1, pt2, skeleton_bgr, line_thickness)
+                
+                # Draw mesh wireframe if requested
+                if show_mesh:
+                    vertices = frame.get("vertices")
+                    if vertices is not None and faces is not None and focal_length is not None and cam_t is not None:
+                        vertices = np.array(vertices)
+                        cam_t_np = np.array(cam_t)
+                        verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h)
+                        
+                        # Draw subset of edges (every Nth face to avoid too dense)
+                        mesh_bgr = (0, 255, 255)  # Yellow mesh
+                        step = max(1, len(faces) // 300)  # Limit edges for performance
+                        for face_idx in range(0, len(faces), step):
+                            face = faces[face_idx]
+                            for k in range(3):
+                                vi, vj = int(face[k]), int(face[(k + 1) % 3])
+                                if vi < len(verts_2d) and vj < len(verts_2d):
+                                    pt1 = (int(verts_2d[vi][0]), int(verts_2d[vi][1]))
+                                    pt2 = (int(verts_2d[vj][0]), int(verts_2d[vj][1]))
+                                    if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
+                                        0 <= pt2[0] < w and 0 <= pt2[1] < h):
+                                        cv2.line(overlay, pt1, pt2, mesh_bgr, 1)
             
             # Convert back to RGB
             result_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)

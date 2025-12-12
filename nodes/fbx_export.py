@@ -118,10 +118,13 @@ class ExportAnimatedFBX:
                 "filename": ("STRING", {
                     "default": "animation",
                 }),
+            },
+            "optional": {
                 "fps": ("FLOAT", {
-                    "default": 24.0,
-                    "min": 1.0,
+                    "default": 0.0,
+                    "min": 0.0,
                     "max": 120.0,
+                    "tooltip": "FPS for animation (0 = use source fps from mesh_sequence)"
                 }),
                 "output_format": (["FBX", "ABC (Alembic)"], {
                     "default": "FBX",
@@ -139,8 +142,10 @@ class ExportAnimatedFBX:
                     "default": "None (Body at Origin)",
                     "tooltip": "How to handle character movement through world space"
                 }),
-            },
-            "optional": {
+                "flip_x": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Mirror/flip the animation on X axis"
+                }),
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include mesh with animation"
@@ -162,8 +167,8 @@ class ExportAnimatedFBX:
             }
         }
     
-    RETURN_TYPES = ("STRING", "STRING", "INT")
-    RETURN_NAMES = ("output_path", "status", "frame_count")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "FLOAT")
+    RETURN_NAMES = ("output_path", "status", "frame_count", "fps")
     FUNCTION = "export_fbx"
     CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
@@ -172,28 +177,34 @@ class ExportAnimatedFBX:
         self,
         mesh_sequence: Dict,
         filename: str = "animation",
-        fps: float = 24.0,
+        fps: float = 0.0,
         output_format: str = "FBX",
         up_axis: str = "Y",
         skeleton_mode: str = "Rotations (Recommended)",
         world_translation: str = "None (Body at Origin)",
+        flip_x: bool = False,
         include_mesh: bool = True,
         include_camera: bool = True,
         sensor_width: float = 36.0,
         output_dir: str = "",
-    ) -> Tuple[str, str, int]:
+    ) -> Tuple[str, str, int, float]:
         """Export to animated FBX or Alembic."""
+        
+        # Get fps from mesh_sequence if not specified (0 means use source)
+        if fps <= 0:
+            fps = mesh_sequence.get("fps", 24.0)
+            print(f"[Export] Using fps from source: {fps}")
         
         frames = mesh_sequence.get("frames", {})
         if not frames:
-            return ("", "Error: No frames", 0)
+            return ("", "Error: No frames", 0, fps)
         
         blender_path = find_blender()
         if not blender_path:
-            return ("", "Error: Blender not found", 0)
+            return ("", "Error: Blender not found", 0, fps)
         
         if not os.path.exists(BLENDER_SCRIPT):
-            return ("", f"Error: Script not found: {BLENDER_SCRIPT}", 0)
+            return ("", f"Error: Script not found: {BLENDER_SCRIPT}", 0, fps)
         
         if not output_dir:
             output_dir = folder_paths.get_output_directory()
@@ -262,6 +273,7 @@ class ExportAnimatedFBX:
             "sensor_width": sensor_width,
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
+            "flip_x": flip_x,
             "frames": [],
         }
         
@@ -320,10 +332,10 @@ class ExportAnimatedFBX:
             if result.returncode != 0:
                 error = result.stderr[:500] if result.stderr else "Unknown error"
                 print(f"[Export] Blender error: {error}")
-                return ("", f"Blender error: {error}", 0)
+                return ("", f"Blender error: {error}", 0, fps)
             
             if not os.path.exists(output_path):
-                return ("", f"Error: {format_name} not created", 0)
+                return ("", f"Error: {format_name} not created", 0, fps)
             
             status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis}, skeleton={skel_mode_str})"
             if not include_mesh:
@@ -332,12 +344,12 @@ class ExportAnimatedFBX:
                 status += " +camera"
             
             print(f"[Export] {status}")
-            return (output_path, status, len(sorted_indices))
+            return (output_path, status, len(sorted_indices), fps)
             
         except subprocess.TimeoutExpired:
-            return ("", "Error: Blender timed out", 0)
+            return ("", "Error: Blender timed out", 0, fps)
         except Exception as e:
-            return ("", f"Error: {str(e)}", 0)
+            return ("", f"Error: {str(e)}", 0, fps)
         finally:
             if os.path.exists(json_path):
                 os.unlink(json_path)

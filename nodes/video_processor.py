@@ -43,17 +43,21 @@ class VideoBatchProcessor:
                 "images": ("IMAGE", {}),
             },
             "optional": {
-                "mask": ("MASK", {
-                    "tooltip": "Single mask (MASK type)"
-                }),
                 "sam3_masks": ("SAM3_VIDEO_MASKS", {
                     "tooltip": "Masks from SAM3 Propagation"
                 }),
+                "fps": ("FLOAT", {
+                    "default": 24.0,
+                    "min": 1.0,
+                    "max": 120.0,
+                    "step": 0.01,
+                    "tooltip": "Source video FPS - passed through to export"
+                }),
                 "object_id": ("INT", {
-                    "default": 0,
+                    "default": 1,
                     "min": 0,
                     "max": 10,
-                    "tooltip": "Which object ID to use when sam3_masks is connected"
+                    "tooltip": "Which object ID to track (match obj_id in SAM3 Video Output)"
                 }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
@@ -86,8 +90,8 @@ class VideoBatchProcessor:
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING")
-    RETURN_NAMES = ("mesh_sequence", "debug_images", "frame_count", "status")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT")
+    RETURN_NAMES = ("mesh_sequence", "debug_images", "frame_count", "status", "fps")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc"
     
@@ -151,42 +155,59 @@ class VideoBatchProcessor:
         self,
         model: Dict,
         images: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
         sam3_masks: Optional[Any] = None,
-        object_id: int = 0,
+        fps: float = 24.0,
+        object_id: int = 1,
         bbox_threshold: float = 0.8,
         inference_type: str = "full",
         smoothing_strength: float = 0.5,
         start_frame: int = 0,
         end_frame: int = -1,
         skip_frames: int = 1,
-    ) -> Tuple[Dict, torch.Tensor, int, str]:
+    ) -> Tuple[Dict, torch.Tensor, int, str, float]:
         """Process video frames.
         
         Uses per-frame masks from SAM3 Propagation for character tracking.
         Each frame gets its own mask, allowing accurate tracking as the character moves.
-        
-        Accepts either:
-        - mask: Single MASK type (already selected object)
-        - sam3_masks: SAM3_VIDEO_MASKS from SAM3 Propagate - select by object_id
         """
         
         try:
             from sam_3d_body import SAM3DBodyEstimator
         except ImportError:
-            return ({}, images[:1], 0, "Error: SAM3DBody not installed")
+            return ({}, images[:1], 0, "Error: SAM3DBody not installed", fps)
         
         # Handle sam3_masks input - extract single object by ID
-        active_mask = mask
-        if sam3_masks is not None and mask is None:
+        active_mask = None
+        if sam3_masks is not None:
             print(f"[SAM3DBody2abc] Received sam3_masks, type: {type(sam3_masks).__name__}, extracting object_id={object_id}")
+            
+            # Debug: inspect the structure
+            if isinstance(sam3_masks, dict):
+                print(f"[SAM3DBody2abc] sam3_masks is dict with keys: {list(sam3_masks.keys())}")
+                for k, v in sam3_masks.items():
+                    if hasattr(v, 'shape'):
+                        print(f"[SAM3DBody2abc]   key={k}: tensor shape {v.shape}")
+                    elif isinstance(v, (list, tuple)):
+                        print(f"[SAM3DBody2abc]   key={k}: list/tuple len={len(v)}")
+                    else:
+                        print(f"[SAM3DBody2abc]   key={k}: type={type(v).__name__}")
             
             # Try to extract mask from various formats
             masks = sam3_masks
             
             if isinstance(masks, dict):
                 # Dict format: {obj_id: mask_tensor}
-                if object_id in masks:
+                # Check if it has a special structure with frame masks
+                if 'masks' in masks:
+                    # Nested structure: {'masks': tensor, 'scores': tensor, ...}
+                    inner_masks = masks['masks']
+                    if hasattr(inner_masks, 'shape'):
+                        print(f"[SAM3DBody2abc] Found nested 'masks' key with shape {inner_masks.shape}")
+                        if inner_masks.ndim >= 3:
+                            active_mask = inner_masks
+                
+                # Standard object_id lookup
+                elif object_id in masks:
                     active_mask = masks[object_id]
                     print(f"[SAM3DBody2abc] Extracted mask for object {object_id} from dict")
                 elif str(object_id) in masks:
@@ -194,11 +215,13 @@ class VideoBatchProcessor:
                     print(f"[SAM3DBody2abc] Extracted mask for object '{object_id}' from dict (string key)")
                 else:
                     print(f"[SAM3DBody2abc] Warning: object_id {object_id} not in masks dict. Available: {list(masks.keys())}")
-                    # Try first available key
-                    if masks:
-                        first_key = list(masks.keys())[0]
-                        active_mask = masks[first_key]
-                        print(f"[SAM3DBody2abc] Using first available key: {first_key}")
+                    # Try first available key that looks like mask data
+                    for key in masks.keys():
+                        val = masks[key]
+                        if hasattr(val, 'shape') and val.ndim >= 2:
+                            active_mask = val
+                            print(f"[SAM3DBody2abc] Using key '{key}' with shape {val.shape}")
+                            break
             elif isinstance(masks, (list, tuple)):
                 # List format: [mask_for_obj_0, mask_for_obj_1, ...]
                 if object_id < len(masks):
@@ -411,13 +434,14 @@ class VideoBatchProcessor:
             print(f"[SAM3DBody2abc] Applying smoothing...")
             frames = self._apply_smoothing(frames, smoothing_strength)
         
-        # Build output
+        # Build output - include fps for downstream nodes
         mesh_sequence = {
             "sequence_id": "batch",
             "frames": frames,
             "faces": faces,
             "joint_parents": joint_parents,
             "mhr_path": mhr_path,
+            "fps": fps,  # Pass through for export
         }
         
         if debug_images:
@@ -426,7 +450,7 @@ class VideoBatchProcessor:
             debug_batch = images[:1]
         
         valid = sum(1 for f in frames.values() if f.get("vertices") is not None)
-        status = f"Processed {valid}/{len(frame_indices)} frames"
+        status = f"Processed {valid}/{len(frame_indices)} frames at {fps} fps"
         print(f"[SAM3DBody2abc] {status}")
         
-        return (mesh_sequence, debug_batch, len(frame_indices), status)
+        return (mesh_sequence, debug_batch, len(frame_indices), status, fps)

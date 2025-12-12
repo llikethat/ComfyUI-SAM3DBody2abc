@@ -36,58 +36,68 @@ def clear_scene():
         bpy.data.cameras.remove(cam)
 
 
-def get_transform_for_axis(up_axis):
+def get_transform_for_axis(up_axis, flip_x=False):
     """
     Get coordinate transformation based on desired up axis.
     SAM3DBody uses: X-right, Y-up, Z-forward (OpenGL convention)
     
+    Args:
+        up_axis: Which axis should point up ("Y", "Z", "-Y", "-Z")
+        flip_x: If True, mirror the result on X axis (useful if animation appears flipped)
+    
     Returns: (flip_func, axis_forward, axis_up)
     """
+    # Base X multiplier - flip_x inverts this
+    x_mult = 1 if flip_x else -1
+    
     if up_axis == "Y":
-        return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
+        return lambda p: (x_mult * p[0], -p[1], -p[2]), '-Z', 'Y'
     elif up_axis == "Z":
-        return lambda p: (-p[0], -p[2], p[1]), 'Y', 'Z'
+        return lambda p: (x_mult * p[0], -p[2], p[1]), 'Y', 'Z'
     elif up_axis == "-Y":
-        return lambda p: (-p[0], p[1], p[2]), 'Z', '-Y'
+        return lambda p: (x_mult * p[0], p[1], p[2]), 'Z', '-Y'
     elif up_axis == "-Z":
-        return lambda p: (-p[0], p[2], -p[1]), '-Y', '-Z'
+        return lambda p: (x_mult * p[0], p[2], -p[1]), '-Y', '-Z'
     else:
-        return lambda p: (-p[0], -p[1], -p[2]), '-Z', 'Y'
+        return lambda p: (x_mult * p[0], -p[1], -p[2]), '-Z', 'Y'
 
 
-def get_rotation_transform_matrix(up_axis):
+def get_rotation_transform_matrix(up_axis, flip_x=False):
     """
     Get rotation transformation matrix for converting MHR rotations to Blender.
     """
+    # Base X multiplier for rotation matrix
+    x_mult = 1 if flip_x else -1
+    
     if up_axis == "Y":
         # Flip X, Y, Z -> mirror across origin
         return Matrix((
-            (-1, 0, 0),
+            (x_mult, 0, 0),
             (0, -1, 0),
             (0, 0, -1)
         ))
     elif up_axis == "Z":
         # X stays, Y<->Z swap with sign changes
         return Matrix((
-            (-1, 0, 0),
+            (x_mult, 0, 0),
             (0, 0, 1),
             (0, -1, 0)
         ))
     elif up_axis == "-Y":
         return Matrix((
-            (-1, 0, 0),
+            (x_mult, 0, 0),
             (0, 1, 0),
             (0, 0, 1)
         ))
     elif up_axis == "-Z":
         return Matrix((
-            (-1, 0, 0),
+            (x_mult, 0, 0),
             (0, 0, -1),
             (0, 1, 0)
         ))
     else:
         return Matrix((
-            (-1, 0, 0),
+            (x_mult, 0, 0),
             (0, -1, 0),
             (0, 0, -1)
         ))
@@ -109,8 +119,8 @@ def transform_rotation_matrix(rot_3x3, up_axis):
         (rot_3x3[2][0], rot_3x3[2][1], rot_3x3[2][2])
     ))
     
-    # Get transformation matrix
-    T = get_rotation_transform_matrix(up_axis)
+    # Get transformation matrix - flip_x is handled in the global FLIP_X variable set by main()
+    T = get_rotation_transform_matrix(up_axis, FLIP_X)
     
     # Transform: T * M * T^-1 (similarity transform)
     # This transforms the rotation from MHR coordinate system to Blender's
@@ -118,6 +128,10 @@ def transform_rotation_matrix(rot_3x3, up_axis):
     transformed = T @ m @ T_inv
     
     return transformed
+
+
+# Global flip_x setting (set by main)
+FLIP_X = False
 
 
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
@@ -782,11 +796,13 @@ def main():
     sensor_width = data.get("sensor_width", 36.0)
     world_translation_mode = data.get("world_translation_mode", "none")
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
+    flip_x = data.get("flip_x", False)  # Mirror on X axis
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Sensor width: {sensor_width}mm")
     print(f"[Blender] World translation mode: {world_translation_mode}")
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
+    print(f"[Blender] Flip X: {flip_x}")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -802,7 +818,9 @@ def main():
         skeleton_mode = "positions"
     
     # Get transformation
-    transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis)
+    global FLIP_X
+    FLIP_X = flip_x
+    transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis, flip_x)
     
     clear_scene()
     
