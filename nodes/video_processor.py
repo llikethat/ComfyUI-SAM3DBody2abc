@@ -46,14 +46,14 @@ class VideoBatchProcessor:
                 "mask": ("MASK", {
                     "tooltip": "Single mask (MASK type)"
                 }),
-                "masks": ("MASKS", {
-                    "tooltip": "Multiple masks from SAM3 Propagation (MASKS type)"
+                "masks_input": ("*", {
+                    "tooltip": "Multiple masks from SAM3 Propagation (any type - MASKS, VHS_MASKS, etc.)"
                 }),
                 "object_id": ("INT", {
                     "default": 0,
                     "min": 0,
                     "max": 10,
-                    "tooltip": "Which object ID to use when masks (plural) is connected"
+                    "tooltip": "Which object ID to use when masks_input is connected"
                 }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
@@ -90,6 +90,11 @@ class VideoBatchProcessor:
     RETURN_NAMES = ("mesh_sequence", "debug_images", "frame_count", "status")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc"
+    
+    # Allow any input type for masks_input
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
     
     def _compute_bbox_from_mask(self, mask_np):
         """Compute bbox [x1,y1,x2,y2] from mask."""
@@ -152,7 +157,7 @@ class VideoBatchProcessor:
         model: Dict,
         images: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        masks: Optional[torch.Tensor] = None,
+        masks_input: Optional[Any] = None,
         object_id: int = 0,
         bbox_threshold: float = 0.8,
         inference_type: str = "full",
@@ -168,7 +173,7 @@ class VideoBatchProcessor:
         
         Accepts either:
         - mask: Single MASK type (already selected object)
-        - masks: MASKS type from SAM3 Propagate (multiple objects, select by object_id)
+        - masks_input: Any type from SAM3 Propagate (MASKS, etc.) - select by object_id
         """
         
         try:
@@ -176,12 +181,14 @@ class VideoBatchProcessor:
         except ImportError:
             return ({}, images[:1], 0, "Error: SAM3DBody not installed")
         
-        # Handle masks input - extract single object by ID
+        # Handle masks_input - extract single object by ID
         active_mask = mask
-        if masks is not None and mask is None:
-            print(f"[SAM3DBody2abc] Received MASKS input, extracting object_id={object_id}")
-            # masks shape could be [num_frames, num_objects, H, W] or [num_objects, num_frames, H, W]
-            # or it could be a dict with object IDs as keys
+        if masks_input is not None and mask is None:
+            print(f"[SAM3DBody2abc] Received masks_input, type: {type(masks_input).__name__}, extracting object_id={object_id}")
+            
+            # Try to extract mask from various formats
+            masks = masks_input
+            
             if isinstance(masks, dict):
                 # Dict format: {obj_id: mask_tensor}
                 if object_id in masks:
@@ -189,8 +196,16 @@ class VideoBatchProcessor:
                     print(f"[SAM3DBody2abc] Extracted mask for object {object_id} from dict")
                 else:
                     print(f"[SAM3DBody2abc] Warning: object_id {object_id} not in masks dict. Available: {list(masks.keys())}")
+            elif isinstance(masks, (list, tuple)):
+                # List format: [mask_for_obj_0, mask_for_obj_1, ...]
+                if object_id < len(masks):
+                    active_mask = masks[object_id]
+                    if hasattr(active_mask, 'shape'):
+                        print(f"[SAM3DBody2abc] Extracted mask[{object_id}] from list -> shape {active_mask.shape}")
+                else:
+                    print(f"[SAM3DBody2abc] Warning: object_id {object_id} >= len(masks)={len(masks)}")
             elif isinstance(masks, torch.Tensor):
-                print(f"[SAM3DBody2abc] masks tensor shape: {masks.shape}")
+                print(f"[SAM3DBody2abc] masks tensor shape: {masks.shape}, ndim: {masks.ndim}")
                 # Try to extract the right object
                 if masks.ndim == 4:
                     # Could be [frames, objects, H, W] or [objects, frames, H, W]
@@ -208,9 +223,18 @@ class VideoBatchProcessor:
                     # [frames, H, W] - single object already
                     active_mask = masks
                     print(f"[SAM3DBody2abc] Using masks directly (single object): shape {active_mask.shape}")
+            elif hasattr(masks, 'masks'):
+                # Some custom object with .masks attribute
+                actual_masks = masks.masks
+                print(f"[SAM3DBody2abc] Found .masks attribute, type: {type(actual_masks).__name__}")
+                if isinstance(actual_masks, torch.Tensor) and actual_masks.ndim >= 3:
+                    active_mask = actual_masks
         
         if active_mask is not None:
-            print(f"[SAM3DBody2abc] Using mask with shape: {active_mask.shape if hasattr(active_mask, 'shape') else 'unknown'}")
+            if hasattr(active_mask, 'shape'):
+                print(f"[SAM3DBody2abc] Using mask with shape: {active_mask.shape}")
+            else:
+                print(f"[SAM3DBody2abc] Using mask of type: {type(active_mask).__name__}")
         else:
             print(f"[SAM3DBody2abc] No mask provided - will use auto-detection")
         
