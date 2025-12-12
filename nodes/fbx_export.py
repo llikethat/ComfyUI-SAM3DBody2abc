@@ -126,6 +126,12 @@ class ExportAnimatedFBX:
                     "max": 120.0,
                     "tooltip": "FPS for animation (0 = use source fps from mesh_sequence)"
                 }),
+                "frame_offset": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 1000,
+                    "tooltip": "Start frame in output (1 = start from frame 1 for Maya, 0 = start from frame 0)"
+                }),
                 "output_format": (["FBX", "ABC (Alembic)"], {
                     "default": "FBX",
                     "tooltip": "FBX: blend shapes, ABC: vertex cache (better for Maya)"
@@ -140,11 +146,11 @@ class ExportAnimatedFBX:
                 }),
                 "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Separate Track"], {
                     "default": "None (Body at Origin)",
-                    "tooltip": "How to handle character movement through world space"
+                    "tooltip": "How to handle world translation. Camera animation is disabled unless 'Baked into Camera' is selected."
                 }),
                 "flip_x": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Mirror/flip the animation on X axis"
+                    "tooltip": "Mirror/flip the animation on X axis (applies to mesh, skeleton, and root locator)"
                 }),
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
@@ -152,7 +158,7 @@ class ExportAnimatedFBX:
                 }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Include camera with focal length from SAM3DBody"
+                    "tooltip": "Include camera (static unless world_translation='Baked into Camera')"
                 }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
@@ -178,6 +184,7 @@ class ExportAnimatedFBX:
         mesh_sequence: Dict,
         filename: str = "animation",
         fps: float = 0.0,
+        frame_offset: int = 1,
         output_format: str = "FBX",
         up_axis: str = "Y",
         skeleton_mode: str = "Rotations (Recommended)",
@@ -194,6 +201,12 @@ class ExportAnimatedFBX:
         if fps <= 0:
             fps = mesh_sequence.get("fps", 24.0)
             print(f"[Export] Using fps from source: {fps}")
+        
+        # Determine if camera should be animated based on world_translation mode
+        # Camera animation only makes sense when translation is baked into camera
+        animate_camera = (world_translation == "Baked into Camera")
+        if include_camera and not animate_camera:
+            print(f"[Export] Camera will be static (world_translation={world_translation})")
         
         frames = mesh_sequence.get("frames", {})
         if not frames:
@@ -268,12 +281,14 @@ class ExportAnimatedFBX:
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
+            "frame_offset": frame_offset,
             "faces": to_list(mesh_sequence.get("faces")),
             "joint_parents": to_list(joint_parents),
             "sensor_width": sensor_width,
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
+            "animate_camera": animate_camera,
             "frames": [],
         }
         

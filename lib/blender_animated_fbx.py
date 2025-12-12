@@ -160,7 +160,7 @@ def get_world_offset_from_cam_t(pred_cam_t, up_axis):
         return Vector((-world_x, -world_y, 0))
 
 
-def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y"):
+def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):
     """
     Create mesh with per-vertex animation using shape keys.
     """
@@ -169,10 +169,10 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
         return None
     
     # Get first frame world offset for initial position
-    first_offset = Vector((0, 0, 0))
+    first_world_offset = Vector((0, 0, 0))
     if world_translation_mode == "baked":
         first_cam_t = all_frames[0].get("pred_cam_t")
-        first_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
+        first_world_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
     
     # Create mesh with first frame vertices
     mesh = bpy.data.meshes.new("body_mesh")
@@ -180,7 +180,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     for v in first_verts:
         pos = Vector(transform_func(v))
         if world_translation_mode == "baked":
-            pos += first_offset
+            pos += first_world_offset
         verts.append(pos)
     
     if faces:
@@ -194,15 +194,10 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     
-    # Set scene settings
-    bpy.context.scene.render.fps = int(fps)
-    bpy.context.scene.frame_start = 0
-    bpy.context.scene.frame_end = len(all_frames) - 1
-    
     # Add basis shape key
     basis = obj.shape_key_add(name="Basis", from_mix=False)
     
-    print(f"[Blender] Creating {len(all_frames)} shape keys (translation={world_translation_mode})...")
+    print(f"[Blender] Creating {len(all_frames)} shape keys (translation={world_translation_mode}, offset={frame_offset})...")
     
     # Create shape keys for each frame
     for frame_idx, frame_data in enumerate(all_frames):
@@ -211,10 +206,10 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
             continue
         
         # Get world offset for this frame
-        frame_offset = Vector((0, 0, 0))
+        frame_world_offset = Vector((0, 0, 0))
         if world_translation_mode == "baked":
             frame_cam_t = frame_data.get("pred_cam_t")
-            frame_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+            frame_world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
         sk = obj.shape_key_add(name=f"frame_{frame_idx:04d}", from_mix=False)
         
@@ -222,18 +217,19 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
             if j < len(sk.data):
                 pos = Vector(transform_func(v))
                 if world_translation_mode == "baked":
-                    pos += frame_offset
+                    pos += frame_world_offset
                 sk.data[j].co = pos
         
-        # Keyframe shape key value
+        # Keyframe shape key value with frame_offset
+        actual_frame = frame_idx + frame_offset
         sk.value = 0.0
-        sk.keyframe_insert(data_path="value", frame=max(0, frame_idx - 1))
+        sk.keyframe_insert(data_path="value", frame=max(frame_offset, actual_frame - 1))
         
         sk.value = 1.0
-        sk.keyframe_insert(data_path="value", frame=frame_idx)
+        sk.keyframe_insert(data_path="value", frame=actual_frame)
         
         sk.value = 0.0
-        sk.keyframe_insert(data_path="value", frame=min(len(all_frames) - 1, frame_idx + 1))
+        sk.keyframe_insert(data_path="value", frame=min(frame_offset + len(all_frames) - 1, actual_frame + 1))
         
         if (frame_idx + 1) % 50 == 0:
             print(f"[Blender] Shape keys: {frame_idx + 1}/{len(all_frames)}")
@@ -242,7 +238,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     return obj
 
 
-def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None):
+def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None, frame_offset=0):
     """
     Create animated skeleton using armature with ROTATION keyframes.
     
@@ -260,7 +256,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     
     if not first_rotations:
         print("[Blender] No joint_rotations available, falling back to position-based skeleton")
-        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents)
+        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset)
     
     num_joints = len(first_joints)
     print(f"[Blender] Creating rotation-based armature with {num_joints} bones...")
@@ -348,13 +344,14 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
         if not joints or not rotations:
             continue
         
-        bpy.context.scene.frame_set(frame_idx)
+        actual_frame = frame_idx + frame_offset
+        bpy.context.scene.frame_set(actual_frame)
         
         # Get world offset for this frame (for position updates)
-        frame_offset = Vector((0, 0, 0))
+        world_offset = Vector((0, 0, 0))
         if world_translation_mode == "baked":
             frame_cam_t = frame_data.get("pred_cam_t")
-            frame_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+            world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
         # First pass: compute all global rotations in Blender space
         global_rots_blender = []
@@ -385,26 +382,26 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             # Convert to quaternion and apply
             quat = local_rot.to_quaternion()
             pose_bone.rotation_quaternion = quat
-            pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame_idx)
+            pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=actual_frame)
             
             # Also update location for world translation modes (root bone only typically)
             if world_translation_mode == "baked" and parent_idx < 0:
                 pos = joints[bone_idx]
-                target = Vector(transform_func(pos)) + frame_offset
+                target = Vector(transform_func(pos)) + world_offset
                 rest_head = Vector(armature.data.bones[bone_idx].head_local)
                 offset = target - rest_head
                 pose_bone.location = offset
-                pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
+                pose_bone.keyframe_insert(data_path="location", frame=actual_frame)
         
         if (frame_idx + 1) % 50 == 0:
             print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (rotations)")
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created hierarchical skeleton with {num_joints} bones")
+    print(f"[Blender] Created hierarchical skeleton with {num_joints} bones (frame_offset={frame_offset})")
     return armature
 
 
-def create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None):
+def create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None, frame_offset=0):
     """
     Create animated skeleton using armature with POSITION keyframes.
     
@@ -491,13 +488,14 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
         if not joints:
             continue
         
-        bpy.context.scene.frame_set(frame_idx)
+        actual_frame = frame_idx + frame_offset
+        bpy.context.scene.frame_set(actual_frame)
         
         # Get world offset for this frame
-        frame_offset = Vector((0, 0, 0))
+        world_offset = Vector((0, 0, 0))
         if world_translation_mode == "baked":
             frame_cam_t = frame_data.get("pred_cam_t")
-            frame_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+            world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
         for bone_idx in range(min(num_joints, len(joints))):
             pose_bone = armature.pose.bones[bone_idx]
@@ -506,22 +504,22 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
             target = Vector(transform_func(pos))
             
             if world_translation_mode == "baked":
-                target += frame_offset
+                target += world_offset
             
             # Calculate offset from rest position
             offset = target - rest_heads[bone_idx]
             pose_bone.location = offset
-            pose_bone.keyframe_insert(data_path="location", frame=frame_idx)
+            pose_bone.keyframe_insert(data_path="location", frame=actual_frame)
         
         if (frame_idx + 1) % 50 == 0:
             print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (positions)")
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created position-based skeleton with {num_joints} bones")
+    print(f"[Blender] Created position-based skeleton with {num_joints} bones (frame_offset={frame_offset})")
     return armature
 
 
-def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations", joint_parents=None):
+def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations", joint_parents=None, frame_offset=0):
     """
     Create animated skeleton - dispatcher function.
     
@@ -532,12 +530,12 @@ def create_skeleton(all_frames, fps, transform_func, world_translation_mode="non
     joint_parents: Array defining bone hierarchy
     """
     if skeleton_mode == "rotations":
-        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents)
+        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset)
     else:
-        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents)
+        return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset)
 
 
-def create_root_locator(all_frames, fps, up_axis):
+def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     """
     Create a root locator that carries the world translation.
     """
@@ -553,14 +551,18 @@ def create_root_locator(all_frames, fps, up_axis):
         frame_cam_t = frame_data.get("pred_cam_t")
         world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
+        # Apply flip_x to the world offset
+        if flip_x:
+            world_offset = Vector((-world_offset.x, world_offset.y, world_offset.z))
+        
         root.location = world_offset
-        root.keyframe_insert(data_path="location", frame=frame_idx)
+        root.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
     
-    print(f"[Blender] Root locator animated over {len(all_frames)} frames")
+    print(f"[Blender] Root locator animated over {len(all_frames)} frames (offset={frame_offset}, flip_x={flip_x})")
     return root
 
 
-def create_translation_track(all_frames, fps, up_axis):
+def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     """
     Create a separate locator that shows the world path.
     """
@@ -576,17 +578,22 @@ def create_translation_track(all_frames, fps, up_axis):
         world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
         track.location = world_offset
-        track.keyframe_insert(data_path="location", frame=frame_idx)
+        track.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
     
-    print(f"[Blender] Translation track animated over {len(all_frames)} frames")
+    print(f"[Blender] Translation track animated over {len(all_frames)} frames (offset={frame_offset})")
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none"):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0):
     """
-    Create animated camera with focal length from SAM3DBody.
+    Create camera with focal length from SAM3DBody.
+    
+    Args:
+        animate_camera: If True and mode=="camera", animate camera position.
+                       If False, camera is completely static (no keyframes).
+        frame_offset: Starting frame number for keyframes.
     """
-    print("[Blender] Creating camera...")
+    print(f"[Blender] Creating camera (animate={animate_camera})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -631,8 +638,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     else:
         base_dir = Vector((0, 0, 1))
     
-    # For "camera" mode: fixed rotation, animated position with offset
-    if world_translation_mode == "camera":
+    # For "camera" mode with animate_camera=True: fixed rotation, animated position with offset
+    if animate_camera and world_translation_mode == "camera":
         # Set fixed rotation pointing at origin
         camera.location = base_dir * cam_distance
         
@@ -659,12 +666,12 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             
             world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
             camera.location = base_dir * frame_distance - world_offset
-            camera.keyframe_insert(data_path="location", frame=frame_idx)
+            camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
         
         bpy.data.objects.remove(target)
         print(f"[Blender] Camera animated over {len(all_frames)} frames (fixed rotation, animated position)")
     else:
-        # Static camera with distance animation
+        # Static camera - NO animation keyframes
         camera.location = base_dir * cam_distance
         
         constraint = camera.constraints.new(type='TRACK_TO')
@@ -682,16 +689,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
         
-        print(f"[Blender] Camera at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
-        
-        # Animate camera distance only
-        for frame_idx, frame_data in enumerate(all_frames):
-            frame_cam_t = frame_data.get("pred_cam_t")
-            
-            if frame_cam_t and len(frame_cam_t) > 2:
-                new_distance = abs(frame_cam_t[2])
-                camera.location = base_dir * new_distance
-                camera.keyframe_insert(data_path="location", frame=frame_idx)
+        print(f"[Blender] Camera static at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
+        # No keyframes added - camera is completely static
     
     return camera
 
@@ -797,12 +796,16 @@ def main():
     world_translation_mode = data.get("world_translation_mode", "none")
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     flip_x = data.get("flip_x", False)  # Mirror on X axis
+    frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
+    animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
+    print(f"[Blender] Frame offset: {frame_offset} (output starts at frame {frame_offset})")
     print(f"[Blender] Sensor width: {sensor_width}mm")
     print(f"[Blender] World translation mode: {world_translation_mode}")
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
     print(f"[Blender] Flip X: {flip_x}")
+    print(f"[Blender] Animate camera: {animate_camera}")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -824,34 +827,34 @@ def main():
     
     clear_scene()
     
-    # Set scene frame range
+    # Set scene frame range with offset
     bpy.context.scene.render.fps = int(fps)
-    bpy.context.scene.frame_start = 0
-    bpy.context.scene.frame_end = len(frames) - 1
+    bpy.context.scene.frame_start = frame_offset
+    bpy.context.scene.frame_end = frame_offset + len(frames) - 1
     
     # Create root locator if needed (for "root" mode)
     root_locator = None
     if world_translation_mode == "root":
-        root_locator = create_root_locator(frames, fps, up_axis)
+        root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
     
     # Create mesh with shape keys
     mesh_obj = None
     if include_mesh:
-        mesh_obj = create_animated_mesh(frames, faces, fps, transform_func, world_translation_mode, up_axis)
+        mesh_obj = create_animated_mesh(frames, faces, fps, transform_func, world_translation_mode, up_axis, frame_offset)
         # Parent mesh to root locator if in "root" mode
         if world_translation_mode == "root" and root_locator and mesh_obj:
             mesh_obj.parent = root_locator
     
     # Create skeleton (armature with bones and hierarchy)
-    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents)
+    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":
-        create_translation_track(frames, fps, up_axis)
+        create_translation_track(frames, fps, up_axis, frame_offset)
     
     # Create camera
     if include_camera:
-        create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode)
+        create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset)
     
     # Export
     if output_format == "abc":

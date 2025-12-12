@@ -29,10 +29,13 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     """
     Project 3D points to 2D using SAM3DBody's camera model.
     
-    SAM3DBody uses a perspective camera model:
-    - Mesh vertices are in a normalized space
-    - cam_t = [tx, ty, tz] provides translation
-    - The renderer applies: flip X of cam_t, then 180° rotation around X
+    SAM3DBody computes pred_keypoints_2d from pred_keypoints_3d using perspective projection.
+    The camera model is:
+    - 3D points are in body-centered coordinates
+    - cam_t = [tx, ty, tz] is the camera translation (body position in camera space)
+    - Projection: x_2d = fx * (X + tx) / (Z + tz) + cx
+    
+    This should match pred_keypoints_2d when applied to pred_keypoints_3d.
     
     Args:
         points_3d: (N, 3) array of 3D points (vertices or joints)
@@ -44,35 +47,35 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
         points_2d: (N, 2) array of 2D points
     """
     points_3d = np.array(points_3d)
-    cam_t = np.array(cam_t)
+    cam_t = np.array(cam_t).flatten()
     
-    # Camera center
+    # Camera center (principal point)
     cx = image_width / 2.0
     cy = image_height / 2.0
     
-    # SAM3DBody camera model (from renderer.py):
-    # 1. camera_translation[0] *= -1 (flip X)
-    # 2. Apply 180° rotation around X axis to mesh
-    # 3. Then add camera translation
+    if len(cam_t) < 3:
+        # Fallback if cam_t is incomplete
+        return np.column_stack([
+            np.full(len(points_3d), cx),
+            np.full(len(points_3d), cy)
+        ])
     
-    camera_translation = cam_t.copy()
-    camera_translation[0] *= -1.0
+    # SAM3DBody camera model:
+    # Points in camera space = points_3d + cam_t
+    # Then perspective projection
+    tx, ty, tz = cam_t[0], cam_t[1], cam_t[2]
     
-    # Apply 180° X rotation: (x, y, z) -> (x, -y, -z)
-    points_rotated = points_3d.copy()
-    points_rotated[:, 1] *= -1
-    points_rotated[:, 2] *= -1
+    # Add camera translation to get points in camera space
+    X = points_3d[:, 0] + tx
+    Y = points_3d[:, 1] + ty
+    Z = points_3d[:, 2] + tz
     
-    # Add camera translation
-    points_cam = points_rotated + camera_translation
+    # Avoid division by zero
+    Z = np.where(np.abs(Z) < 1e-6, 1e-6, Z)
     
     # Perspective projection
-    z = points_cam[:, 2]
-    # Ensure positive Z (in front of camera)
-    z = np.maximum(z, 0.001)
-    
-    x_2d = focal_length * points_cam[:, 0] / z + cx
-    y_2d = focal_length * points_cam[:, 1] / z + cy
+    x_2d = focal_length * X / Z + cx
+    y_2d = focal_length * Y / Z + cy
     
     return np.stack([x_2d, y_2d], axis=1)
 
@@ -545,10 +548,39 @@ class VerifyOverlayBatch:
                 # Draw mesh wireframe if requested
                 if show_mesh:
                     vertices = frame.get("vertices")
+                    joint_coords_3d = frame.get("joint_coords")  # 127 joints
+                    
                     if vertices is not None and faces is not None and focal_length is not None and cam_t is not None:
                         vertices = np.array(vertices)
                         cam_t_np = np.array(cam_t)
+                        
+                        # If we have 2D keypoints, use them to compute the correct offset
+                        # The 2D keypoints from SAM3DBody include bbox corrections
+                        offset_x, offset_y = 0.0, 0.0
+                        scale = 1.0
+                        
+                        if joints_2d is not None and joint_coords_3d is not None:
+                            # Project first few 3D joints and compare with 2D keypoints to find offset
+                            joint_coords_3d = np.array(joint_coords_3d)
+                            # Project the 3D joints
+                            projected_joints = project_points_to_2d(joint_coords_3d, focal_length, cam_t_np, w, h)
+                            
+                            # Use first N joints to compute offset (where N = min of both)
+                            n_compare = min(len(joints_2d), len(projected_joints), 20)
+                            if n_compare > 3:
+                                # Compute center offset
+                                pred_center = np.mean(joints_2d[:n_compare], axis=0)
+                                proj_center = np.mean(projected_joints[:n_compare], axis=0)
+                                offset_x = pred_center[0] - proj_center[0]
+                                offset_y = pred_center[1] - proj_center[1]
+                                
+                                if img_idx == 0:
+                                    print(f"[VerifyOverlayBatch] Mesh offset correction: dx={offset_x:.1f}, dy={offset_y:.1f}")
+                        
+                        # Project mesh vertices and apply offset
                         verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h)
+                        verts_2d[:, 0] += offset_x
+                        verts_2d[:, 1] += offset_y
                         
                         # Draw subset of edges (every Nth face to avoid too dense)
                         mesh_bgr = (0, 255, 255)  # Yellow mesh
