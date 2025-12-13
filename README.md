@@ -205,6 +205,13 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.1.6
+- **NEW**: Camera alignment using bbox position for accurate Maya/Blender viewport match
+  - Camera target offset computed from detection bbox vs image center
+  - Exports actual image dimensions from video
+  - When looking through camera with video background, mesh should align
+- **IMPROVED**: Frame data now includes `image_size` and `bbox` for alignment calculations
+
 ### v3.1.5
 - **CRITICAL FIX**: SAM3 Propagate frame-indexed dict format now correctly detected
   - Previously only using 1 mask frame, now correctly stacks all 150 frames

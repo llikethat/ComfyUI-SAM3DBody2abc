@@ -464,6 +464,7 @@ class VideoBatchProcessor:
                             "focal_length": focal_length,
                             "global_rot": to_numpy(output.get("global_rot")),  # Keep for compatibility
                             "bbox": to_numpy(output.get("bbox")),  # Store bbox for debugging
+                            "image_size": (img_np.shape[1], img_np.shape[0]),  # (width, height) for alignment
                         }
                         
                         debug_images.append(img_tensor)

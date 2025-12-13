@@ -598,6 +598,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     """
     Create camera with focal length from SAM3DBody.
     
+    The camera is positioned to match SAM3DBody's projection, accounting for:
+    - Focal length (converted from pixels to mm)
+    - Distance from pred_cam_t[2]
+    - Offset from bbox position relative to image center
+    
     Args:
         animate_camera: If True and mode=="camera", animate camera position.
                        If False, camera is completely static (no keyframes).
@@ -612,26 +617,81 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     # Set sensor width
     cam_data.sensor_width = sensor_width
     
+    # Get image dimensions and bbox for alignment
+    first_frame = all_frames[0]
+    image_size = first_frame.get("image_size")
+    first_bbox = first_frame.get("bbox")
+    
+    image_width = 1920  # Default
+    image_height = 1080
+    if image_size:
+        if isinstance(image_size, (list, tuple)) and len(image_size) >= 2:
+            image_width, image_height = image_size[0], image_size[1]
+    
     # Get focal length from first frame
-    first_focal = all_frames[0].get("focal_length")
+    first_focal = first_frame.get("focal_length")
+    focal_px = 1000  # Default
     if first_focal:
         if isinstance(first_focal, (list, tuple)):
             focal_px = first_focal[0]
         else:
             focal_px = first_focal
-        
-        image_width = 1920  # Assume HD
-        focal_mm = focal_px * (sensor_width / image_width)
-        cam_data.lens = focal_mm
-        print(f"[Blender] Focal length: {focal_px}px -> {focal_mm:.1f}mm")
     
-    # Create target for camera orientation
+    focal_mm = focal_px * (sensor_width / image_width)
+    cam_data.lens = focal_mm
+    print(f"[Blender] Focal length: {focal_px}px -> {focal_mm:.1f}mm (image: {image_width}x{image_height})")
+    
+    # Compute camera target offset based on bbox position
+    # If detection is off-center, the camera target should be offset
+    target_offset = Vector((0, 0, 0))
+    if first_bbox and len(first_bbox) >= 4:
+        bbox = first_bbox
+        if isinstance(bbox[0], (list, tuple)):
+            bbox = bbox[0]  # Handle nested format
+        
+        if len(bbox) >= 4:
+            # Bbox center
+            bbox_cx = (bbox[0] + bbox[2]) / 2
+            bbox_cy = (bbox[1] + bbox[3]) / 2
+            
+            # Image center
+            img_cx = image_width / 2
+            img_cy = image_height / 2
+            
+            # Offset in pixels from image center
+            offset_px_x = bbox_cx - img_cx
+            offset_px_y = bbox_cy - img_cy
+            
+            # Convert to world units (using first frame depth)
+            first_cam_t = first_frame.get("pred_cam_t")
+            depth = 3.0
+            if first_cam_t and len(first_cam_t) > 2:
+                depth = abs(first_cam_t[2])
+            
+            # pixels to world units: world = pixels * depth / focal_px
+            offset_world_x = offset_px_x * depth / focal_px
+            offset_world_y = offset_px_y * depth / focal_px
+            
+            # Apply based on up_axis (note: y is typically inverted in image coords)
+            if up_axis == "Y":
+                target_offset = Vector((-offset_world_x, -offset_world_y, 0))
+            elif up_axis == "Z":
+                target_offset = Vector((-offset_world_x, 0, -offset_world_y))
+            elif up_axis == "-Y":
+                target_offset = Vector((-offset_world_x, offset_world_y, 0))
+            elif up_axis == "-Z":
+                target_offset = Vector((-offset_world_x, 0, offset_world_y))
+            
+            print(f"[Blender] Bbox center: ({bbox_cx:.0f}, {bbox_cy:.0f}), Image center: ({img_cx:.0f}, {img_cy:.0f})")
+            print(f"[Blender] Camera target offset: {target_offset}")
+    
+    # Create target for camera orientation (with offset for alignment)
     target = bpy.data.objects.new("cam_target", None)
-    target.location = (0, 0, 0)
+    target.location = target_offset
     bpy.context.collection.objects.link(target)
     
     # Position camera based on up axis
-    first_cam_t = all_frames[0].get("pred_cam_t")
+    first_cam_t = first_frame.get("pred_cam_t")
     cam_distance = 3.0
     if first_cam_t and len(first_cam_t) > 2:
         cam_distance = abs(first_cam_t[2])
@@ -650,8 +710,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     
     # For "camera" mode with animate_camera=True: fixed rotation, animated position with offset
     if animate_camera and world_translation_mode == "camera":
-        # Set fixed rotation pointing at origin
-        camera.location = base_dir * cam_distance
+        # Set fixed rotation pointing at target (which may be offset)
+        camera.location = base_dir * cam_distance + target_offset
         
         constraint = camera.constraints.new(type='TRACK_TO')
         constraint.target = target
@@ -675,14 +735,14 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 frame_distance = abs(frame_cam_t[2])
             
             world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
-            camera.location = base_dir * frame_distance - world_offset
+            camera.location = base_dir * frame_distance + target_offset - world_offset
             camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
         
         bpy.data.objects.remove(target)
         print(f"[Blender] Camera animated over {len(all_frames)} frames (fixed rotation, animated position)")
     else:
-        # Static camera - NO animation keyframes
-        camera.location = base_dir * cam_distance
+        # Static camera - positioned with offset for alignment
+        camera.location = base_dir * cam_distance + target_offset
         
         constraint = camera.constraints.new(type='TRACK_TO')
         constraint.target = target

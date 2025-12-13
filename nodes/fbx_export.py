@@ -305,6 +305,8 @@ class ExportAnimatedFBX:
                 "joint_coords": to_list(frame.get("joint_coords")),
                 "pred_cam_t": to_list(pred_cam_t),
                 "focal_length": frame.get("focal_length"),
+                "bbox": to_list(frame.get("bbox")),  # For camera alignment
+                "image_size": frame.get("image_size"),  # (width, height)
             }
             if include_mesh:
                 frame_data["vertices"] = to_list(frame.get("vertices"))
