@@ -554,31 +554,50 @@ class VerifyOverlayBatch:
                         vertices = np.array(vertices)
                         cam_t_np = np.array(cam_t)
                         
-                        # If we have 2D keypoints, use them to compute the correct offset
-                        # The 2D keypoints from SAM3DBody include bbox corrections
+                        # Project mesh vertices first
+                        verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h)
+                        
+                        # If we have 2D keypoints, compute offset to align mesh with keypoints
                         offset_x, offset_y = 0.0, 0.0
-                        scale = 1.0
                         
                         if joints_2d is not None and joint_coords_3d is not None:
-                            # Project first few 3D joints and compare with 2D keypoints to find offset
                             joint_coords_3d = np.array(joint_coords_3d)
-                            # Project the 3D joints
+                            
+                            # Project the 3D joints using same method as mesh
                             projected_joints = project_points_to_2d(joint_coords_3d, focal_length, cam_t_np, w, h)
                             
-                            # Use first N joints to compute offset (where N = min of both)
-                            n_compare = min(len(joints_2d), len(projected_joints), 20)
-                            if n_compare > 3:
-                                # Compute center offset
-                                pred_center = np.mean(joints_2d[:n_compare], axis=0)
-                                proj_center = np.mean(projected_joints[:n_compare], axis=0)
-                                offset_x = pred_center[0] - proj_center[0]
-                                offset_y = pred_center[1] - proj_center[1]
+                            # pred_keypoints_2d from SAM3DBody has 70 body keypoints
+                            # joint_coords_3d has 127 MHR joints
+                            # The first ~22 joints are body (before hands)
+                            # Use body keypoints that should match
+                            n_body = min(len(joints_2d), 22)  # First 22 are main body
+                            
+                            if n_body > 3:
+                                # Find valid (non-zero) keypoints in both sets
+                                valid_pred = []
+                                valid_proj = []
+                                for i in range(min(n_body, len(projected_joints))):
+                                    pred_pt = joints_2d[i]
+                                    proj_pt = projected_joints[i]
+                                    # Check if point is within image
+                                    if (0 < pred_pt[0] < w and 0 < pred_pt[1] < h and
+                                        0 < proj_pt[0] < w and 0 < proj_pt[1] < h):
+                                        valid_pred.append(pred_pt)
+                                        valid_proj.append(proj_pt)
                                 
-                                if img_idx == 0:
-                                    print(f"[VerifyOverlayBatch] Mesh offset correction: dx={offset_x:.1f}, dy={offset_y:.1f}")
+                                if len(valid_pred) >= 3:
+                                    valid_pred = np.array(valid_pred)
+                                    valid_proj = np.array(valid_proj)
+                                    
+                                    # Compute median offset (more robust than mean)
+                                    offsets = valid_pred - valid_proj
+                                    offset_x = np.median(offsets[:, 0])
+                                    offset_y = np.median(offsets[:, 1])
+                                    
+                                    if img_idx == 0:
+                                        print(f"[VerifyOverlayBatch] Mesh alignment: {len(valid_pred)} valid pts, offset=({offset_x:.1f}, {offset_y:.1f})")
                         
-                        # Project mesh vertices and apply offset
-                        verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h)
+                        # Apply offset to mesh vertices
                         verts_2d[:, 0] += offset_x
                         verts_2d[:, 1] += offset_y
                         

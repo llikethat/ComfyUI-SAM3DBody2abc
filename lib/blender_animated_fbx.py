@@ -222,19 +222,29 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
         
         # Keyframe shape key value with frame_offset
         actual_frame = frame_idx + frame_offset
-        sk.value = 0.0
-        sk.keyframe_insert(data_path="value", frame=max(frame_offset, actual_frame - 1))
+        last_frame = frame_offset + len(all_frames) - 1
+        is_last = (frame_idx == len(all_frames) - 1)
+        is_first = (frame_idx == 0)
         
+        # Fade in keyframe (value 0 before this shape activates)
+        if not is_first:
+            sk.value = 0.0
+            sk.keyframe_insert(data_path="value", frame=actual_frame - 1)
+        
+        # Active keyframe (value 1 at this frame)
         sk.value = 1.0
         sk.keyframe_insert(data_path="value", frame=actual_frame)
         
-        sk.value = 0.0
-        sk.keyframe_insert(data_path="value", frame=min(frame_offset + len(all_frames) - 1, actual_frame + 1))
+        # Fade out keyframe (value 0 after this shape deactivates)
+        # Don't add fadeout for last frame - it should stay at 1
+        if not is_last:
+            sk.value = 0.0
+            sk.keyframe_insert(data_path="value", frame=actual_frame + 1)
         
         if (frame_idx + 1) % 50 == 0:
             print(f"[Blender] Shape keys: {frame_idx + 1}/{len(all_frames)}")
     
-    print(f"[Blender] Created mesh with {len(all_frames)} shape keys")
+    print(f"[Blender] Created mesh with {len(all_frames)} shape keys (frames {frame_offset} to {frame_offset + len(all_frames) - 1})")
     return obj
 
 
@@ -800,7 +810,7 @@ def main():
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
-    print(f"[Blender] Frame offset: {frame_offset} (output starts at frame {frame_offset})")
+    print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
     print(f"[Blender] Sensor width: {sensor_width}mm")
     print(f"[Blender] World translation mode: {world_translation_mode}")
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
