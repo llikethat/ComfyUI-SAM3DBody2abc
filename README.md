@@ -205,6 +205,13 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.1.5
+- **CRITICAL FIX**: SAM3 Propagate frame-indexed dict format now correctly detected
+  - Previously only using 1 mask frame, now correctly stacks all 150 frames
+  - Console now shows: `Stacked 150 frames into shape (150, 720, 1280)`
+- Improved mask format detection with cleaner debug output
+- Fixed variable name inconsistencies in mask extraction
+
 ### v3.1.4
 - **FIX**: Last blendshape stays at value 1 (was being set to 0)
 - **FIX**: Multi-person filtering uses mask overlap to select correct detection
