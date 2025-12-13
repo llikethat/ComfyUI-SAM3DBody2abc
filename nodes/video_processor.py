@@ -206,7 +206,10 @@ class VideoBatchProcessor:
                     
                     for frame_key in sorted_keys:
                         frame_mask = sam3_masks[frame_key]
-                        if hasattr(frame_mask, 'cpu'):
+                        # Convert to tensor if numpy
+                        if isinstance(frame_mask, np.ndarray):
+                            frame_mask = torch.from_numpy(frame_mask)
+                        elif hasattr(frame_mask, 'cpu'):
                             frame_mask = frame_mask.cpu()
                         frame_masks.append(frame_mask)
                     
