@@ -557,45 +557,44 @@ class VerifyOverlayBatch:
                         # Project mesh vertices first
                         verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h)
                         
-                        # If we have 2D keypoints, compute offset to align mesh with keypoints
+                        # Compute offset to align mesh with detected keypoints
                         offset_x, offset_y = 0.0, 0.0
                         
-                        if joints_2d is not None and joint_coords_3d is not None:
-                            joint_coords_3d = np.array(joint_coords_3d)
+                        if joints_2d is not None:
+                            # Method 1: Use centroid of joints vs projected mesh
+                            # The pred_keypoints_2d are the ground truth positions
+                            # The projected mesh should align with them
                             
-                            # Project the 3D joints using same method as mesh
-                            projected_joints = project_points_to_2d(joint_coords_3d, focal_length, cam_t_np, w, h)
+                            # Get centroid of visible joints (the red dots)
+                            valid_joints = []
+                            for pt in joints_2d:
+                                if 0 < pt[0] < w and 0 < pt[1] < h:
+                                    valid_joints.append(pt)
                             
-                            # pred_keypoints_2d from SAM3DBody has 70 body keypoints
-                            # joint_coords_3d has 127 MHR joints
-                            # The first ~22 joints are body (before hands)
-                            # Use body keypoints that should match
-                            n_body = min(len(joints_2d), 22)  # First 22 are main body
-                            
-                            if n_body > 3:
-                                # Find valid (non-zero) keypoints in both sets
-                                valid_pred = []
-                                valid_proj = []
-                                for i in range(min(n_body, len(projected_joints))):
-                                    pred_pt = joints_2d[i]
-                                    proj_pt = projected_joints[i]
-                                    # Check if point is within image
-                                    if (0 < pred_pt[0] < w and 0 < pred_pt[1] < h and
-                                        0 < proj_pt[0] < w and 0 < proj_pt[1] < h):
-                                        valid_pred.append(pred_pt)
-                                        valid_proj.append(proj_pt)
+                            if len(valid_joints) > 3:
+                                valid_joints = np.array(valid_joints)
+                                joints_center = np.mean(valid_joints, axis=0)
                                 
-                                if len(valid_pred) >= 3:
-                                    valid_pred = np.array(valid_pred)
-                                    valid_proj = np.array(valid_proj)
+                                # Get centroid of projected mesh vertices (within reasonable bounds)
+                                valid_verts = []
+                                for pt in verts_2d:
+                                    # Use slightly larger bounds for mesh
+                                    if -w < pt[0] < 2*w and -h < pt[1] < 2*h:
+                                        valid_verts.append(pt)
+                                
+                                if len(valid_verts) > 100:
+                                    valid_verts = np.array(valid_verts)
+                                    mesh_center = np.mean(valid_verts, axis=0)
                                     
-                                    # Compute median offset (more robust than mean)
-                                    offsets = valid_pred - valid_proj
-                                    offset_x = np.median(offsets[:, 0])
-                                    offset_y = np.median(offsets[:, 1])
+                                    # Offset to align mesh center with joints center
+                                    offset_x = joints_center[0] - mesh_center[0]
+                                    offset_y = joints_center[1] - mesh_center[1]
                                     
                                     if img_idx == 0:
-                                        print(f"[VerifyOverlayBatch] Mesh alignment: {len(valid_pred)} valid pts, offset=({offset_x:.1f}, {offset_y:.1f})")
+                                        print(f"[VerifyOverlayBatch] Mesh alignment:")
+                                        print(f"  Joints center: ({joints_center[0]:.1f}, {joints_center[1]:.1f})")
+                                        print(f"  Mesh center: ({mesh_center[0]:.1f}, {mesh_center[1]:.1f})")
+                                        print(f"  Offset: ({offset_x:.1f}, {offset_y:.1f})")
                         
                         # Apply offset to mesh vertices
                         verts_2d[:, 0] += offset_x

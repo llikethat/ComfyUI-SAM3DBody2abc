@@ -4,39 +4,47 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
 
 ## Features
 
-### Verification Overlay (v3.1.0)
+### SAM3 Video Mask Integration (v3.1.x)
+- **Direct SAM3 Propagation Support** - Connect SAM3 Propagate node's `SAM3_VIDEO_MASKS` output directly
+- **Multi-person Filtering** - When mask is provided, only the masked character is tracked (others ignored)
+- **Per-frame Tracking** - Uses mask for each frame to follow moving characters
+
+### Verification Overlay
 - **🔍 Verify Overlay** - Project 3D mesh/skeleton back onto original image
-- Helps verify the correct person is being tracked (not mixing with others)
-- Shows joint positions and skeleton connections overlaid on the image
-- Optional mesh wireframe visualization
+- Helps verify the correct person is being tracked
+- Shows joint positions, skeleton connections, and mesh wireframe
+- Mesh aligned to match detected keypoints
 
 ### Export Formats
 - **FBX** - Blend shapes for mesh animation, widely compatible
 - **Alembic (.abc)** - Vertex cache for mesh animation, cleaner Maya workflow
 
-### Skeleton Animation Modes (v3.1.0)
+### Skeleton Animation Modes
 - **Rotations (Recommended)** - Uses true joint rotation matrices from MHR model
   - Proper bone rotations for retargeting to other characters
   - Standard animation workflow compatible
-  - Better for editing in animation software
 - **Positions (Legacy)** - Uses joint positions with location offsets
   - Shows exact joint positions
   - Limited retargeting capability
 
 ### World Translation Modes
-- **None (Body at Origin)** - Character centered at origin, static camera
-- **Baked into Mesh/Joints** - World offset baked into vertex and joint positions
-- **Baked into Camera** - Body at origin, camera moves to preserve original framing
+- **None (Body at Origin)** - Character centered, static camera
+- **Baked into Mesh/Joints** - World offset baked into positions
+- **Baked into Camera** - Body at origin, camera moves (animated)
 - **Root Locator** - Root empty carries translation, body/skeleton as children
 - **Separate Track** - Body at origin + separate locator showing world path
+
+**Note**: Camera is only animated when "Baked into Camera" is selected. For all other modes, camera is static.
+
+### Export Options
+- **FPS Passthrough** - Source FPS flows from video loader through to export
+- **Frame Offset** - Start animation at frame 1 (for Maya) or frame 0
+- **Flip X** - Mirror animation on X axis (applies to mesh, skeleton, and root locator)
+- **Up Axis** - Y, Z, -Y, -Z (configurable per DCC)
 
 ### Camera Export
 - Focal length conversion from SAM3DBody pixel values to mm
 - Configurable sensor width (Full Frame 36mm, APS-C 23.6mm, etc.)
-- Animated distance based on depth estimation
-
-### Up Axis Options
-- Y, Z, -Y, -Z (configurable per DCC application requirements)
 
 ## Installation
 
@@ -46,38 +54,101 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
 
 ## Usage
 
-### Basic Workflow
-1. **Load Model** → SAM 3D Body: Load Model
-2. **Process Frames** → SAM 3D Body: Process Image (loop over video frames)
-3. **Accumulate** → Mesh Data Accumulator (collect frames into sequence)
-   - Connect `mesh_data` output
-   - Connect `skeleton` output (provides joint_parents hierarchy and rotations)
-4. **Export** → Export Animated FBX
+### Recommended Workflow with SAM3
 
-### Export Settings
+```
+Video Loader (fps output) ──────────────────────────────────┐
+      │                                                     │
+      ├── SAM3 Video Segmentation                          │
+      │         │                                           │
+      │   SAM3 Propagate                                    │
+      │         │ (masks: SAM3_VIDEO_MASKS)                 │
+      │         │                                           │
+      │         ↓                                           │
+      └──→ Video Batch Processor ←──── sam3_masks          │
+                │         │ ←───────────── fps ─────────────┘
+                │         │
+                ↓         ↓
+        mesh_sequence    fps
+                │         │
+                ↓         ↓
+        Export Animated FBX (fps=0 uses source fps)
+```
 
-#### Verifying Correct Person Tracking
-Use the **🔍 Verify Overlay** node to check if SAM3DBody is tracking the correct person:
+### Node Inputs
 
-1. Connect your original image and `mesh_data` output to the Verify Overlay node
-2. The output shows joints projected onto the image
-3. If joints don't align with your masked person, the tracking may be mixed with another person
+#### Video Batch Processor
+| Input | Type | Description |
+|-------|------|-------------|
+| model | SAM3D_MODEL | Loaded SAM3DBody model |
+| images | IMAGE | Video frames |
+| sam3_masks | SAM3_VIDEO_MASKS | Masks from SAM3 Propagate (optional) |
+| fps | FLOAT | Source video FPS (passed through to export) |
+| object_id | INT | Which object to track (default: 1) |
+| bbox_threshold | FLOAT | Detection confidence threshold |
 
-Options:
-- `show_joints` - Draw joint positions as circles
-- `show_skeleton` - Draw skeleton connections between joints
-- `show_mesh` - Draw mesh wireframe (can be slow)
-- Colors and sizes are customizable
+#### Export Animated FBX
+| Input | Type | Description |
+|-------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | From Video Batch Processor |
+| filename | STRING | Output filename |
+| fps | FLOAT | 0 = use source fps from mesh_sequence |
+| frame_offset | INT | Start frame (1 for Maya, 0 for Blender) |
+| output_format | FBX/ABC | Export format |
+| up_axis | Y/Z/-Y/-Z | Up axis for target application |
+| skeleton_mode | Rotations/Positions | Animation method |
+| world_translation | None/Baked/Camera/Root/Separate | How to handle world movement |
+| flip_x | BOOLEAN | Mirror animation on X axis |
+| include_mesh | BOOLEAN | Include mesh in export |
+| include_camera | BOOLEAN | Include camera in export |
 
-#### Skeleton Mode
-- **Rotations (Recommended)**: Uses the 127 joint rotation matrices output by MHR (Meta's body model). Produces proper bone rotations that can be retargeted to other character rigs and edited in animation software.
-- **Positions (Legacy)**: Animates bones using location offsets from rest positions. Shows exact joint positions but limited for retargeting.
+### Verifying Correct Person Tracking
 
-#### World Translation
-Choose how character movement through space is handled:
-- For retargeting: Use "None" or "Baked into Camera"
-- For full scene recreation: Use "Baked into Mesh/Joints"
-- For flexibility: Use "Root Locator" (translation on parent, animation on bones)
+Use the **Verify Overlay (Sequence)** node to check tracking:
+
+1. Connect original images and `mesh_sequence` to the node
+2. Enable `show_joints`, `show_skeleton`, and optionally `show_mesh`
+3. Output shows:
+   - **Yellow box** - Detection bounding box
+   - **Red dots** - Joint positions (numbered)
+   - **Cyan lines** - Skeleton connections
+   - **Yellow wireframe** - Mesh (if enabled)
+
+If joints don't align with your masked person, check:
+- `object_id` matches the SAM3 object (usually 1)
+- SAM3 Propagate is connected directly (not through SAM3 Video Output)
+
+## Quick Reference
+
+### For Maya Import
+```
+frame_offset: 1        (animation starts at frame 1)
+up_axis: Y             (Maya default)
+output_format: FBX
+```
+
+### For Blender Import
+```
+frame_offset: 0        (animation starts at frame 0)
+up_axis: Z             (Blender default)
+output_format: FBX
+```
+
+### If Animation Appears Flipped/Mirrored
+```
+flip_x: true
+```
+
+### For Retargeting
+```
+skeleton_mode: Rotations (Recommended)
+world_translation: None (Body at Origin)
+```
+
+### For Scene Recreation
+```
+world_translation: Baked into Mesh/Joints
+```
 
 ## Technical Details
 
@@ -85,23 +156,21 @@ Choose how character movement through space is handled:
 ```
 SAM3DBody Process
     ↓
-mesh_data (SAM3D_OUTPUT)          skeleton (SKELETON)
-    - vertices: [N, 3]                - joint_positions: [127, 3]
-    - faces: [F, 3]                   - joint_rotations: [127, 3, 3]  ← rotations
-    - joint_coords: [127, 3]          - joint_parents: [127]  ← hierarchy
-    - joint_rotations: [127, 3, 3]    - pose_params, shape_params, etc.
-    - camera: [3] pred_cam_t
+mesh_data (SAM3D_OUTPUT)          
+    - vertices: [N, 3]            
+    - faces: [F, 3]               
+    - joint_coords: [127, 3]      
+    - joint_rotations: [127, 3, 3]
+    - pred_cam_t: [3]
     - focal_length
-    ↓                                 ↓
-    └──────────┬──────────────────────┘
-               ↓
-    Mesh Data Accumulator
-               ↓
-    MESH_SEQUENCE
-               ↓
-    Export Animated FBX
-               ↓
-    .fbx / .abc file
+    ↓                             
+Mesh Data Accumulator
+    ↓
+MESH_SEQUENCE
+    ↓
+Export Animated FBX
+    ↓
+.fbx / .abc file
 ```
 
 ### Skeleton Hierarchy
@@ -117,37 +186,50 @@ Skeleton (Armature)
     ├── joint_010 (left hip)
     │   └── joint_011 (left knee)
     │       └── joint_012 (left ankle)
-    └── joint_015 (right hip)
-        └── ...
+    └── ...
 ```
 
 ### Joint Rotation Data
-SAM3DBody uses Meta's MHR (Momentum Human Rig) body model internally. The `joint_rotations` output contains:
+SAM3DBody uses Meta's MHR (Momentum Human Rig) body model:
 - 127 joints with 3x3 rotation matrices
 - Global (world-space) rotations per joint
 - Converted to local rotations using parent hierarchy
-- Quaternion interpolation in Blender for smooth animation
+- Quaternion interpolation for smooth animation
 
-For "Root Locator" mode:
-```
-root_locator (empty with translation keyframes)
-└── Skeleton (Armature)
-    └── (hierarchical bone structure as above)
-```
+### Shape Key Animation
+Each frame creates a shape key with value keyframed:
+- Frame N-1: value = 0 (fade in)
+- Frame N: value = 1 (active)
+- Frame N+1: value = 0 (fade out)
+- Last frame stays at 1 (no fade out)
 
 ## Changelog
 
+### v3.1.4
+- **FIX**: Last blendshape stays at value 1 (was being set to 0)
+- **FIX**: Multi-person filtering uses mask overlap to select correct detection
+- **IMPROVED**: Mesh overlay alignment using centroid matching
+- Better debug output for alignment diagnostics
+
+### v3.1.3
+- **NEW**: `frame_offset` parameter (default: 1 for Maya)
+- **NEW**: `flip_x` applies to root locator translation
+- **FIX**: Camera only animated when "Baked into Camera" selected
+- **FIX**: All other world translation modes create static camera
+
+### v3.1.1
+- **NEW**: FPS passthrough from video loader to export
+- **NEW**: `flip_x` option to mirror animation
+- **IMPROVED**: Skeleton connections use `joint_parents` from MHR
+- Removed unused `mask` input, cleaned up Video Batch Processor
+
 ### v3.1.0
-- **NEW**: 🔍 Verify Overlay node - project mesh/skeleton onto image for verification
+- **NEW**: `SAM3_VIDEO_MASKS` input type for SAM3 Propagate connection
+- **NEW**: 🔍 Verify Overlay node - project mesh/skeleton onto image
 - **NEW**: Rotation-based skeleton animation using MHR joint rotation matrices
-- **NEW**: Proper hierarchical bone structure using `joint_parents` from MHR
-- Added `skeleton_mode` option: "Rotations (Recommended)" vs "Positions (Legacy)"
-- Added optional `skeleton` input to accumulator (provides joint_parents and rotations)
-- Bones are properly parented (child bones follow parent rotations)
-- Global rotations converted to local for proper FK chain
-- Bone tails point toward children for better visualization
-- Quaternion interpolation in Blender for smooth animation
-- Fixed numpy array boolean check error with pred_cam_t
+- **NEW**: Proper hierarchical bone structure using `joint_parents`
+- `skeleton_mode` option: "Rotations" vs "Positions"
+- Quaternion interpolation for smooth animation
 
 ### v3.0.0
 - World translation modes (5 options)
@@ -167,7 +249,21 @@ root_locator (empty with translation keyframes)
 
 - ComfyUI
 - ComfyUI-SAM3DBody
-- Blender 3.6+ (system installation or bundled with SAM3DBody)
+- Blender 3.6+ (system installation)
+
+## Troubleshooting
+
+### "Only 1 mask available" in console
+You may have SAM3 Video Output node between SAM3 Propagate and Video Batch Processor. Connect SAM3 Propagate → masks directly to Video Batch Processor → sam3_masks.
+
+### Wrong person being tracked
+Check `object_id` matches the SAM3 tracked object. Use Verify Overlay to visualize tracking.
+
+### Animation appears flipped
+Enable `flip_x = true` in Export node.
+
+### Keyframes start at wrong frame
+Adjust `frame_offset` (1 for Maya, 0 for Blender).
 
 ## License
 

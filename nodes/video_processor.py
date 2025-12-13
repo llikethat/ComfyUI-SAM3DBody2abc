@@ -356,7 +356,37 @@ class VideoBatchProcessor:
                             os.unlink(tmp_path)
                     
                     if outputs and len(outputs) > 0:
+                        # If multiple detections and we have a mask, select the one that best matches
                         output = outputs[0]
+                        
+                        if len(outputs) > 1 and frame_mask is not None:
+                            best_overlap = 0
+                            best_idx = 0
+                            
+                            for out_idx, out in enumerate(outputs):
+                                out_bbox = out.get("bbox")
+                                if out_bbox is not None:
+                                    # Compute overlap between detection bbox and mask
+                                    bbox_arr = np.array(out_bbox).flatten()
+                                    if len(bbox_arr) >= 4:
+                                        x1, y1, x2, y2 = int(bbox_arr[0]), int(bbox_arr[1]), int(bbox_arr[2]), int(bbox_arr[3])
+                                        # Clamp to image bounds
+                                        h_mask, w_mask = frame_mask.shape[:2]
+                                        x1, y1 = max(0, x1), max(0, y1)
+                                        x2, y2 = min(w_mask, x2), min(h_mask, y2)
+                                        
+                                        if x2 > x1 and y2 > y1:
+                                            # Count mask pixels in bbox region
+                                            bbox_mask = frame_mask[y1:y2, x1:x2]
+                                            overlap = np.sum(bbox_mask > 0.5)
+                                            
+                                            if overlap > best_overlap:
+                                                best_overlap = overlap
+                                                best_idx = out_idx
+                            
+                            output = outputs[best_idx]
+                            if i == 0 and len(outputs) > 1:
+                                print(f"[SAM3DBody2abc] Multiple detections ({len(outputs)}), selected #{best_idx} with mask overlap {best_overlap}")
                         
                         # Store faces (once)
                         if faces is None:
