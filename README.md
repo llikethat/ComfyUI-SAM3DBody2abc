@@ -153,25 +153,45 @@ world_translation: Baked into Mesh/Joints
 
 ### For Moving Camera Shots (Tracking/Dolly/Zoom) ⭐
 
-When both the character and camera move, use the new hybrid mode:
+When both the character and camera move, use the hybrid mode:
 
 ```
 world_translation: Root Locator + Animated Camera
 include_camera: true
+camera_motion: Rotation (Pan/Tilt)  ← NEW in v3.2.0
 ```
+
+**Camera Motion Options:**
+
+| Option | Best For | How It Works |
+|--------|----------|--------------|
+| **Translation (Default)** | Dolly/crane/steadicam shots | Camera moves laterally to frame character |
+| **Rotation (Pan/Tilt)** | Tripod/handheld shots | Camera rotates (pans/tilts) to follow character |
 
 **How it works internally:**
 ```
 Frame N: pred_cam_t = [tx, ty, tz]  (character position relative to camera)
 
 Root Locator position = world_offset(tx, ty, tz)  → Character's world path
-Camera LOCAL position = INVERSE of (tx, ty)       → Keeps camera near world origin
+
+Camera (parented to root):
+  
+  ROTATION mode:
+    - LOCAL rotation = pan/tilt angles from (tx, ty)
+    - pan_angle  = atan(tx * 0.5)   → horizontal rotation
+    - tilt_angle = atan(ty * 0.5)   → vertical rotation
+    - Like a camera operator rotating to follow subject
+  
+  TRANSLATION mode:
+    - LOCAL position offset = inverse of (tx, ty)
+    - Camera moves laterally to show character at offset
+    - Like dolly/crane movement
 
 Result:
 - Root + Body move through world space
-- Camera follows root but offsets back to near origin
-- From camera's view: body appears at (tx, ty) offset (matches video!)
-- From world view: you see character path with camera following
+- Camera follows root with LOCAL animation
+- From camera view: character at correct screen position
+- From world view: character path visible, camera follows
 ```
 
 **What you get:**
@@ -198,6 +218,35 @@ Then in Maya:
 **Note on Camera Rotation**: SAM3DBody estimates body pose relative to camera view. For rotating cameras, the "Root Locator + Animated Camera" mode provides a reasonable approximation. For precise matchmoving with heavy camera rotation, use external camera tracking.
 
 ## Technical Details
+
+### Camera Projection (How 2D Overlay = 3D Camera View)
+
+SAM3DBody outputs these camera parameters:
+```
+focal_length: float (in pixels)
+pred_cam_t: [tx, ty, tz]
+  - tx: horizontal offset (where body appears in frame, -1 to +1)
+  - ty: vertical offset (where body appears in frame, -1 to +1)
+  - tz: depth (camera-to-body distance)
+```
+
+**2D Projection (verify_overlay.py):**
+```
+screen_x = focal_px * (X_3d / depth) + image_center_x + tx * depth * scale
+screen_y = focal_px * (Y_3d / depth) + image_center_y + ty * depth * scale
+```
+
+**3D Camera Setup (blender_animated_fbx.py):**
+```
+# Match the same projection:
+focal_mm = focal_px * sensor_width / image_width
+sensor_height = sensor_width / aspect_ratio
+render_resolution = (image_width, image_height)
+camera_distance = tz
+camera_target_offset = (tx * tz * 0.5, ty * tz * 0.5, 0)
+```
+
+When you look through the exported camera with the video as background, the mesh should align.
 
 ### Data Flow
 ```
@@ -251,6 +300,28 @@ Each frame creates a shape key with value keyframed:
 - Last frame stays at 1 (no fade out)
 
 ## Changelog
+
+### v3.2.2
+- **FIX**: Camera up-axis now matches scene up-axis
+  - Previously camera always used UP_Y regardless of setting
+  - Now correctly uses UP_Y for Y/-Y axis, UP_Z for Z/-Z axis
+  - Console shows: `Camera static at ..., up_axis=Y`
+
+### v3.2.1
+- **FIX**: Camera now uses SAME parameters as 2D overlay for accurate 3D matching
+  - Uses `pred_cam_t` [tx, ty, tz] directly (not computed from bbox)
+  - Sets sensor_height to match video aspect ratio
+  - Sets render resolution to match video dimensions
+  - Correct scale factor for target offset calculation
+- Camera should now match the 2D overlay projection in Maya/Blender viewport
+
+### v3.2.0
+- **NEW**: `camera_motion` option with two modes:
+  - **Translation (Default)**: Camera moves laterally to frame character (dolly/crane behavior)
+  - **Rotation (Pan/Tilt)**: Camera pans/tilts to follow character (tripod/handheld behavior)
+- Choose based on how the original camera moved in your footage
+- Works with "Root Locator + Animated Camera" mode for best results
+- Console shows: `Using PAN/TILT rotation` or `Using local TRANSLATION`
 
 ### v3.1.9
 - **FIX**: Camera in "Root Locator + Animated Camera" now has LOCAL animation

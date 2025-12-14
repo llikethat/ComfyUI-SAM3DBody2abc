@@ -594,7 +594,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False):
     """
     Create camera with focal length from SAM3DBody.
     
@@ -607,9 +607,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         animate_camera: If True and mode=="camera", animate camera position with world offset.
         camera_follow_root: If True, camera will be parented to root_locator and needs
                            LOCAL animation to show character at correct screen position.
+        camera_use_rotation: If True, use pan/tilt rotation instead of translation.
+                            Better for tripod/handheld shots where camera rotates to follow subject.
         frame_offset: Starting frame number for keyframes.
     """
-    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root})...")
+    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -618,16 +620,20 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     # Set sensor width
     cam_data.sensor_width = sensor_width
     
-    # Get image dimensions and bbox for alignment
+    # Get image dimensions
     first_frame = all_frames[0]
     image_size = first_frame.get("image_size")
-    first_bbox = first_frame.get("bbox")
     
     image_width = 1920  # Default
     image_height = 1080
     if image_size:
         if isinstance(image_size, (list, tuple)) and len(image_size) >= 2:
             image_width, image_height = image_size[0], image_size[1]
+    
+    # Set sensor height to match aspect ratio (important for correct projection!)
+    aspect_ratio = image_width / image_height
+    cam_data.sensor_height = sensor_width / aspect_ratio
+    cam_data.sensor_fit = 'HORIZONTAL'
     
     # Get focal length from first frame
     first_focal = first_frame.get("focal_length")
@@ -638,64 +644,53 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         else:
             focal_px = first_focal
     
+    # Convert focal length: focal_mm = focal_px * sensor_width / image_width
     focal_mm = focal_px * (sensor_width / image_width)
     cam_data.lens = focal_mm
-    print(f"[Blender] Focal length: {focal_px}px -> {focal_mm:.1f}mm (image: {image_width}x{image_height})")
+    print(f"[Blender] Focal length: {focal_px:.0f}px -> {focal_mm:.1f}mm")
+    print(f"[Blender] Image size: {image_width}x{image_height}, aspect: {aspect_ratio:.3f}")
+    print(f"[Blender] Sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
     
-    # Compute camera target offset based on bbox position
-    # If detection is off-center, the camera target should be offset
-    target_offset = Vector((0, 0, 0))
-    if first_bbox and len(first_bbox) >= 4:
-        bbox = first_bbox
-        if isinstance(bbox[0], (list, tuple)):
-            bbox = bbox[0]  # Handle nested format
-        
-        if len(bbox) >= 4:
-            # Bbox center
-            bbox_cx = (bbox[0] + bbox[2]) / 2
-            bbox_cy = (bbox[1] + bbox[3]) / 2
-            
-            # Image center
-            img_cx = image_width / 2
-            img_cy = image_height / 2
-            
-            # Offset in pixels from image center
-            offset_px_x = bbox_cx - img_cx
-            offset_px_y = bbox_cy - img_cy
-            
-            # Convert to world units (using first frame depth)
-            first_cam_t = first_frame.get("pred_cam_t")
-            depth = 3.0
-            if first_cam_t and len(first_cam_t) > 2:
-                depth = abs(first_cam_t[2])
-            
-            # pixels to world units: world = pixels * depth / focal_px
-            offset_world_x = offset_px_x * depth / focal_px
-            offset_world_y = offset_px_y * depth / focal_px
-            
-            # Apply based on up_axis (note: y is typically inverted in image coords)
-            if up_axis == "Y":
-                target_offset = Vector((-offset_world_x, -offset_world_y, 0))
-            elif up_axis == "Z":
-                target_offset = Vector((-offset_world_x, 0, -offset_world_y))
-            elif up_axis == "-Y":
-                target_offset = Vector((-offset_world_x, offset_world_y, 0))
-            elif up_axis == "-Z":
-                target_offset = Vector((-offset_world_x, 0, offset_world_y))
-            
-            print(f"[Blender] Bbox center: ({bbox_cx:.0f}, {bbox_cy:.0f}), Image center: ({img_cx:.0f}, {img_cy:.0f})")
-            print(f"[Blender] Camera target offset: {target_offset}")
+    # Get pred_cam_t - this is the KEY to matching SAM3DBody's projection
+    # pred_cam_t = [tx, ty, tz] where:
+    #   tx, ty = normalized screen offset (roughly -1 to 1)
+    #   tz = depth (camera distance)
+    first_cam_t = first_frame.get("pred_cam_t")
     
-    # Create target for camera orientation (with offset for alignment)
+    cam_distance = 3.0
+    tx, ty = 0.0, 0.0
+    if first_cam_t and len(first_cam_t) >= 3:
+        tx, ty = first_cam_t[0], first_cam_t[1]
+        cam_distance = abs(first_cam_t[2])
+    
+    # Convert tx, ty to camera target offset in world units
+    # SAM3DBody projection: screen_pos = focal * (3D_pos / depth) + center + (tx, ty) * scale
+    # The scale factor is approximately: depth * 0.5 (empirically determined)
+    # For camera to see body at offset (tx, ty), target should be at (-tx, -ty) * scale
+    scale_factor = cam_distance * 0.5
+    
+    # Compute target offset (where camera looks)
+    # Body is at origin, camera target is offset so body appears at (tx, ty) in frame
+    if up_axis == "Y":
+        # Y-up: camera looks along -Z, X is right, Y is up
+        target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
+    elif up_axis == "Z":
+        # Z-up: camera looks along -Y, X is right, Z is up
+        target_offset = Vector((tx * scale_factor, 0, -ty * scale_factor))
+    elif up_axis == "-Y":
+        target_offset = Vector((tx * scale_factor, ty * scale_factor, 0))
+    elif up_axis == "-Z":
+        target_offset = Vector((tx * scale_factor, 0, ty * scale_factor))
+    else:
+        target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
+    
+    print(f"[Blender] pred_cam_t: tx={tx:.3f}, ty={ty:.3f}, tz={cam_distance:.2f}")
+    print(f"[Blender] Camera target offset: {target_offset} (scale={scale_factor:.2f})")
+    
+    # Create target for camera orientation
     target = bpy.data.objects.new("cam_target", None)
     target.location = target_offset
     bpy.context.collection.objects.link(target)
-    
-    # Position camera based on up axis
-    first_cam_t = first_frame.get("pred_cam_t")
-    cam_distance = 3.0
-    if first_cam_t and len(first_cam_t) > 2:
-        cam_distance = abs(first_cam_t[2])
     
     # Set camera direction based on up_axis
     if up_axis == "Y":
@@ -717,7 +712,14 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         constraint = camera.constraints.new(type='TRACK_TO')
         constraint.target = target
         constraint.track_axis = 'TRACK_NEGATIVE_Z'
-        constraint.up_axis = 'UP_Y'
+        
+        # Set camera up axis to match scene up axis
+        if up_axis == "Y" or up_axis == "-Y":
+            constraint.up_axis = 'UP_Y'
+        elif up_axis == "Z" or up_axis == "-Z":
+            constraint.up_axis = 'UP_Z'
+        else:
+            constraint.up_axis = 'UP_Y'
         
         bpy.context.view_layer.update()
         camera.rotation_euler = camera.matrix_world.to_euler()
@@ -740,7 +742,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
         
         bpy.data.objects.remove(target)
-        print(f"[Blender] Camera animated over {len(all_frames)} frames (fixed rotation, animated position)")
+        print(f"[Blender] Camera animated over {len(all_frames)} frames (up_axis={up_axis})")
     else:
         # Static camera - positioned with offset for alignment
         camera.location = base_dir * cam_distance + target_offset
@@ -748,11 +750,20 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         constraint = camera.constraints.new(type='TRACK_TO')
         constraint.target = target
         constraint.track_axis = 'TRACK_NEGATIVE_Z'
-        constraint.up_axis = 'UP_Y'
+        
+        # Set camera up axis to match scene up axis
+        if up_axis == "Y" or up_axis == "-Y":
+            constraint.up_axis = 'UP_Y'
+        elif up_axis == "Z" or up_axis == "-Z":
+            constraint.up_axis = 'UP_Z'
+        else:
+            constraint.up_axis = 'UP_Y'
         
         bpy.context.view_layer.update()
         camera.rotation_euler = camera.matrix_world.to_euler()
-        camera.constraints.remove(constraint)
+        constraint = camera.constraints.get("Track To")
+        if constraint:
+            camera.constraints.remove(constraint)
         
         bpy.data.objects.remove(target)
         
@@ -760,9 +771,9 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
         
-        print(f"[Blender] Camera static at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
+        print(f"[Blender] Camera static at {camera.location}, up_axis={up_axis}")
     
-    # For camera_follow_root: animate camera LOCAL position
+    # For camera_follow_root: animate camera LOCAL position or rotation
     # Camera is parented to root_locator, so we need local animation
     # to show character at correct screen position (not always centered)
     if camera_follow_root:
@@ -771,49 +782,106 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         # Get base camera direction based on up_axis
         if up_axis == "Y":
             base_dir = Vector((0, 0, 1))
+            # Camera looks along -Z, up is Y
+            pan_axis = 1   # Y axis for pan
+            tilt_axis = 0  # X axis for tilt
+            tilt_sign = 1
+            pan_sign = -1
         elif up_axis == "Z":
             base_dir = Vector((0, 1, 0))
+            # Camera looks along -Y, up is Z
+            pan_axis = 2   # Z
+            tilt_axis = 0  # X
+            tilt_sign = 1
+            pan_sign = -1
         elif up_axis == "-Y":
             base_dir = Vector((0, 0, -1))
+            pan_axis = 1
+            tilt_axis = 0
+            tilt_sign = -1
+            pan_sign = 1
         elif up_axis == "-Z":
             base_dir = Vector((0, -1, 0))
+            pan_axis = 2
+            tilt_axis = 0
+            tilt_sign = -1
+            pan_sign = 1
         else:
             base_dir = Vector((0, 0, 1))
+            pan_axis = 1
+            tilt_axis = 0
+            tilt_sign = 1
+            pan_sign = -1
         
-        for frame_idx, frame_data in enumerate(all_frames):
-            frame_cam_t = frame_data.get("pred_cam_t")
+        # Store base rotation
+        base_rotation = camera.rotation_euler.copy()
+        
+        if camera_use_rotation:
+            # ROTATION MODE: Camera pans/tilts to follow character (like real camera operator)
+            print(f"[Blender] Using PAN/TILT rotation to frame character")
             
-            if frame_cam_t and len(frame_cam_t) >= 3:
-                tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
-                depth = abs(tz) if tz else 3.0
+            for frame_idx, frame_data in enumerate(all_frames):
+                frame_cam_t = frame_data.get("pred_cam_t")
                 
-                # Root locator moves by world_offset = (tx * depth * 0.5, ty * depth * 0.5)
-                # To show character at correct screen position, camera local position
-                # should have the INVERSE lateral offset
-                # This keeps camera world X,Y near origin while body (at root) moves
-                lateral_x = -tx * depth * 0.5
-                lateral_y = -ty * depth * 0.5
-                
-                # Apply based on up_axis
-                if up_axis == "Y":
-                    # X is lateral, Y is vertical (screen up), Z is forward
-                    local_offset = Vector((lateral_x, -lateral_y, 0))
-                elif up_axis == "Z":
-                    # X is lateral, Z is vertical (screen up), Y is forward  
-                    local_offset = Vector((lateral_x, 0, -lateral_y))
-                elif up_axis == "-Y":
-                    local_offset = Vector((lateral_x, lateral_y, 0))
-                elif up_axis == "-Z":
-                    local_offset = Vector((lateral_x, 0, lateral_y))
-                else:
-                    local_offset = Vector((lateral_x, -lateral_y, 0))
-                
-                # Camera position = forward direction * depth + lateral offset
-                camera.location = base_dir * depth + local_offset
-                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+                if frame_cam_t and len(frame_cam_t) >= 3:
+                    tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
+                    depth = abs(tz) if tz else 3.0
+                    
+                    # Convert screen offset (tx, ty) to pan/tilt angles
+                    # tx, ty are normalized offsets (roughly -1 to 1 range)
+                    # angle = atan(offset * scale_factor)
+                    pan_angle = math.atan(tx * 0.5) * pan_sign
+                    tilt_angle = math.atan(ty * 0.5) * tilt_sign
+                    
+                    # Apply rotation
+                    camera.rotation_euler = base_rotation.copy()
+                    camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                    camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                    
+                    # Also animate depth (camera distance from root)
+                    camera.location = base_dir * depth
+                    
+                    camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+            
+            print(f"[Blender] Camera pan/tilt animated over {len(all_frames)} frames")
+            print(f"[Blender] Camera ROTATES to follow character (realistic tripod behavior)")
         
-        print(f"[Blender] Camera local animation: {len(all_frames)} frames")
-        print(f"[Blender] Camera world X,Y stays near origin while body moves with root_locator")
+        else:
+            # TRANSLATION MODE: Camera moves laterally to show character at offset position
+            print(f"[Blender] Using local TRANSLATION to frame character")
+            
+            for frame_idx, frame_data in enumerate(all_frames):
+                frame_cam_t = frame_data.get("pred_cam_t")
+                
+                if frame_cam_t and len(frame_cam_t) >= 3:
+                    tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
+                    depth = abs(tz) if tz else 3.0
+                    
+                    # Root locator moves by world_offset = (tx * depth * 0.5, ty * depth * 0.5)
+                    # To show character at correct screen position, camera local position
+                    # should have the INVERSE lateral offset
+                    lateral_x = -tx * depth * 0.5
+                    lateral_y = -ty * depth * 0.5
+                    
+                    # Apply based on up_axis
+                    if up_axis == "Y":
+                        local_offset = Vector((lateral_x, -lateral_y, 0))
+                    elif up_axis == "Z":
+                        local_offset = Vector((lateral_x, 0, -lateral_y))
+                    elif up_axis == "-Y":
+                        local_offset = Vector((lateral_x, lateral_y, 0))
+                    elif up_axis == "-Z":
+                        local_offset = Vector((lateral_x, 0, lateral_y))
+                    else:
+                        local_offset = Vector((lateral_x, -lateral_y, 0))
+                    
+                    # Camera position = forward direction * depth + lateral offset
+                    camera.location = base_dir * depth + local_offset
+                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+            
+            print(f"[Blender] Camera local translation animated over {len(all_frames)} frames")
+            print(f"[Blender] Camera TRANSLATES to keep character at correct screen position")
     
     # Animate focal length if it varies across frames
     focal_lengths = []
@@ -950,6 +1018,7 @@ def main():
     frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
+    camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
@@ -959,6 +1028,7 @@ def main():
     print(f"[Blender] Flip X: {flip_x}")
     print(f"[Blender] Animate camera: {animate_camera}")
     print(f"[Blender] Camera follow root: {camera_follow_root}")
+    print(f"[Blender] Camera use rotation: {camera_use_rotation}")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -985,6 +1055,15 @@ def main():
     bpy.context.scene.frame_start = frame_offset
     bpy.context.scene.frame_end = frame_offset + len(frames) - 1
     
+    # Set render resolution to match video (important for camera projection!)
+    first_frame = frames[0]
+    image_size = first_frame.get("image_size")
+    if image_size and len(image_size) >= 2:
+        bpy.context.scene.render.resolution_x = int(image_size[0])
+        bpy.context.scene.render.resolution_y = int(image_size[1])
+        bpy.context.scene.render.resolution_percentage = 100
+        print(f"[Blender] Render resolution set to {image_size[0]}x{image_size[1]}")
+    
     # Create root locator if needed (for "root" mode)
     root_locator = None
     if world_translation_mode == "root":
@@ -1008,14 +1087,17 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root)
+        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation)
         
         # Parent camera to root locator if requested
         # This makes camera follow character movement while preserving screen-space relationship
         if camera_follow_root and root_locator and camera_obj:
             camera_obj.parent = root_locator
             print(f"[Blender] Camera parented to root_locator - follows character movement")
-            print(f"[Blender] In camera view: character at correct screen position. In world view: both move together.")
+            if camera_use_rotation:
+                print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
+            else:
+                print(f"[Blender] Camera uses local TRANSLATION to frame character")
     
     # Export
     if output_format == "abc":

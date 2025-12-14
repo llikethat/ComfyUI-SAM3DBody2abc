@@ -160,6 +160,10 @@ class ExportAnimatedFBX:
                     "default": True,
                     "tooltip": "Include camera. Static for most modes, animated for 'Baked into Camera', follows root for 'Root Locator + Animated Camera'"
                 }),
+                "camera_motion": (["Translation (Default)", "Rotation (Pan/Tilt)"], {
+                    "default": "Translation (Default)",
+                    "tooltip": "How to interpret camera movement. Translation: camera moves laterally. Rotation: camera pans/tilts to follow subject (better for tripod/handheld shots)."
+                }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
                     "min": 1.0,
@@ -192,6 +196,7 @@ class ExportAnimatedFBX:
         flip_x: bool = False,
         include_mesh: bool = True,
         include_camera: bool = True,
+        camera_motion: str = "Translation (Default)",
         sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int, float]:
@@ -207,6 +212,7 @@ class ExportAnimatedFBX:
         # - "Root Locator + Animated Camera": camera parented to root, follows character
         animate_camera = (world_translation == "Baked into Camera")
         camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
+        use_camera_rotation = ("Rotation" in camera_motion)
         
         if include_camera:
             if animate_camera:
@@ -286,6 +292,8 @@ class ExportAnimatedFBX:
             elif isinstance(joint_parents, list):
                 print(f"[Export] joint_parents length: {len(joint_parents)}")
         
+        print(f"[Export] Camera motion mode: {'Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation'}")
+        
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
@@ -298,6 +306,7 @@ class ExportAnimatedFBX:
             "flip_x": flip_x,
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
+            "camera_use_rotation": use_camera_rotation,
             "frames": [],
         }
         
