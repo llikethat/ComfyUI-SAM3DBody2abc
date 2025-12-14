@@ -144,9 +144,9 @@ class ExportAnimatedFBX:
                     "default": "Rotations (Recommended)",
                     "tooltip": "Rotations: proper bone rotations for retargeting. Positions: exact joint locations."
                 }),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Separate Track"], {
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Root Locator + Animated Camera", "Separate Track"], {
                     "default": "None (Body at Origin)",
-                    "tooltip": "How to handle world translation. Camera animation is disabled unless 'Baked into Camera' is selected."
+                    "tooltip": "How to handle world translation. 'Root Locator + Animated Camera' is best for matchmoving workflows."
                 }),
                 "flip_x": ("BOOLEAN", {
                     "default": False,
@@ -158,7 +158,7 @@ class ExportAnimatedFBX:
                 }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Include camera (static unless world_translation='Baked into Camera')"
+                    "tooltip": "Include camera. Static for most modes, animated for 'Baked into Camera', follows root for 'Root Locator + Animated Camera'"
                 }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
@@ -202,11 +202,19 @@ class ExportAnimatedFBX:
             fps = mesh_sequence.get("fps", 24.0)
             print(f"[Export] Using fps from source: {fps}")
         
-        # Determine if camera should be animated based on world_translation mode
-        # Camera animation only makes sense when translation is baked into camera
+        # Determine camera behavior based on world_translation mode
+        # - "Baked into Camera": camera animated with inverse world offset
+        # - "Root Locator + Animated Camera": camera parented to root, follows character
         animate_camera = (world_translation == "Baked into Camera")
-        if include_camera and not animate_camera:
-            print(f"[Export] Camera will be static (world_translation={world_translation})")
+        camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
+        
+        if include_camera:
+            if animate_camera:
+                print(f"[Export] Camera will be animated (world_translation={world_translation})")
+            elif camera_follow_root:
+                print(f"[Export] Camera will follow root locator (world_translation={world_translation})")
+            else:
+                print(f"[Export] Camera will be static (world_translation={world_translation})")
         
         frames = mesh_sequence.get("frames", {})
         if not frames:
@@ -289,6 +297,7 @@ class ExportAnimatedFBX:
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
             "animate_camera": animate_camera,
+            "camera_follow_root": camera_follow_root,
             "frames": [],
         }
         

@@ -760,7 +760,34 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
         
         print(f"[Blender] Camera static at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
-        # No keyframes added - camera is completely static
+    
+    # Animate focal length if it varies across frames
+    focal_lengths = []
+    for frame_data in all_frames:
+        fl = frame_data.get("focal_length")
+        if fl is not None:
+            if isinstance(fl, (list, tuple)):
+                fl = fl[0]
+            focal_lengths.append(fl)
+    
+    if len(focal_lengths) > 1:
+        # Check if focal length actually varies
+        fl_min, fl_max = min(focal_lengths), max(focal_lengths)
+        if fl_max - fl_min > 1.0:  # More than 1 pixel difference
+            print(f"[Blender] Animating focal length: {fl_min:.0f}px to {fl_max:.0f}px")
+            
+            for frame_idx, frame_data in enumerate(all_frames):
+                fl = frame_data.get("focal_length")
+                if fl is not None:
+                    if isinstance(fl, (list, tuple)):
+                        fl = fl[0]
+                    focal_mm = fl * (sensor_width / image_width)
+                    cam_data.lens = focal_mm
+                    cam_data.keyframe_insert(data_path="lens", frame=frame_offset + frame_idx)
+            
+            print(f"[Blender] Focal length animated over {len(all_frames)} frames")
+        else:
+            print(f"[Blender] Focal length constant at ~{fl_min:.0f}px")
     
     return camera
 
@@ -868,6 +895,7 @@ def main():
     flip_x = data.get("flip_x", False)  # Mirror on X axis
     frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
+    camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
@@ -876,6 +904,7 @@ def main():
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
     print(f"[Blender] Flip X: {flip_x}")
     print(f"[Blender] Animate camera: {animate_camera}")
+    print(f"[Blender] Camera follow root: {camera_follow_root}")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -923,8 +952,16 @@ def main():
         create_translation_track(frames, fps, up_axis, frame_offset)
     
     # Create camera
+    camera_obj = None
     if include_camera:
-        create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset)
+        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset)
+        
+        # Parent camera to root locator if requested
+        # This makes camera follow character movement while preserving screen-space relationship
+        if camera_follow_root and root_locator and camera_obj:
+            camera_obj.parent = root_locator
+            print(f"[Blender] Camera parented to root_locator - follows character movement")
+            print(f"[Blender] In camera view: character stays centered. In world view: both move together.")
     
     # Export
     if output_format == "abc":

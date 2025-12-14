@@ -31,10 +31,11 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
 - **None (Body at Origin)** - Character centered, static camera
 - **Baked into Mesh/Joints** - World offset baked into positions
 - **Baked into Camera** - Body at origin, camera moves (animated)
-- **Root Locator** - Root empty carries translation, body/skeleton as children
+- **Root Locator** - Root empty carries translation, body/skeleton as children, static camera
+- **Root Locator + Animated Camera** ⭐ - Character path visible AND camera follows (best for moving camera shots)
 - **Separate Track** - Body at origin + separate locator showing world path
 
-**Note**: Camera is only animated when "Baked into Camera" is selected. For all other modes, camera is static.
+**Note**: "Root Locator + Animated Camera" is the recommended mode for shots where both character and camera move. The camera is parented to the root locator, so they move together while maintaining the screen-space relationship.
 
 ### Export Options
 - **FPS Passthrough** - Source FPS flows from video loader through to export
@@ -150,6 +151,37 @@ world_translation: None (Body at Origin)
 world_translation: Baked into Mesh/Joints
 ```
 
+### For Moving Camera Shots (Tracking/Dolly/Zoom) ⭐
+
+When both the character and camera move, use the new hybrid mode:
+
+```
+world_translation: Root Locator + Animated Camera
+include_camera: true
+```
+
+**What you get:**
+- Root locator shows character's world path
+- Camera is parented to root locator, follows character movement
+- In camera view: character stays in same screen position (matches video)
+- In world view: both character and camera move together
+- Focal length is animated if it changes
+
+**This works WITHOUT external camera tracking!**
+
+**With External Camera Tracking (VFX workflow)**
+If you have camera tracking data from SynthEyes, PFTrack, 3DEqualizer, etc.:
+```
+world_translation: None (Body at Origin)
+include_camera: false
+```
+Then in Maya:
+1. Import your tracked camera
+2. Import the FBX
+3. Parent/constrain the character to your scene
+
+**Note on Camera Rotation**: SAM3DBody estimates body pose relative to camera view. For rotating cameras, the "Root Locator + Animated Camera" mode provides a reasonable approximation. For precise matchmoving with heavy camera rotation, use external camera tracking.
+
 ## Technical Details
 
 ### Data Flow
@@ -204,6 +236,21 @@ Each frame creates a shape key with value keyframed:
 - Last frame stays at 1 (no fade out)
 
 ## Changelog
+
+### v3.1.8
+- **NEW**: "Root Locator + Animated Camera" mode for moving camera shots
+  - Camera parented to root locator - both move together
+  - Character path visible in world space
+  - Screen-space relationship preserved in camera view
+  - Works without external camera tracking!
+- Updated documentation with workflow recommendations
+
+### v3.1.7
+- **NEW**: Animated focal length support
+  - Detects if focal length changes across frames
+  - Automatically animates camera lens if variation > 1px
+  - Console shows: `Animating focal length: 1200px to 1800px`
+- Improved camera alignment for off-center detections
 
 ### v3.1.6
 - **NEW**: Camera alignment using bbox position for accurate Maya/Blender viewport match
