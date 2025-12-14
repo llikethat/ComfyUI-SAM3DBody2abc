@@ -594,7 +594,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False):
     """
     Create camera with focal length from SAM3DBody.
     
@@ -604,11 +604,12 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     - Offset from bbox position relative to image center
     
     Args:
-        animate_camera: If True and mode=="camera", animate camera position.
-                       If False, camera is completely static (no keyframes).
+        animate_camera: If True and mode=="camera", animate camera position with world offset.
+        camera_follow_root: If True, camera will be parented to root_locator and needs
+                           LOCAL animation to show character at correct screen position.
         frame_offset: Starting frame number for keyframes.
     """
-    print(f"[Blender] Creating camera (animate={animate_camera})...")
+    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -760,6 +761,59 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
         
         print(f"[Blender] Camera static at {camera.location}, rotation: {[math.degrees(r) for r in camera.rotation_euler]}")
+    
+    # For camera_follow_root: animate camera LOCAL position
+    # Camera is parented to root_locator, so we need local animation
+    # to show character at correct screen position (not always centered)
+    if camera_follow_root:
+        print(f"[Blender] Adding local animation for camera (follows root locator)...")
+        
+        # Get base camera direction based on up_axis
+        if up_axis == "Y":
+            base_dir = Vector((0, 0, 1))
+        elif up_axis == "Z":
+            base_dir = Vector((0, 1, 0))
+        elif up_axis == "-Y":
+            base_dir = Vector((0, 0, -1))
+        elif up_axis == "-Z":
+            base_dir = Vector((0, -1, 0))
+        else:
+            base_dir = Vector((0, 0, 1))
+        
+        for frame_idx, frame_data in enumerate(all_frames):
+            frame_cam_t = frame_data.get("pred_cam_t")
+            
+            if frame_cam_t and len(frame_cam_t) >= 3:
+                tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
+                depth = abs(tz) if tz else 3.0
+                
+                # Root locator moves by world_offset = (tx * depth * 0.5, ty * depth * 0.5)
+                # To show character at correct screen position, camera local position
+                # should have the INVERSE lateral offset
+                # This keeps camera world X,Y near origin while body (at root) moves
+                lateral_x = -tx * depth * 0.5
+                lateral_y = -ty * depth * 0.5
+                
+                # Apply based on up_axis
+                if up_axis == "Y":
+                    # X is lateral, Y is vertical (screen up), Z is forward
+                    local_offset = Vector((lateral_x, -lateral_y, 0))
+                elif up_axis == "Z":
+                    # X is lateral, Z is vertical (screen up), Y is forward  
+                    local_offset = Vector((lateral_x, 0, -lateral_y))
+                elif up_axis == "-Y":
+                    local_offset = Vector((lateral_x, lateral_y, 0))
+                elif up_axis == "-Z":
+                    local_offset = Vector((lateral_x, 0, lateral_y))
+                else:
+                    local_offset = Vector((lateral_x, -lateral_y, 0))
+                
+                # Camera position = forward direction * depth + lateral offset
+                camera.location = base_dir * depth + local_offset
+                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+        
+        print(f"[Blender] Camera local animation: {len(all_frames)} frames")
+        print(f"[Blender] Camera world X,Y stays near origin while body moves with root_locator")
     
     # Animate focal length if it varies across frames
     focal_lengths = []
@@ -954,14 +1008,14 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset)
+        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root)
         
         # Parent camera to root locator if requested
         # This makes camera follow character movement while preserving screen-space relationship
         if camera_follow_root and root_locator and camera_obj:
             camera_obj.parent = root_locator
             print(f"[Blender] Camera parented to root_locator - follows character movement")
-            print(f"[Blender] In camera view: character stays centered. In world view: both move together.")
+            print(f"[Blender] In camera view: character at correct screen position. In world view: both move together.")
     
     # Export
     if output_format == "abc":

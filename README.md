@@ -160,10 +160,25 @@ world_translation: Root Locator + Animated Camera
 include_camera: true
 ```
 
+**How it works internally:**
+```
+Frame N: pred_cam_t = [tx, ty, tz]  (character position relative to camera)
+
+Root Locator position = world_offset(tx, ty, tz)  → Character's world path
+Camera LOCAL position = INVERSE of (tx, ty)       → Keeps camera near world origin
+
+Result:
+- Root + Body move through world space
+- Camera follows root but offsets back to near origin
+- From camera's view: body appears at (tx, ty) offset (matches video!)
+- From world view: you see character path with camera following
+```
+
 **What you get:**
 - Root locator shows character's world path
 - Camera is parented to root locator, follows character movement
-- In camera view: character stays in same screen position (matches video)
+- Camera has LOCAL animation to show character at correct screen position
+- In camera view: character at same position as in original video
 - In world view: both character and camera move together
 - Focal length is animated if it changes
 
@@ -236,6 +251,14 @@ Each frame creates a shape key with value keyframed:
 - Last frame stays at 1 (no fade out)
 
 ## Changelog
+
+### v3.1.9
+- **FIX**: Camera in "Root Locator + Animated Camera" now has LOCAL animation
+  - Camera parented to root_locator for world movement
+  - Camera LOCAL position animated with inverse offset
+  - Result: Camera world X,Y stays near origin while body moves
+  - In camera view: Character appears at correct screen position (not always centered)
+  - In world view: Both character and camera move together
 
 ### v3.1.8
 - **NEW**: "Root Locator + Animated Camera" mode for moving camera shots
