@@ -706,70 +706,77 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     
     # For "camera" mode with animate_camera=True: animated camera to follow character
     if animate_camera and world_translation_mode == "camera":
-        # Set initial rotation pointing at target
-        camera.location = base_dir * cam_distance + target_offset
-        
-        constraint = camera.constraints.new(type='TRACK_TO')
-        constraint.target = target
-        constraint.track_axis = 'TRACK_NEGATIVE_Z'
-        
-        # Set camera up axis to match scene up axis
-        if up_axis == "Y" or up_axis == "-Y":
-            constraint.up_axis = 'UP_Y'
-        elif up_axis == "Z" or up_axis == "-Z":
-            constraint.up_axis = 'UP_Z'
-        else:
-            constraint.up_axis = 'UP_Y'
-        
-        bpy.context.view_layer.update()
-        base_rotation = camera.matrix_world.to_euler()
-        camera.rotation_euler = base_rotation.copy()
-        camera.constraints.remove(constraint)
-        
-        camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
-        camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
-        camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
-        base_rotation = camera.rotation_euler.copy()
-        
-        bpy.data.objects.remove(target)
         
         if camera_use_rotation:
-            # ROTATION MODE: Camera stays in place, rotates (pan/tilt) to follow character
+            # ROTATION MODE: Camera at fixed position, rotates to follow
+            # Initial setup: camera looking straight at origin
+            camera.location = base_dir * cam_distance  # No target_offset!
+            
+            # Point camera at origin to get base rotation
+            origin_target = bpy.data.objects.new("origin_target", None)
+            origin_target.location = Vector((0, 0, 0))
+            bpy.context.collection.objects.link(origin_target)
+            
+            constraint = camera.constraints.new(type='TRACK_TO')
+            constraint.target = origin_target
+            constraint.track_axis = 'TRACK_NEGATIVE_Z'
+            
+            if up_axis == "Y" or up_axis == "-Y":
+                constraint.up_axis = 'UP_Y'
+            elif up_axis == "Z" or up_axis == "-Z":
+                constraint.up_axis = 'UP_Z'
+            else:
+                constraint.up_axis = 'UP_Y'
+            
+            bpy.context.view_layer.update()
+            base_rotation = camera.matrix_world.to_euler()
+            camera.rotation_euler = base_rotation.copy()
+            camera.constraints.remove(constraint)
+            bpy.data.objects.remove(origin_target)
+            
+            camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
+            camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
+            camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
+            base_rotation = camera.rotation_euler.copy()
+            
+            # Also remove the offset target we created earlier
+            bpy.data.objects.remove(target)
+            
             print(f"[Blender] Camera using ROTATION (Pan/Tilt) to follow character...")
             
             # Get pan/tilt axis configuration based on up_axis
             # Pan = rotation around UP axis, Tilt = rotation around horizontal axis
-            # IMPORTANT: Camera rotation is INVERSE of character screen movement
-            # Character moves right → camera pans LEFT to keep them in frame
+            # 
+            # KEY INSIGHT: Camera rotation direction vs view shift
+            # - Positive Y rotation (Y-up) = camera turns LEFT = objects shift LEFT in view
+            # - So for tx > 0 (char on RIGHT), we need NEGATIVE Y rotation
+            # - Similarly, positive X rotation = tilt UP = objects shift DOWN
+            # - For ty > 0 (char BELOW center), we need POSITIVE X rotation
             if up_axis == "Y":
-                # Camera looks along -Z, up is Y
                 pan_axis = 1   # Y axis for pan (yaw)
                 tilt_axis = 0  # X axis for tilt (pitch)
-                tilt_sign = -1  # Inverted: char moves down → camera tilts up
-                pan_sign = 1    # Inverted: char moves right → camera pans left (positive Y rot)
+                tilt_sign = 1   # ty > 0 (below) → tilt up → positive X
+                pan_sign = -1   # tx > 0 (right) → turn right → negative Y
             elif up_axis == "Z":
-                # Camera looks along -Y, up is Z
                 pan_axis = 2   # Z axis for pan
                 tilt_axis = 0  # X axis for tilt
-                tilt_sign = -1
-                pan_sign = 1
+                tilt_sign = 1
+                pan_sign = -1
             elif up_axis == "-Y":
-                # Camera looks along +Z, up is -Y
-                pan_axis = 1   # Y axis for pan
-                tilt_axis = 0  # X axis for tilt
-                tilt_sign = 1
-                pan_sign = -1
-            elif up_axis == "-Z":
-                # Camera looks along +Y, up is -Z
-                pan_axis = 2   # Z axis for pan
-                tilt_axis = 0  # X axis for tilt
-                tilt_sign = 1
-                pan_sign = -1
-            else:
                 pan_axis = 1
                 tilt_axis = 0
                 tilt_sign = -1
                 pan_sign = 1
+            elif up_axis == "-Z":
+                pan_axis = 2
+                tilt_axis = 0
+                tilt_sign = -1
+                pan_sign = 1
+            else:
+                pan_axis = 1
+                tilt_axis = 0
+                tilt_sign = 1
+                pan_sign = -1
             
             for frame_idx, frame_data in enumerate(all_frames):
                 frame_cam_t = frame_data.get("pred_cam_t")
@@ -792,15 +799,40 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
                     camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
                     
-                    # Keep camera at fixed position (or animate depth only)
-                    camera.location = base_dir * frame_distance + target_offset
+                    # Camera position: just depth along base direction
+                    camera.location = base_dir * frame_distance
                     
                     camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
                     camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
             print(f"[Blender] Camera ROTATES (pan/tilt) over {len(all_frames)} frames (up_axis={up_axis})")
+        
         else:
             # TRANSLATION MODE: Camera moves laterally to follow character
+            # Set initial rotation pointing at target
+            camera.location = base_dir * cam_distance + target_offset
+            
+            constraint = camera.constraints.new(type='TRACK_TO')
+            constraint.target = target
+            constraint.track_axis = 'TRACK_NEGATIVE_Z'
+            
+            if up_axis == "Y" or up_axis == "-Y":
+                constraint.up_axis = 'UP_Y'
+            elif up_axis == "Z" or up_axis == "-Z":
+                constraint.up_axis = 'UP_Z'
+            else:
+                constraint.up_axis = 'UP_Y'
+            
+            bpy.context.view_layer.update()
+            camera.rotation_euler = camera.matrix_world.to_euler()
+            camera.constraints.remove(constraint)
+            
+            camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
+            camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
+            camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
+            
+            bpy.data.objects.remove(target)
+            
             print(f"[Blender] Camera using TRANSLATION to follow character...")
             
             for frame_idx, frame_data in enumerate(all_frames):
@@ -855,36 +887,37 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         if up_axis == "Y":
             base_dir = Vector((0, 0, 1))
             # Camera looks along -Z, up is Y
-            # IMPORTANT: Camera rotation is INVERSE of character screen movement
+            # Positive Y rotation = turn left = objects shift left
+            # So tx > 0 (right) needs negative Y rotation
             pan_axis = 1   # Y axis for pan
             tilt_axis = 0  # X axis for tilt
-            tilt_sign = -1  # Inverted
-            pan_sign = 1    # Inverted
+            tilt_sign = 1   # ty > 0 → tilt up → positive X
+            pan_sign = -1   # tx > 0 → turn right → negative Y
         elif up_axis == "Z":
             base_dir = Vector((0, 1, 0))
             # Camera looks along -Y, up is Z
             pan_axis = 2   # Z
             tilt_axis = 0  # X
-            tilt_sign = -1
-            pan_sign = 1
+            tilt_sign = 1
+            pan_sign = -1
         elif up_axis == "-Y":
             base_dir = Vector((0, 0, -1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1
+            pan_sign = 1
         elif up_axis == "-Z":
             base_dir = Vector((0, -1, 0))
             pan_axis = 2
             tilt_axis = 0
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1
+            pan_sign = 1
         else:
             base_dir = Vector((0, 0, 1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = -1
-            pan_sign = 1
+            tilt_sign = 1
+            pan_sign = -1
         
         # Store base rotation
         base_rotation = camera.rotation_euler.copy()
