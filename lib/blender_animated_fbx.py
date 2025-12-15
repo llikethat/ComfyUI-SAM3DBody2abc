@@ -704,9 +704,9 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     else:
         base_dir = Vector((0, 0, 1))
     
-    # For "camera" mode with animate_camera=True: fixed rotation, animated position with offset
+    # For "camera" mode with animate_camera=True: animated camera to follow character
     if animate_camera and world_translation_mode == "camera":
-        # Set fixed rotation pointing at target (which may be offset)
+        # Set initial rotation pointing at target
         camera.location = base_dir * cam_distance + target_offset
         
         constraint = camera.constraints.new(type='TRACK_TO')
@@ -722,27 +722,97 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             constraint.up_axis = 'UP_Y'
         
         bpy.context.view_layer.update()
-        camera.rotation_euler = camera.matrix_world.to_euler()
+        base_rotation = camera.matrix_world.to_euler()
+        camera.rotation_euler = base_rotation.copy()
         camera.constraints.remove(constraint)
         
         camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
         camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
-        
-        # Animate camera position with negative world offset
-        for frame_idx, frame_data in enumerate(all_frames):
-            frame_cam_t = frame_data.get("pred_cam_t")
-            
-            frame_distance = cam_distance
-            if frame_cam_t and len(frame_cam_t) > 2:
-                frame_distance = abs(frame_cam_t[2])
-            
-            world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
-            camera.location = base_dir * frame_distance + target_offset - world_offset
-            camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+        base_rotation = camera.rotation_euler.copy()
         
         bpy.data.objects.remove(target)
-        print(f"[Blender] Camera animated over {len(all_frames)} frames (up_axis={up_axis})")
+        
+        if camera_use_rotation:
+            # ROTATION MODE: Camera stays in place, rotates (pan/tilt) to follow character
+            print(f"[Blender] Camera using ROTATION (Pan/Tilt) to follow character...")
+            
+            # Get pan/tilt axis configuration based on up_axis
+            # Pan = rotation around UP axis, Tilt = rotation around horizontal axis
+            if up_axis == "Y":
+                # Camera looks along -Z, up is Y
+                pan_axis = 1   # Y axis for pan (yaw)
+                tilt_axis = 0  # X axis for tilt (pitch)
+                tilt_sign = 1
+                pan_sign = -1
+            elif up_axis == "Z":
+                # Camera looks along -Y, up is Z
+                pan_axis = 2   # Z axis for pan
+                tilt_axis = 0  # X axis for tilt
+                tilt_sign = 1
+                pan_sign = -1
+            elif up_axis == "-Y":
+                # Camera looks along +Z, up is -Y
+                pan_axis = 1   # Y axis for pan
+                tilt_axis = 0  # X axis for tilt
+                tilt_sign = -1
+                pan_sign = 1
+            elif up_axis == "-Z":
+                # Camera looks along +Y, up is -Z
+                pan_axis = 2   # Z axis for pan
+                tilt_axis = 0  # X axis for tilt
+                tilt_sign = -1
+                pan_sign = 1
+            else:
+                pan_axis = 1
+                tilt_axis = 0
+                tilt_sign = 1
+                pan_sign = -1
+            
+            for frame_idx, frame_data in enumerate(all_frames):
+                frame_cam_t = frame_data.get("pred_cam_t")
+                
+                frame_distance = cam_distance
+                if frame_cam_t and len(frame_cam_t) > 2:
+                    frame_distance = abs(frame_cam_t[2])
+                
+                if frame_cam_t and len(frame_cam_t) >= 3:
+                    tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
+                    
+                    # Calculate pan/tilt angles using atan
+                    # tx, ty are normalized screen offsets, convert to angles
+                    # The 0.5 factor controls sensitivity (adjust if needed)
+                    pan_angle = math.atan(tx * 0.5) * pan_sign
+                    tilt_angle = math.atan(ty * 0.5) * tilt_sign
+                    
+                    # Apply rotation from base
+                    camera.rotation_euler = base_rotation.copy()
+                    camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                    camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                    
+                    # Keep camera at fixed position (or animate depth only)
+                    camera.location = base_dir * frame_distance + target_offset
+                    
+                    camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+            
+            print(f"[Blender] Camera ROTATES (pan/tilt) over {len(all_frames)} frames (up_axis={up_axis})")
+        else:
+            # TRANSLATION MODE: Camera moves laterally to follow character
+            print(f"[Blender] Camera using TRANSLATION to follow character...")
+            
+            for frame_idx, frame_data in enumerate(all_frames):
+                frame_cam_t = frame_data.get("pred_cam_t")
+                
+                frame_distance = cam_distance
+                if frame_cam_t and len(frame_cam_t) > 2:
+                    frame_distance = abs(frame_cam_t[2])
+                
+                world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+                camera.location = base_dir * frame_distance + target_offset - world_offset
+                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+            
+            print(f"[Blender] Camera TRANSLATES over {len(all_frames)} frames (up_axis={up_axis})")
     else:
         # Static camera - positioned with offset for alignment
         camera.location = base_dir * cam_distance + target_offset

@@ -162,7 +162,7 @@ class ExportAnimatedFBX:
                 }),
                 "camera_motion": (["Translation (Default)", "Rotation (Pan/Tilt)"], {
                     "default": "Translation (Default)",
-                    "tooltip": "How to interpret camera movement. Translation: camera moves laterally. Rotation: camera pans/tilts to follow subject (better for tripod/handheld shots)."
+                    "tooltip": "How camera follows character. Translation: camera moves laterally. Rotation: camera pans/tilts (tripod-like). Only applies when world_translation is 'Baked into Camera' or 'Root Locator + Animated Camera'."
                 }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
@@ -213,6 +213,10 @@ class ExportAnimatedFBX:
         animate_camera = (world_translation == "Baked into Camera")
         camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
         use_camera_rotation = ("Rotation" in camera_motion)
+        
+        # Warn if camera rotation is selected but won't be used
+        if use_camera_rotation and not animate_camera and not camera_follow_root:
+            print(f"[Export] Warning: Camera rotation mode only works with 'Baked into Camera' or 'Root Locator + Animated Camera'. Currently using '{world_translation}' - camera will be static.")
         
         if include_camera:
             if animate_camera:
