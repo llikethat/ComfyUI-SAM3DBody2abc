@@ -22,6 +22,31 @@ from mathutils import Vector, Matrix, Euler, Quaternion
 import math
 
 
+def smooth_array(values, window):
+    """Moving average smoothing for camera animation to reduce jitter.
+    
+    Args:
+        values: List of float values
+        window: Smoothing window size (odd number works best)
+    
+    Returns:
+        Smoothed list of values
+    """
+    if window <= 1 or len(values) < window:
+        return values
+    
+    result = []
+    half = window // 2
+    
+    for i in range(len(values)):
+        start = max(0, i - half)
+        end = min(len(values), i + half + 1)
+        avg = sum(values[start:end]) / (end - start)
+        result.append(avg)
+    
+    return result
+
+
 def clear_scene():
     """Remove all objects."""
     bpy.ops.object.select_all(action='SELECT')
@@ -594,7 +619,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False, camera_smoothing=0, flip_x=False):
     """
     Create camera with focal length from SAM3DBody.
     
@@ -609,9 +634,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                            LOCAL animation to show character at correct screen position.
         camera_use_rotation: If True, use pan/tilt rotation instead of translation.
                             Better for tripod/handheld shots where camera rotates to follow subject.
+        camera_smoothing: Smoothing window for camera values to reduce jitter (0=none).
+        flip_x: Whether X axis is flipped (affects camera pan direction).
         frame_offset: Starting frame number for keyframes.
     """
-    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation})...")
+    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, smoothing={camera_smoothing})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -979,37 +1006,24 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         # Get base camera direction based on up_axis
         if up_axis == "Y":
             base_dir = Vector((0, 0, 1))
-            # Camera looks along -Z, up is Y
-            # Same corrected logic as other modes
             pan_axis = 1   # Y axis for pan
             tilt_axis = 0  # X axis for tilt
-            tilt_sign = -1  # ty > 0 → tilt UP (negative X) → origin appears lower
-            pan_sign = 1    # tx > 0 → pan LEFT (positive Y) → origin appears right
         elif up_axis == "Z":
             base_dir = Vector((0, 1, 0))
-            # Camera looks along -Y, up is Z
-            pan_axis = 2   # Z
-            tilt_axis = 0  # X
-            tilt_sign = -1
-            pan_sign = 1
+            pan_axis = 2   # Z axis for pan
+            tilt_axis = 0  # X axis for tilt
         elif up_axis == "-Y":
             base_dir = Vector((0, 0, -1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = 1
-            pan_sign = -1
         elif up_axis == "-Z":
             base_dir = Vector((0, -1, 0))
             pan_axis = 2
             tilt_axis = 0
-            tilt_sign = 1
-            pan_sign = -1
         else:
             base_dir = Vector((0, 0, 1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = -1
-            pan_sign = 1
         
         # Store base rotation
         base_rotation = camera.rotation_euler.copy()
@@ -1018,27 +1032,58 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             # ROTATION MODE: Camera pans/tilts to follow character (like real camera operator)
             print(f"[Blender] Using PAN/TILT rotation to frame character")
             
-            for frame_idx, frame_data in enumerate(all_frames):
-                frame_cam_t = frame_data.get("pred_cam_t")
-                
+            # Collect all camera values first for smoothing
+            all_tx = []
+            all_ty = []
+            all_tz = []
+            for frame_data in all_frames:
+                frame_cam_t = frame_data.get("pred_cam_t", [0, 0, 3])
                 if frame_cam_t and len(frame_cam_t) >= 3:
-                    tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
-                    depth = abs(tz) if abs(tz) > 0.1 else 0.1
-                    
-                    # angle = atan2(offset, depth) to match 2D projection
-                    pan_angle = math.atan2(tx, depth) * pan_sign
-                    tilt_angle = math.atan2(ty, depth) * tilt_sign
-                    
-                    # Apply rotation
-                    camera.rotation_euler = base_rotation.copy()
-                    camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
-                    camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
-                    
-                    # Also animate depth (camera distance from root)
-                    camera.location = base_dir * depth
-                    
-                    camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
-                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+                    all_tx.append(frame_cam_t[0])
+                    all_ty.append(frame_cam_t[1])
+                    all_tz.append(frame_cam_t[2])
+                else:
+                    all_tx.append(0)
+                    all_ty.append(0)
+                    all_tz.append(3)
+            
+            # Apply smoothing if requested
+            if camera_smoothing > 1:
+                all_tx = smooth_array(all_tx, camera_smoothing)
+                all_ty = smooth_array(all_ty, camera_smoothing)
+                all_tz = smooth_array(all_tz, camera_smoothing)
+                print(f"[Blender] Applied camera smoothing (window={camera_smoothing})")
+            
+            for frame_idx in range(len(all_frames)):
+                tx = all_tx[frame_idx]
+                ty = all_ty[frame_idx]
+                tz = all_tz[frame_idx]
+                depth = abs(tz) if abs(tz) > 0.1 else 0.1
+                
+                # Apply coordinate transform to match geometry transform
+                # For Y-up: geometry uses (x_mult * x, -y, -z)
+                # So camera values should use same transform
+                if up_axis == "Y" or up_axis == "-Y":
+                    tx_cam = tx if flip_x else -tx
+                    ty_cam = -ty  # Y is negated in geometry transform
+                else:  # Z-up
+                    tx_cam = tx if flip_x else -tx
+                    ty_cam = -ty
+                
+                # Compute angles directly using atan2
+                pan_angle = math.atan2(tx_cam, depth)
+                tilt_angle = math.atan2(ty_cam, depth)
+                
+                # Apply rotation
+                camera.rotation_euler = base_rotation.copy()
+                camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                
+                # Also animate depth (camera distance from root)
+                camera.location = base_dir * depth
+                
+                camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
             print(f"[Blender] Camera pan/tilt animated over {len(all_frames)} frames")
             print(f"[Blender] Camera ROTATES to follow character (realistic tripod behavior)")
@@ -1215,6 +1260,7 @@ def main():
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
+    camera_smoothing = data.get("camera_smoothing", 0)  # Smoothing window for camera animation
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
@@ -1225,6 +1271,7 @@ def main():
     print(f"[Blender] Animate camera: {animate_camera}")
     print(f"[Blender] Camera follow root: {camera_follow_root}")
     print(f"[Blender] Camera use rotation: {camera_use_rotation}")
+    print(f"[Blender] Camera smoothing: {camera_smoothing}")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -1283,7 +1330,7 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation)
+        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_smoothing, flip_x)
         
         # Parent camera to root locator if requested
         # This makes camera follow character movement while preserving screen-space relationship

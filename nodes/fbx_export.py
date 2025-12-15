@@ -164,6 +164,13 @@ class ExportAnimatedFBX:
                     "default": "Translation (Default)",
                     "tooltip": "How camera follows character. Translation: camera moves laterally. Rotation: camera pans/tilts (tripod-like). Only applies when world_translation is 'Baked into Camera' or 'Root Locator + Animated Camera'."
                 }),
+                "camera_smoothing": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 15,
+                    "step": 1,
+                    "tooltip": "Smoothing window for camera animation to reduce jitter (0=none, 3=light, 5=medium, 9=heavy)"
+                }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
                     "min": 1.0,
@@ -197,6 +204,7 @@ class ExportAnimatedFBX:
         include_mesh: bool = True,
         include_camera: bool = True,
         camera_motion: str = "Translation (Default)",
+        camera_smoothing: int = 0,
         sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int, float]:
@@ -306,6 +314,8 @@ class ExportAnimatedFBX:
                 print(f"[Export] joint_parents length: {len(joint_parents)}")
         
         print(f"[Export] Camera motion mode: {'Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation'}")
+        if camera_smoothing > 0:
+            print(f"[Export] Camera smoothing: {camera_smoothing} frames")
         
         export_data = {
             "fps": fps,
@@ -320,6 +330,7 @@ class ExportAnimatedFBX:
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
             "camera_use_rotation": use_camera_rotation,
+            "camera_smoothing": camera_smoothing,
             "frames": [],
         }
         

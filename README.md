@@ -127,6 +127,7 @@ Video Loader (fps output) ──────────────────
 | include_mesh | BOOLEAN | Include mesh in export |
 | include_camera | BOOLEAN | Include camera in export |
 | camera_motion | Translation/Rotation | How camera follows character (see Camera Motion Modes) |
+| camera_smoothing | INT | Smoothing window for camera animation (0=none, 3=light, 5=medium, 9=heavy) |
 | sensor_width | FLOAT | Camera sensor width in mm (36mm = Full Frame) |
 
 ### Verifying Correct Person Tracking
@@ -180,16 +181,19 @@ world_translation: Baked into Mesh/Joints
 ### For Tripod/Handheld Camera Shots (Camera Pans/Tilts) ⭐
 When the original camera rotates to follow the subject:
 ```
-world_translation: None (Body at Origin)   OR   Baked into Camera
+world_translation: Root Locator + Animated Camera
 camera_motion: Rotation (Pan/Tilt)
+camera_smoothing: 5                            (reduce jitter, adjust as needed)
 include_camera: true
-up_axis: Y                                 (for Maya)
+up_axis: Y                                     (for Maya)
+flip_x: true                                   (test both values)
 ```
 
 **How it works:**
-- Body stays at/near origin
+- Root locator carries world translation
 - Camera rotates (pan around Y, tilt around X) to frame the body
 - Looking through the camera shows body at correct screen position
+- Smoothing reduces frame-to-frame jitter in camera movement
 
 ### For Moving Camera Shots (Tracking/Dolly/Zoom) ⭐
 
@@ -198,7 +202,8 @@ When both the character and camera move, use the hybrid mode:
 ```
 world_translation: Root Locator + Animated Camera
 include_camera: true
-camera_motion: Rotation (Pan/Tilt)  ← NEW in v3.2.0
+camera_motion: Rotation (Pan/Tilt)
+camera_smoothing: 5                            (adjust 0-15 as needed)
 ```
 
 **Camera Motion Options:**
@@ -340,6 +345,17 @@ Each frame creates a shape key with value keyframed:
 - Last frame stays at 1 (no fade out)
 
 ## Changelog
+
+### v3.2.8
+- **CRITICAL FIX**: Camera rotation now correctly matches geometry coordinate transform
+  - Root cause: geometry uses `(x, -y, -z)` for Y-up but camera used raw `(tx, ty)`
+  - Now camera applies same transform: `ty_cam = -ty` to match geometry
+  - This fixes the "geo out of frame due to tilt" issue
+- **NEW**: `camera_smoothing` parameter to reduce camera jitter
+  - Values: 0=none, 3=light, 5=medium, 9=heavy, up to 15
+  - Applies moving average smoothing to camera translation values
+- Removed confusing `pan_sign`/`tilt_sign` variables - coordinate transform handles direction
+- Better console output showing smoothing status
 
 ### v3.2.7
 - **CRITICAL FIX**: Camera rotation now uses correct projection math
@@ -502,6 +518,16 @@ Adjust `frame_offset` (1 for Maya, 0 for Blender).
    - `Camera using ROTATION (Pan/Tilt)...` → rotation mode active
    - `Camera using TRANSLATION...` → translation mode active
    - `Camera static at...` → no animation
+
+### Camera animation has jitter
+1. Increase `camera_smoothing` value:
+   - `0` = no smoothing (raw data)
+   - `3` = light smoothing
+   - `5` = medium smoothing (recommended starting point)
+   - `9` = heavy smoothing
+   - `15` = maximum smoothing
+2. Console shows: `Applied camera smoothing (window=5)`
+3. Higher values = smoother but may lose subtle camera movements
 
 ### Camera rotation seems inverted
 The camera should rotate TOWARD the character:
