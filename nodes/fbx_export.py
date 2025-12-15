@@ -210,19 +210,28 @@ class ExportAnimatedFBX:
         # Determine camera behavior based on world_translation mode
         # - "Baked into Camera": camera animated with inverse world offset
         # - "Root Locator + Animated Camera": camera parented to root, follows character
+        # - "None" + rotation: camera rotates to frame body at origin
         animate_camera = (world_translation == "Baked into Camera")
         camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
         use_camera_rotation = ("Rotation" in camera_motion)
         
-        # Warn if camera rotation is selected but won't be used
-        if use_camera_rotation and not animate_camera and not camera_follow_root:
-            print(f"[Export] Warning: Camera rotation mode only works with 'Baked into Camera' or 'Root Locator + Animated Camera'. Currently using '{world_translation}' - camera will be static.")
+        # Camera rotation works with: None, Baked into Camera, Root Locator + Animated Camera
+        # It does NOT work with: Baked into Mesh/Joints, Root Locator (no animation), Separate Track
+        rotation_incompatible = any(x in world_translation for x in ["Baked into Mesh", "Separate"])
+        rotation_incompatible = rotation_incompatible or (world_translation == "Root Locator")
+        
+        if use_camera_rotation and rotation_incompatible:
+            print(f"[Export] Warning: Camera rotation mode not supported with '{world_translation}' - camera will be static.")
         
         if include_camera:
             if animate_camera:
-                print(f"[Export] Camera will be animated (world_translation={world_translation})")
+                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
+                print(f"[Export] Camera animated with {mode_str} (world_translation={world_translation})")
             elif camera_follow_root:
-                print(f"[Export] Camera will follow root locator (world_translation={world_translation})")
+                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
+                print(f"[Export] Camera follows root with {mode_str} (world_translation={world_translation})")
+            elif use_camera_rotation and not rotation_incompatible:
+                print(f"[Export] Camera rotates (pan/tilt) to frame body at origin (world_translation={world_translation})")
             else:
                 print(f"[Export] Camera will be static (world_translation={world_translation})")
         

@@ -28,12 +28,36 @@ Export SAM3DBody mesh sequences to animated FBX or Alembic files for use in Maya
   - Limited retargeting capability
 
 ### World Translation Modes
-- **None (Body at Origin)** - Character centered, static camera
-- **Baked into Mesh/Joints** - World offset baked into positions
-- **Baked into Camera** - Body at origin, camera moves (animated)
+- **None (Body at Origin)** - Character centered, camera can be static OR animated (pan/tilt)
+- **Baked into Mesh/Joints** - World offset baked into positions, static camera
+- **Baked into Camera** - Body at origin, camera animated (translation or rotation)
 - **Root Locator** - Root empty carries translation, body/skeleton as children, static camera
 - **Root Locator + Animated Camera** ⭐ - Character path visible AND camera follows (best for moving camera shots)
 - **Separate Track** - Body at origin + separate locator showing world path
+
+### Camera Motion Modes
+The `camera_motion` option controls how the camera follows the character:
+
+| Mode | Description | Best For |
+|------|-------------|----------|
+| **Translation (Default)** | Camera moves laterally to frame character | Dolly/crane/steadicam shots |
+| **Rotation (Pan/Tilt)** | Camera pans/tilts to follow character | Tripod/handheld/locked-off shots |
+
+**Rotation Math (Y-up / Maya):**
+- From SAM3DBody projection: `x_2d = focal * tx / tz + center`
+- Camera rotation: `pan_angle = atan2(tx, tz)`, `tilt_angle = atan2(ty, tz)`
+- Using `atan2` is safer and standard in 3D graphics
+- This ensures the 3D camera view matches the 2D overlay projection exactly!
+
+**Applies to these world_translation modes:**
+| World Translation | Camera Motion Effect |
+|-------------------|---------------------|
+| **None (Body at Origin)** | ✅ Camera rotates to show body at correct screen position |
+| **Baked into Camera** | ✅ Camera animated with translation OR rotation |
+| **Root Locator + Animated Camera** | ✅ Camera follows root with local animation |
+| Baked into Mesh/Joints | ❌ Camera is static |
+| Root Locator | ❌ Camera is static |
+| Separate Track | ❌ Camera is static |
 
 **Note**: "Root Locator + Animated Camera" is the recommended mode for shots where both character and camera move. The camera is parented to the root locator, so they move together while maintaining the screen-space relationship.
 
@@ -102,6 +126,8 @@ Video Loader (fps output) ──────────────────
 | flip_x | BOOLEAN | Mirror animation on X axis |
 | include_mesh | BOOLEAN | Include mesh in export |
 | include_camera | BOOLEAN | Include camera in export |
+| camera_motion | Translation/Rotation | How camera follows character (see Camera Motion Modes) |
+| sensor_width | FLOAT | Camera sensor width in mm (36mm = Full Frame) |
 
 ### Verifying Correct Person Tracking
 
@@ -150,6 +176,20 @@ world_translation: None (Body at Origin)
 ```
 world_translation: Baked into Mesh/Joints
 ```
+
+### For Tripod/Handheld Camera Shots (Camera Pans/Tilts) ⭐
+When the original camera rotates to follow the subject:
+```
+world_translation: None (Body at Origin)   OR   Baked into Camera
+camera_motion: Rotation (Pan/Tilt)
+include_camera: true
+up_axis: Y                                 (for Maya)
+```
+
+**How it works:**
+- Body stays at/near origin
+- Camera rotates (pan around Y, tilt around X) to frame the body
+- Looking through the camera shows body at correct screen position
 
 ### For Moving Camera Shots (Tracking/Dolly/Zoom) ⭐
 
@@ -301,6 +341,32 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.2.7
+- **CRITICAL FIX**: Camera rotation now uses correct projection math
+  - Previously: `angle = atan(tx * 0.5)` - arbitrary scale factor ✗
+  - Now: `angle = atan2(tx, tz)` - matches SAM3DBody's projection model ✓
+  - Using `atan2` for safety and 3D graphics standard practice
+  - This ensures 3D camera view matches 2D overlay exactly!
+
+### v3.2.6
+- **FIX**: Corrected camera pan/tilt direction for Y-up (Maya)
+  - Previously: tilt was inverted, causing mesh to appear too low/high
+  - Now: ty > 0 (body below center) → camera tilts UP → origin appears LOWER ✓
+  - Now: tx > 0 (body on right) → camera pans LEFT → origin appears RIGHT ✓
+- All three rotation-enabled modes now use consistent, corrected math
+
+### v3.2.5
+- **NEW**: Camera rotation mode now works with "None (Body at Origin)"
+  - Previously only worked with "Baked into Camera" and "Root Locator + Animated Camera"
+  - Now you can keep body at origin while camera pans/tilts to frame it correctly
+- **FIX**: Corrected pan/tilt axis signs for proper camera rotation direction
+  - Character on RIGHT → camera pans RIGHT (negative Y rotation)
+  - Character BELOW center → camera tilts DOWN (positive X rotation)
+- **FIX**: Rotation mode camera starts at base position (no target offset)
+  - Rotation handles framing, not translation
+- **IMPROVED**: Separated translation vs rotation code paths for cleaner logic
+- **IMPROVED**: Updated README with comprehensive camera motion documentation
+
 ### v3.2.2
 - **FIX**: Camera up-axis now matches scene up-axis
   - Previously camera always used UP_Y regardless of setting
@@ -419,6 +485,30 @@ Enable `flip_x = true` in Export node.
 
 ### Keyframes start at wrong frame
 Adjust `frame_offset` (1 for Maya, 0 for Blender).
+
+### Character not aligned in camera view
+1. Make sure `camera_motion` matches your footage:
+   - Tripod/static camera → **Rotation (Pan/Tilt)**
+   - Dolly/crane/steadicam → **Translation (Default)**
+2. Check `up_axis` matches your application (Y for Maya, Z for Blender)
+3. Try toggling `flip_x` if character appears mirrored
+4. For "Baked into Camera" or "None (Body at Origin)" modes, the character should be at/near origin
+
+### Camera pointing wrong direction
+1. Verify `up_axis` is correct for your DCC:
+   - Maya: `Y`
+   - Blender: `Z`
+2. Check console output for camera setup messages:
+   - `Camera using ROTATION (Pan/Tilt)...` → rotation mode active
+   - `Camera using TRANSLATION...` → translation mode active
+   - `Camera static at...` → no animation
+
+### Camera rotation seems inverted
+The camera should rotate TOWARD the character:
+- Character on RIGHT → camera pans RIGHT
+- Character BELOW → camera tilts DOWN
+
+If inverted, try toggling `flip_x`.
 
 ## License
 

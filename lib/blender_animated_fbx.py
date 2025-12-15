@@ -747,36 +747,37 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             # Get pan/tilt axis configuration based on up_axis
             # Pan = rotation around UP axis, Tilt = rotation around horizontal axis
             # 
-            # KEY INSIGHT: Camera rotation direction vs view shift
-            # - Positive Y rotation (Y-up) = camera turns LEFT = objects shift LEFT in view
-            # - So for tx > 0 (char on RIGHT), we need NEGATIVE Y rotation
-            # - Similarly, positive X rotation = tilt UP = objects shift DOWN
-            # - For ty > 0 (char BELOW center), we need POSITIVE X rotation
+            # KEY INSIGHT for Y-up (Maya default):
+            # - Positive Y rotation = pan LEFT = origin shifts RIGHT in view
+            # - Positive X rotation = tilt DOWN = origin shifts UP in view
+            # 
+            # So for tx > 0 (body on RIGHT), we need positive Y (pan left, origin goes right)
+            # For ty > 0 (body BELOW center), we need negative X (tilt up, origin goes down)
             if up_axis == "Y":
                 pan_axis = 1   # Y axis for pan (yaw)
                 tilt_axis = 0  # X axis for tilt (pitch)
-                tilt_sign = 1   # ty > 0 (below) → tilt up → positive X
-                pan_sign = -1   # tx > 0 (right) → turn right → negative Y
+                tilt_sign = -1  # ty > 0 → tilt UP (negative X) → origin appears lower
+                pan_sign = 1    # tx > 0 → pan LEFT (positive Y) → origin appears right
             elif up_axis == "Z":
                 pan_axis = 2   # Z axis for pan
                 tilt_axis = 0  # X axis for tilt
-                tilt_sign = 1
-                pan_sign = -1
+                tilt_sign = -1
+                pan_sign = 1
             elif up_axis == "-Y":
                 pan_axis = 1
                 tilt_axis = 0
-                tilt_sign = -1
-                pan_sign = 1
+                tilt_sign = 1
+                pan_sign = -1
             elif up_axis == "-Z":
                 pan_axis = 2
                 tilt_axis = 0
-                tilt_sign = -1
-                pan_sign = 1
+                tilt_sign = 1
+                pan_sign = -1
             else:
                 pan_axis = 1
                 tilt_axis = 0
-                tilt_sign = 1
-                pan_sign = -1
+                tilt_sign = -1
+                pan_sign = 1
             
             for frame_idx, frame_data in enumerate(all_frames):
                 frame_cam_t = frame_data.get("pred_cam_t")
@@ -788,11 +789,13 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 if frame_cam_t and len(frame_cam_t) >= 3:
                     tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
                     
-                    # Calculate pan/tilt angles using atan
-                    # tx, ty are normalized screen offsets, convert to angles
-                    # The 0.5 factor controls sensitivity (adjust if needed)
-                    pan_angle = math.atan(tx * 0.5) * pan_sign
-                    tilt_angle = math.atan(ty * 0.5) * tilt_sign
+                    # CORRECT MATH: From SAM3DBody projection model:
+                    # x_2d = focal * tx / tz + cx  (body at origin appears at this screen position)
+                    # Camera rotation angle = atan2(tx, tz) - angle from forward axis
+                    # Using atan2 is safer and handles edge cases better
+                    depth = abs(tz) if abs(tz) > 0.1 else 0.1
+                    pan_angle = math.atan2(tx, depth) * pan_sign
+                    tilt_angle = math.atan2(ty, depth) * tilt_sign
                     
                     # Apply rotation from base
                     camera.rotation_euler = base_rotation.copy()
@@ -847,6 +850,96 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
             print(f"[Blender] Camera TRANSLATES over {len(all_frames)} frames (up_axis={up_axis})")
+    
+    elif camera_use_rotation:
+        # "None" mode with rotation: Camera rotates to show character at correct screen position
+        # Body stays at origin, camera pans/tilts to frame it correctly
+        camera.location = base_dir * cam_distance  # No target_offset
+        
+        # Point camera at origin to get base rotation
+        origin_target = bpy.data.objects.new("origin_target", None)
+        origin_target.location = Vector((0, 0, 0))
+        bpy.context.collection.objects.link(origin_target)
+        
+        constraint = camera.constraints.new(type='TRACK_TO')
+        constraint.target = origin_target
+        constraint.track_axis = 'TRACK_NEGATIVE_Z'
+        
+        if up_axis == "Y" or up_axis == "-Y":
+            constraint.up_axis = 'UP_Y'
+        elif up_axis == "Z" or up_axis == "-Z":
+            constraint.up_axis = 'UP_Z'
+        else:
+            constraint.up_axis = 'UP_Y'
+        
+        bpy.context.view_layer.update()
+        base_rotation = camera.matrix_world.to_euler()
+        camera.rotation_euler = base_rotation.copy()
+        camera.constraints.remove(constraint)
+        bpy.data.objects.remove(origin_target)
+        bpy.data.objects.remove(target)  # Remove unused target
+        
+        camera.rotation_euler.x = round(camera.rotation_euler.x, 4)
+        camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
+        camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
+        base_rotation = camera.rotation_euler.copy()
+        
+        print(f"[Blender] Camera using ROTATION (Pan/Tilt) with body at origin...")
+        
+        # Get pan/tilt axis configuration
+        # Same logic as "Baked into Camera" rotation mode
+        if up_axis == "Y":
+            pan_axis = 1
+            tilt_axis = 0
+            tilt_sign = -1  # ty > 0 → tilt UP (negative X) → origin appears lower
+            pan_sign = 1    # tx > 0 → pan LEFT (positive Y) → origin appears right
+        elif up_axis == "Z":
+            pan_axis = 2
+            tilt_axis = 0
+            tilt_sign = -1
+            pan_sign = 1
+        elif up_axis == "-Y":
+            pan_axis = 1
+            tilt_axis = 0
+            tilt_sign = 1
+            pan_sign = -1
+        elif up_axis == "-Z":
+            pan_axis = 2
+            tilt_axis = 0
+            tilt_sign = 1
+            pan_sign = -1
+        else:
+            pan_axis = 1
+            tilt_axis = 0
+            tilt_sign = -1
+            pan_sign = 1
+        
+        for frame_idx, frame_data in enumerate(all_frames):
+            frame_cam_t = frame_data.get("pred_cam_t")
+            
+            frame_distance = cam_distance
+            if frame_cam_t and len(frame_cam_t) > 2:
+                frame_distance = abs(frame_cam_t[2])
+            
+            if frame_cam_t and len(frame_cam_t) >= 3:
+                tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
+                
+                # angle = atan2(offset, depth) to match 2D projection
+                depth = abs(tz) if abs(tz) > 0.1 else 0.1
+                pan_angle = math.atan2(tx, depth) * pan_sign
+                tilt_angle = math.atan2(ty, depth) * tilt_sign
+                
+                camera.rotation_euler = base_rotation.copy()
+                camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                
+                camera.location = base_dir * frame_distance
+                
+                camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+        
+        print(f"[Blender] Camera ROTATES (pan/tilt) over {len(all_frames)} frames, body at origin (up_axis={up_axis})")
+    
     else:
         # Static camera - positioned with offset for alignment
         camera.location = base_dir * cam_distance + target_offset
@@ -887,37 +980,36 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         if up_axis == "Y":
             base_dir = Vector((0, 0, 1))
             # Camera looks along -Z, up is Y
-            # Positive Y rotation = turn left = objects shift left
-            # So tx > 0 (right) needs negative Y rotation
+            # Same corrected logic as other modes
             pan_axis = 1   # Y axis for pan
             tilt_axis = 0  # X axis for tilt
-            tilt_sign = 1   # ty > 0 → tilt up → positive X
-            pan_sign = -1   # tx > 0 → turn right → negative Y
+            tilt_sign = -1  # ty > 0 → tilt UP (negative X) → origin appears lower
+            pan_sign = 1    # tx > 0 → pan LEFT (positive Y) → origin appears right
         elif up_axis == "Z":
             base_dir = Vector((0, 1, 0))
             # Camera looks along -Y, up is Z
             pan_axis = 2   # Z
             tilt_axis = 0  # X
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1
+            pan_sign = 1
         elif up_axis == "-Y":
             base_dir = Vector((0, 0, -1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = -1
-            pan_sign = 1
+            tilt_sign = 1
+            pan_sign = -1
         elif up_axis == "-Z":
             base_dir = Vector((0, -1, 0))
             pan_axis = 2
             tilt_axis = 0
-            tilt_sign = -1
-            pan_sign = 1
+            tilt_sign = 1
+            pan_sign = -1
         else:
             base_dir = Vector((0, 0, 1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1
+            pan_sign = 1
         
         # Store base rotation
         base_rotation = camera.rotation_euler.copy()
@@ -931,13 +1023,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 
                 if frame_cam_t and len(frame_cam_t) >= 3:
                     tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
-                    depth = abs(tz) if tz else 3.0
+                    depth = abs(tz) if abs(tz) > 0.1 else 0.1
                     
-                    # Convert screen offset (tx, ty) to pan/tilt angles
-                    # tx, ty are normalized offsets (roughly -1 to 1 range)
-                    # angle = atan(offset * scale_factor)
-                    pan_angle = math.atan(tx * 0.5) * pan_sign
-                    tilt_angle = math.atan(ty * 0.5) * tilt_sign
+                    # angle = atan2(offset, depth) to match 2D projection
+                    pan_angle = math.atan2(tx, depth) * pan_sign
+                    tilt_angle = math.atan2(ty, depth) * tilt_sign
                     
                     # Apply rotation
                     camera.rotation_euler = base_rotation.copy()
