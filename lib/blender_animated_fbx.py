@@ -739,35 +739,37 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             
             # Get pan/tilt axis configuration based on up_axis
             # Pan = rotation around UP axis, Tilt = rotation around horizontal axis
+            # IMPORTANT: Camera rotation is INVERSE of character screen movement
+            # Character moves right → camera pans LEFT to keep them in frame
             if up_axis == "Y":
                 # Camera looks along -Z, up is Y
                 pan_axis = 1   # Y axis for pan (yaw)
                 tilt_axis = 0  # X axis for tilt (pitch)
-                tilt_sign = 1
-                pan_sign = -1
+                tilt_sign = -1  # Inverted: char moves down → camera tilts up
+                pan_sign = 1    # Inverted: char moves right → camera pans left (positive Y rot)
             elif up_axis == "Z":
                 # Camera looks along -Y, up is Z
                 pan_axis = 2   # Z axis for pan
                 tilt_axis = 0  # X axis for tilt
-                tilt_sign = 1
-                pan_sign = -1
+                tilt_sign = -1
+                pan_sign = 1
             elif up_axis == "-Y":
                 # Camera looks along +Z, up is -Y
                 pan_axis = 1   # Y axis for pan
                 tilt_axis = 0  # X axis for tilt
-                tilt_sign = -1
-                pan_sign = 1
+                tilt_sign = 1
+                pan_sign = -1
             elif up_axis == "-Z":
                 # Camera looks along +Y, up is -Z
                 pan_axis = 2   # Z axis for pan
                 tilt_axis = 0  # X axis for tilt
-                tilt_sign = -1
-                pan_sign = 1
+                tilt_sign = 1
+                pan_sign = -1
             else:
                 pan_axis = 1
                 tilt_axis = 0
-                tilt_sign = 1
-                pan_sign = -1
+                tilt_sign = -1
+                pan_sign = 1
             
             for frame_idx, frame_data in enumerate(all_frames):
                 frame_cam_t = frame_data.get("pred_cam_t")
@@ -853,35 +855,36 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         if up_axis == "Y":
             base_dir = Vector((0, 0, 1))
             # Camera looks along -Z, up is Y
+            # IMPORTANT: Camera rotation is INVERSE of character screen movement
             pan_axis = 1   # Y axis for pan
             tilt_axis = 0  # X axis for tilt
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1  # Inverted
+            pan_sign = 1    # Inverted
         elif up_axis == "Z":
             base_dir = Vector((0, 1, 0))
             # Camera looks along -Y, up is Z
             pan_axis = 2   # Z
             tilt_axis = 0  # X
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1
+            pan_sign = 1
         elif up_axis == "-Y":
             base_dir = Vector((0, 0, -1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = -1
-            pan_sign = 1
+            tilt_sign = 1
+            pan_sign = -1
         elif up_axis == "-Z":
             base_dir = Vector((0, -1, 0))
             pan_axis = 2
             tilt_axis = 0
-            tilt_sign = -1
-            pan_sign = 1
+            tilt_sign = 1
+            pan_sign = -1
         else:
             base_dir = Vector((0, 0, 1))
             pan_axis = 1
             tilt_axis = 0
-            tilt_sign = 1
-            pan_sign = -1
+            tilt_sign = -1
+            pan_sign = 1
         
         # Store base rotation
         base_rotation = camera.rotation_euler.copy()
