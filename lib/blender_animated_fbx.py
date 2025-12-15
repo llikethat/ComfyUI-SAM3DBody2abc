@@ -1060,15 +1060,16 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 tz = all_tz[frame_idx]
                 depth = abs(tz) if abs(tz) > 0.1 else 0.1
                 
-                # Apply coordinate transform to match geometry transform
-                # For Y-up: geometry uses (x_mult * x, -y, -z)
-                # So camera values should use same transform
+                # Apply coordinate transform for pan (horizontal)
+                # flip_x affects whether we negate tx
                 if up_axis == "Y" or up_axis == "-Y":
                     tx_cam = tx if flip_x else -tx
-                    ty_cam = -ty  # Y is negated in geometry transform
+                    # ty is NOT negated - positive ty means body lower in frame,
+                    # so camera should tilt DOWN (positive X rotation)
+                    ty_cam = ty
                 else:  # Z-up
                     tx_cam = tx if flip_x else -tx
-                    ty_cam = -ty
+                    ty_cam = ty
                 
                 # Compute angles directly using atan2
                 pan_angle = math.atan2(tx_cam, depth)

@@ -346,6 +346,12 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.2.9
+- **FIX**: Camera tilt direction corrected
+  - ty > 0 (body lower in frame) now correctly tilts camera DOWN
+  - Previously was inverting ty which caused geo to appear above video frame
+  - Pan direction unchanged (was already working)
+
 ### v3.2.8
 - **CRITICAL FIX**: Camera rotation now correctly matches geometry coordinate transform
   - Root cause: geometry uses `(x, -y, -z)` for Y-up but camera used raw `(tx, ty)`
