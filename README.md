@@ -346,6 +346,16 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.2.10
+- **CRITICAL FIX**: Camera base rotation now correctly established for rotation mode
+  - Bug: Static camera section pointed at OFFSET target, then rotation added MORE offset
+  - Fix: For rotation mode, camera now points at ORIGIN first, then adds pan/tilt
+  - Added debug output showing camera base rotation and frame 0 values
+- **FIX**: Restored correct tilt sign (ty_cam = -ty)
+  - SAM3DBody: ty > 0 = body LOWER in frame (image Y points down)
+  - Maya Y-up: to show body lower, camera must tilt UP (negative X rotation)
+  - Therefore tilt_angle = atan2(-ty, depth)
+
 ### v3.2.9
 - **FIX**: Camera tilt direction corrected
   - ty > 0 (body lower in frame) now correctly tilts camera DOWN
