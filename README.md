@@ -134,8 +134,11 @@ Video Loader (fps output) ──────────────────
 | Input | Type | Description |
 |-------|------|-------------|
 | images | IMAGE | Video frames |
-| foreground_masks | MASK | Foreground masks (optional) |
-| sam3_masks | SAM3_VIDEO_MASKS | SAM3 masks to exclude foreground (optional) |
+| foreground_masks | MASK | Foreground masks (optional, overrides YOLO) |
+| sam3_masks | SAM3_VIDEO_MASKS | SAM3 masks (optional, overrides YOLO) |
+| auto_mask_people | BOOLEAN | Auto-detect all people using YOLO (default: True) |
+| detection_confidence | FLOAT | YOLO detection confidence (default: 0.5) |
+| mask_expansion | INT | Expand masks by pixels (default: 20) |
 | focal_length_px | FLOAT | Focal length in pixels (default: 1000) |
 | flow_threshold | FLOAT | Min flow magnitude to consider (default: 1.0) |
 | ransac_threshold | FLOAT | RANSAC threshold for homography (default: 3.0) |
@@ -152,13 +155,20 @@ Video Loader (fps output) ──────────────────
 - Camera panning left
 - Both happening together
 
-This causes misalignment when reconstructing 3D camera motion. The Camera Rotation Solver analyzes **background motion** (excluding the masked person) to determine **actual camera rotation**.
+This causes misalignment when reconstructing 3D camera motion. The Camera Rotation Solver analyzes **background motion** (excluding people) to determine **actual camera rotation**.
 
 **How it works:**
-1. Inverts SAM3 masks to isolate background
-2. Computes dense optical flow using RAFT (GPU accelerated)
-3. Estimates homography from background flow
-4. Decomposes homography to extract pan/tilt/roll
+1. Detects ALL people using YOLO (automatic, no setup needed)
+2. Inverts masks to isolate background
+3. Computes dense optical flow using RAFT (GPU accelerated)
+4. Estimates homography from background flow
+5. Decomposes homography to extract pan/tilt/roll
+
+**Simplest usage (fully automatic):**
+```
+Video Frames → Camera Rotation Solver → camera_rotations
+               (auto_mask_people=True)
+```
 
 ### Verifying Correct Person Tracking
 
@@ -376,6 +386,20 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.3.2
+- **NEW**: YOLO auto-masking in Camera Rotation Solver
+  - Automatically detects and masks ALL people in video
+  - No manual BBox or SAM3 masks needed
+  - Uses YOLOv8 nano (fast, ~6MB model)
+  - Parameters: `auto_mask_people`, `detection_confidence`, `mask_expansion`
+- Requires: ultralytics (`pip install ultralytics`)
+
+### v3.3.1
+- **FIX**: Camera Rotation Solver variable naming collision
+  - `H` was used for both image height and homography matrix
+  - Renamed to `img_height`, `img_width`, `homography` for clarity
+  - Fixes "inhomogeneous shape" error
+
 ### v3.3.0
 - **NEW**: Camera Rotation Solver node
   - Estimates actual camera rotation (pan/tilt/roll) from background motion
@@ -551,6 +575,7 @@ Each frame creates a shape key with value keyframed:
 - **For Camera Rotation Solver:**
   - torchvision >= 0.14 (for RAFT optical flow)
   - opencv-python
+  - ultralytics (for YOLO auto-masking): `pip install ultralytics`
 
 ## Troubleshooting
 
