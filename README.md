@@ -386,6 +386,43 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.3.8
+- **NEW**: CoTracker (Meta AI) integration for state-of-the-art point tracking
+  - Handles occlusion (tracks points through obstacles)
+  - GPU accelerated using PyTorch
+  - More robust on fast motion and motion blur
+  - Auto-downloads model on first use (~200MB)
+  - Falls back to KLT if CoTracker not available
+- **NEW**: 4 tracking methods available:
+  - "KLT (Persistent)" - Professional CPU-based (default, recommended)
+  - "CoTracker (AI)" - Meta's AI tracker (GPU, handles occlusion)
+  - "ORB (Feature-Based)" - Sparse matching per frame
+  - "RAFT (Dense Flow)" - Dense optical flow
+- **NOTE**: CoTracker requires: `pip install cotracker` (optional)
+
+### v3.3.7
+- **NEW**: KLT Persistent Tracking (Professional Method) - now DEFAULT
+  - Mimics PFTrack/SynthEyes/3DEqualizer approach
+  - Detects features in frame 0 and tracks them persistently
+  - Estimates rotation relative to frame 0 (no drift accumulation!)
+  - Uses Essential Matrix decomposition for pure rotation
+  - Much more robust for broadcast sports footage
+- **NEW**: `tracking_method` dropdown with 3 options:
+  - "KLT (Persistent)" - Professional style, recommended (default)
+  - "ORB (Feature-Based)" - Sparse feature matching per frame pair
+  - "RAFT (Dense Flow)" - Dense optical flow
+- **IMPROVED**: Essential Matrix decomposition instead of Homography for rotation
+
+### v3.3.6
+- **NEW**: ORB feature-based tracking method (default)
+  - More robust for fast camera motion and motion blur
+  - Uses sparse feature matching instead of dense optical flow
+  - Should work much better on broadcast sports footage
+- **NEW**: `tracking_method` parameter
+  - "ORB (Feature-Based)" - recommended for most cases
+  - "RAFT (Dense Flow)" - better for slow/detailed motion
+- **IMPROVED**: Better debug visualization for ORB matches
+
 ### v3.3.5
 - **FIX**: SAM3 mask processing - handles various tensor shapes correctly
 - **FIX**: Falls back to YOLO when SAM3 mask processing fails

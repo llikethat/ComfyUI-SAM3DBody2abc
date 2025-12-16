@@ -35,6 +35,8 @@ class CameraRotationSolver:
     Automatically masks all people using YOLO, or accepts manual masks.
     """
     
+    TRACKING_METHODS = ["KLT (Persistent)", "CoTracker (AI)", "ORB (Feature-Based)", "RAFT (Dense Flow)"]
+    
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
@@ -44,6 +46,10 @@ class CameraRotationSolver:
             "optional": {
                 "foreground_masks": ("MASK",),
                 "sam3_masks": ("SAM3_VIDEO_MASKS",),
+                "tracking_method": (cls.TRACKING_METHODS, {
+                    "default": "KLT (Persistent)",
+                    "tooltip": "KLT: Professional persistent tracking (fast, CPU). CoTracker: AI-based, handles occlusion (GPU). ORB: Sparse features. RAFT: Dense flow."
+                }),
                 "auto_mask_people": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Automatically detect and mask all people using YOLO (recommended). Disable if providing manual masks."
@@ -72,7 +78,7 @@ class CameraRotationSolver:
                     "min": 0.1,
                     "max": 10.0,
                     "step": 0.1,
-                    "tooltip": "Minimum flow magnitude to consider (filters noise)"
+                    "tooltip": "Minimum flow magnitude to consider (filters noise) - only for RAFT"
                 }),
                 "ransac_threshold": ("FLOAT", {
                     "default": 3.0,
@@ -262,6 +268,594 @@ class CameraRotationSolver:
         flow = flow[0].permute(1, 2, 0).cpu().numpy()
         
         return flow
+    
+    def estimate_homography_feature_based(
+        self,
+        frame1: np.ndarray,
+        frame2: np.ndarray,
+        mask: Optional[np.ndarray],
+        ransac_threshold: float = 3.0
+    ) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
+        """
+        Estimate homography using sparse feature matching (ORB).
+        More robust than dense optical flow for fast camera motion.
+        
+        Args:
+            frame1: First frame (H, W, 3) uint8 RGB
+            frame2: Second frame (H, W, 3) uint8 RGB
+            mask: Background mask (H, W) - 255 for background, 0 for foreground
+            ransac_threshold: RANSAC reprojection threshold
+            
+        Returns:
+            homography: 3x3 homography matrix
+            debug_info: Dict with matched points info
+        """
+        # Convert to grayscale
+        gray1 = cv2.cvtColor(frame1, cv2.COLOR_RGB2GRAY)
+        gray2 = cv2.cvtColor(frame2, cv2.COLOR_RGB2GRAY)
+        
+        # Convert mask to uint8 for OpenCV
+        if mask is not None:
+            mask_uint8 = (mask * 255).astype(np.uint8)
+        else:
+            mask_uint8 = None
+        
+        # Create ORB detector
+        orb = cv2.ORB_create(nfeatures=2000)
+        
+        # Detect keypoints and compute descriptors
+        kp1, desc1 = orb.detectAndCompute(gray1, mask_uint8)
+        kp2, desc2 = orb.detectAndCompute(gray2, mask_uint8)
+        
+        debug_info = {
+            'total_points': 0,
+            'points_after_mask': 0,
+            'points_after_flow': 0,
+            'src_points': None,
+            'dst_points': None,
+            'inliers': None
+        }
+        
+        if desc1 is None or desc2 is None or len(kp1) < 10 or len(kp2) < 10:
+            print(f"[CameraSolver] Not enough features: frame1={len(kp1) if kp1 else 0}, frame2={len(kp2) if kp2 else 0}")
+            return None, debug_info
+        
+        # Match features using BFMatcher
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        matches = bf.knnMatch(desc1, desc2, k=2)
+        
+        # Apply ratio test (Lowe's ratio)
+        good_matches = []
+        for m_n in matches:
+            if len(m_n) == 2:
+                m, n = m_n
+                if m.distance < 0.75 * n.distance:
+                    good_matches.append(m)
+        
+        debug_info['total_points'] = len(kp1)
+        debug_info['points_after_mask'] = len(good_matches)
+        
+        if len(good_matches) < 10:
+            print(f"[CameraSolver] Not enough good matches: {len(good_matches)}")
+            return None, debug_info
+        
+        # Extract matched point coordinates
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 2)
+        
+        debug_info['points_after_flow'] = len(src_pts)
+        debug_info['src_points'] = src_pts.copy()
+        debug_info['dst_points'] = dst_pts.copy()
+        
+        # Estimate homography with RANSAC
+        homography, inliers = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, ransac_threshold)
+        
+        if homography is None:
+            print(f"[CameraSolver] Homography estimation failed")
+            return None, debug_info
+        
+        debug_info['inliers'] = inliers
+        
+        inlier_count = np.sum(inliers) if inliers is not None else 0
+        inlier_ratio = inlier_count / len(inliers) if inliers is not None and len(inliers) > 0 else 0
+        
+        if inlier_ratio < 0.2:
+            print(f"[CameraSolver] Warning: Low inlier ratio ({inlier_ratio:.2f}) - {inlier_count}/{len(good_matches)} inliers")
+        else:
+            print(f"[CameraSolver] Good match: {inlier_count}/{len(good_matches)} inliers ({inlier_ratio:.1%})")
+        
+        return homography, debug_info
+    
+    def solve_rotation_klt_persistent(
+        self,
+        frames: np.ndarray,
+        bg_masks: Optional[np.ndarray],
+        focal_length_px: float,
+        ransac_threshold: float = 3.0
+    ) -> Tuple[List[Tuple[float, float, float]], List[np.ndarray], List[Dict]]:
+        """
+        Professional-style camera rotation solving using persistent KLT tracking.
+        
+        This mimics how PFTrack/SynthEyes/3DEqualizer work:
+        1. Detect good features in frame 0
+        2. Track them persistently across all frames using KLT (Lucas-Kanade)
+        3. Estimate rotation relative to frame 0 (no drift accumulation)
+        4. Use Essential Matrix decomposition for pure rotation
+        
+        Args:
+            frames: Video frames (N, H, W, 3) uint8 RGB
+            bg_masks: Background masks (N, H, W) float, 1.0 = background
+            focal_length_px: Focal length in pixels
+            ransac_threshold: RANSAC threshold
+            
+        Returns:
+            rotations: List of (pan, tilt, roll) tuples per frame
+            debug_frames: List of debug visualization frames
+            track_info: List of tracking info dicts per frame
+        """
+        num_frames, img_height, img_width = frames.shape[:3]
+        cx, cy = img_width / 2, img_height / 2
+        
+        # Camera intrinsic matrix
+        K = np.array([
+            [focal_length_px, 0, cx],
+            [0, focal_length_px, cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        
+        # Convert first frame to grayscale
+        gray0 = cv2.cvtColor(frames[0], cv2.COLOR_RGB2GRAY)
+        
+        # Create mask for feature detection (background only)
+        detection_mask = None
+        if bg_masks is not None:
+            detection_mask = (bg_masks[0] * 255).astype(np.uint8)
+        
+        # Detect good features to track in frame 0
+        # Parameters tuned for camera tracking
+        feature_params = dict(
+            maxCorners=500,
+            qualityLevel=0.01,
+            minDistance=20,
+            blockSize=7,
+            mask=detection_mask
+        )
+        
+        pts0 = cv2.goodFeaturesToTrack(gray0, **feature_params)
+        
+        if pts0 is None or len(pts0) < 20:
+            print(f"[CameraSolver] KLT: Not enough features detected in frame 0 ({len(pts0) if pts0 else 0})")
+            # Return identity rotations
+            rotations = [(0.0, 0.0, 0.0)] * num_frames
+            debug_frames = [frames[i].copy() for i in range(num_frames)]
+            return rotations, debug_frames, []
+        
+        pts0 = pts0.reshape(-1, 2)
+        original_pts0 = pts0.copy()  # Keep original frame 0 points
+        print(f"[CameraSolver] KLT: Detected {len(pts0)} features in frame 0")
+        
+        # KLT tracking parameters
+        lk_params = dict(
+            winSize=(21, 21),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        )
+        
+        # Track features across all frames
+        rotations = [(0.0, 0.0, 0.0)]  # Frame 0 is reference
+        debug_frames = []
+        track_info_list = []
+        
+        # Create debug frame for frame 0
+        debug_frame0 = frames[0].copy()
+        for pt in pts0:
+            cv2.circle(debug_frame0, tuple(pt.astype(int)), 4, (0, 255, 0), -1)
+        cv2.putText(debug_frame0, f"Frame 0: {len(pts0)} reference points", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        debug_frames.append(debug_frame0)
+        
+        # Current tracked points and their correspondence to original points
+        current_pts = pts0.copy()
+        valid_mask = np.ones(len(pts0), dtype=bool)  # Track which original points are still valid
+        prev_gray = gray0.copy()
+        
+        for i in range(1, num_frames):
+            # Convert current frame to grayscale
+            gray_i = cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY)
+            
+            # Track from previous frame to current frame
+            pts_to_track = current_pts[valid_mask].reshape(-1, 1, 2).astype(np.float32)
+            
+            if len(pts_to_track) < 8:
+                print(f"[CameraSolver] KLT Frame {i}: Too few points to track ({len(pts_to_track)})")
+                rotations.append(rotations[-1])
+                debug_frames.append(frames[i].copy())
+                prev_gray = gray_i.copy()
+                continue
+            
+            next_pts, status, err = cv2.calcOpticalFlowPyrLK(
+                prev_gray, gray_i, pts_to_track, None, **lk_params
+            )
+            
+            if next_pts is None:
+                print(f"[CameraSolver] KLT: Tracking failed at frame {i}")
+                rotations.append(rotations[-1])
+                debug_frames.append(frames[i].copy())
+                prev_gray = gray_i.copy()
+                continue
+            
+            next_pts = next_pts.reshape(-1, 2)
+            status = status.reshape(-1)
+            
+            # Update valid mask - points that were valid and still tracked
+            valid_indices = np.where(valid_mask)[0]
+            new_valid_mask = valid_mask.copy()
+            
+            for j, idx in enumerate(valid_indices):
+                if status[j] != 1:
+                    new_valid_mask[idx] = False
+                else:
+                    # Also check if point is in foreground (mask it out)
+                    pt = next_pts[j]
+                    x, y = int(pt[0]), int(pt[1])
+                    if x < 0 or x >= img_width or y < 0 or y >= img_height:
+                        new_valid_mask[idx] = False
+                    elif bg_masks is not None and bg_masks[i, y, x] < 0.5:
+                        new_valid_mask[idx] = False
+            
+            # Update current points for valid tracks
+            new_current_pts = current_pts.copy()
+            valid_idx = 0
+            for j, idx in enumerate(valid_indices):
+                if status[j] == 1:
+                    new_current_pts[idx] = next_pts[valid_idx]
+                valid_idx += 1
+            
+            current_pts = new_current_pts
+            valid_mask = new_valid_mask
+            
+            # Get corresponding points in frame 0 and frame i
+            pts0_good = original_pts0[valid_mask]
+            pts_i_good = current_pts[valid_mask]
+            
+            track_info = {
+                'total_tracks': len(original_pts0),
+                'active_tracks': np.sum(valid_mask),
+                'src_points': pts0_good.copy(),
+                'dst_points': pts_i_good.copy(),
+                'inliers': None
+            }
+            
+            if len(pts0_good) < 8:
+                print(f"[CameraSolver] KLT Frame {i}: Not enough tracks ({len(pts0_good)})")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                cv2.putText(debug_frame, f"Frame {i}: {len(pts0_good)} tracks (need 8+)", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                debug_frames.append(debug_frame)
+                track_info_list.append(track_info)
+                prev_gray = gray_i.copy()
+                continue
+            
+            # Estimate Essential Matrix (better for pure rotation than Homography)
+            E, inliers_mask = cv2.findEssentialMat(
+                pts0_good, pts_i_good, K,
+                method=cv2.RANSAC,
+                prob=0.999,
+                threshold=ransac_threshold
+            )
+            
+            if E is None:
+                print(f"[CameraSolver] KLT Frame {i}: Essential matrix estimation failed")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                debug_frames.append(debug_frame)
+                track_info_list.append(track_info)
+                prev_gray = gray_i.copy()
+                continue
+            
+            inliers_mask = inliers_mask.ravel() if inliers_mask is not None else np.ones(len(pts0_good))
+            track_info['inliers'] = inliers_mask.reshape(-1, 1)
+            
+            inlier_count = np.sum(inliers_mask)
+            inlier_ratio = inlier_count / len(pts0_good)
+            
+            # Recover rotation from Essential Matrix
+            _, R, t, mask_pose = cv2.recoverPose(E, pts0_good, pts_i_good, K, mask=inliers_mask.copy().reshape(-1, 1).astype(np.uint8))
+            
+            # Extract Euler angles from rotation matrix
+            pan, tilt, roll = self.rotation_matrix_to_euler(R)
+            
+            # Log progress
+            if i % 10 == 0 or inlier_ratio > 0.5:
+                print(f"[CameraSolver] KLT Frame {i}: {inlier_count}/{len(pts0_good)} inliers ({inlier_ratio:.1%}), pan={np.degrees(pan):.2f}°, tilt={np.degrees(tilt):.2f}°")
+            
+            rotations.append((pan, tilt, roll))
+            track_info_list.append(track_info)
+            
+            # Create debug visualization
+            debug_frame = self.create_debug_tracking_image(
+                frames[i],
+                pts0_good,
+                pts_i_good,
+                inliers_mask.reshape(-1, 1),
+                bg_masks[i] if bg_masks is not None else None
+            )
+            cv2.putText(debug_frame, f"KLT Frame {i}: {inlier_count}/{len(pts0_good)} ({inlier_ratio:.0%})", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            debug_frames.append(debug_frame)
+            
+            prev_gray = gray_i.copy()
+        
+        print(f"[CameraSolver] KLT tracking complete!")
+        return rotations, debug_frames, track_info_list
+    
+    def rotation_matrix_to_euler(self, R: np.ndarray) -> Tuple[float, float, float]:
+        """
+        Convert rotation matrix to Euler angles (pan, tilt, roll).
+        
+        Uses YXZ convention (common for camera rotations):
+        - Pan (Y): Horizontal rotation
+        - Tilt (X): Vertical rotation  
+        - Roll (Z): Rotation around view axis
+        
+        Args:
+            R: 3x3 rotation matrix
+            
+        Returns:
+            (pan, tilt, roll) in radians
+        """
+        # Handle gimbal lock cases
+        sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+        
+        singular = sy < 1e-6
+        
+        if not singular:
+            tilt = np.arctan2(-R[2, 0], sy)  # X rotation
+            pan = np.arctan2(R[1, 0], R[0, 0])  # Y rotation
+            roll = np.arctan2(R[2, 1], R[2, 2])  # Z rotation
+        else:
+            tilt = np.arctan2(-R[2, 0], sy)
+            pan = np.arctan2(-R[0, 1], R[1, 1])
+            roll = 0
+        
+        return (pan, tilt, roll)
+    
+    def load_cotracker(self):
+        """Load CoTracker model (downloads automatically on first use)."""
+        if hasattr(self, 'cotracker_model') and self.cotracker_model is not None:
+            return True
+        
+        try:
+            import torch
+            print(f"[CameraSolver] Loading CoTracker model...")
+            
+            # Try to load CoTracker
+            try:
+                self.cotracker_model = torch.hub.load("facebookresearch/co-tracker", "cotracker2")
+                self.cotracker_model = self.cotracker_model.to(self.device)
+                self.cotracker_model.eval()
+                print(f"[CameraSolver] CoTracker loaded successfully on {self.device}")
+                return True
+            except Exception as e:
+                print(f"[CameraSolver] CoTracker v2 failed, trying v1: {e}")
+                try:
+                    self.cotracker_model = torch.hub.load("facebookresearch/co-tracker", "cotracker_w8")
+                    self.cotracker_model = self.cotracker_model.to(self.device)
+                    self.cotracker_model.eval()
+                    print(f"[CameraSolver] CoTracker v1 loaded successfully")
+                    return True
+                except Exception as e2:
+                    print(f"[CameraSolver] CoTracker loading failed: {e2}")
+                    print(f"[CameraSolver] Install with: pip install cotracker")
+                    self.cotracker_model = None
+                    return False
+                    
+        except ImportError:
+            print(f"[CameraSolver] CoTracker not available. Install with: pip install cotracker")
+            self.cotracker_model = None
+            return False
+    
+    def solve_rotation_cotracker(
+        self,
+        frames: np.ndarray,
+        bg_masks: Optional[np.ndarray],
+        focal_length_px: float,
+        ransac_threshold: float = 3.0
+    ) -> Tuple[List[Tuple[float, float, float]], List[np.ndarray], List[Dict]]:
+        """
+        AI-based camera rotation solving using Meta's CoTracker.
+        
+        CoTracker advantages over KLT:
+        - Handles occlusion (tracks through obstacles)
+        - GPU accelerated
+        - More robust on motion blur
+        - State-of-the-art point tracking
+        
+        Args:
+            frames: Video frames (N, H, W, 3) uint8 RGB
+            bg_masks: Background masks (N, H, W) float, 1.0 = background
+            focal_length_px: Focal length in pixels
+            ransac_threshold: RANSAC threshold
+            
+        Returns:
+            rotations: List of (pan, tilt, roll) tuples per frame
+            debug_frames: List of debug visualization frames
+            track_info: List of tracking info dicts per frame
+        """
+        if not self.load_cotracker():
+            print(f"[CameraSolver] CoTracker not available, falling back to KLT")
+            return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)
+        
+        num_frames, img_height, img_width = frames.shape[:3]
+        cx, cy = img_width / 2, img_height / 2
+        
+        # Camera intrinsic matrix
+        K = np.array([
+            [focal_length_px, 0, cx],
+            [0, focal_length_px, cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        
+        # Prepare video tensor for CoTracker (B, T, C, H, W)
+        video_tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).unsqueeze(0).float()
+        video_tensor = video_tensor.to(self.device)
+        
+        # Generate query points in frame 0 (background only)
+        # CoTracker expects queries as (B, N, 3) where 3 = (frame_idx, x, y)
+        gray0 = cv2.cvtColor(frames[0], cv2.COLOR_RGB2GRAY)
+        
+        detection_mask = None
+        if bg_masks is not None:
+            detection_mask = (bg_masks[0] * 255).astype(np.uint8)
+        
+        # Detect good features in frame 0
+        feature_params = dict(
+            maxCorners=200,  # Fewer points for CoTracker (it's more compute-intensive)
+            qualityLevel=0.01,
+            minDistance=30,
+            blockSize=7,
+            mask=detection_mask
+        )
+        
+        pts0 = cv2.goodFeaturesToTrack(gray0, **feature_params)
+        
+        if pts0 is None or len(pts0) < 20:
+            print(f"[CameraSolver] CoTracker: Not enough features in frame 0 ({len(pts0) if pts0 else 0})")
+            rotations = [(0.0, 0.0, 0.0)] * num_frames
+            debug_frames = [frames[i].copy() for i in range(num_frames)]
+            return rotations, debug_frames, []
+        
+        pts0 = pts0.reshape(-1, 2)
+        print(f"[CameraSolver] CoTracker: Tracking {len(pts0)} points across {num_frames} frames...")
+        
+        # Create queries tensor (B, N, 3) - all points start at frame 0
+        queries = torch.zeros((1, len(pts0), 3), device=self.device)
+        queries[0, :, 0] = 0  # frame index = 0
+        queries[0, :, 1] = torch.from_numpy(pts0[:, 0]).to(self.device)  # x
+        queries[0, :, 2] = torch.from_numpy(pts0[:, 1]).to(self.device)  # y
+        
+        # Run CoTracker
+        with torch.no_grad():
+            try:
+                # CoTracker returns (tracks, visibilities)
+                # tracks: (B, T, N, 2) - x, y positions
+                # visibilities: (B, T, N) - visibility scores
+                pred_tracks, pred_visibility = self.cotracker_model(video_tensor, queries=queries)
+                
+                pred_tracks = pred_tracks[0].cpu().numpy()  # (T, N, 2)
+                pred_visibility = pred_visibility[0].cpu().numpy()  # (T, N)
+                
+                print(f"[CameraSolver] CoTracker: Tracking complete, shape={pred_tracks.shape}")
+                
+            except Exception as e:
+                print(f"[CameraSolver] CoTracker inference failed: {e}")
+                print(f"[CameraSolver] Falling back to KLT")
+                return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)
+        
+        # Process tracks to compute rotation per frame
+        rotations = [(0.0, 0.0, 0.0)]  # Frame 0 is reference
+        debug_frames = []
+        track_info_list = []
+        
+        # Create debug frame for frame 0
+        debug_frame0 = frames[0].copy()
+        for pt in pts0:
+            cv2.circle(debug_frame0, tuple(pt.astype(int)), 4, (0, 255, 0), -1)
+        cv2.putText(debug_frame0, f"CoTracker Frame 0: {len(pts0)} query points", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        debug_frames.append(debug_frame0)
+        
+        # Reference points (frame 0)
+        pts_ref = pred_tracks[0]  # (N, 2)
+        
+        for i in range(1, num_frames):
+            # Get tracked points for this frame
+            pts_i = pred_tracks[i]  # (N, 2)
+            vis_i = pred_visibility[i]  # (N,)
+            
+            # Filter by visibility and background mask
+            valid_mask = vis_i > 0.5
+            
+            if bg_masks is not None:
+                for j in range(len(pts_i)):
+                    if valid_mask[j]:
+                        x, y = int(pts_i[j, 0]), int(pts_i[j, 1])
+                        if 0 <= x < img_width and 0 <= y < img_height:
+                            if bg_masks[i, y, x] < 0.5:  # In foreground
+                                valid_mask[j] = False
+                        else:
+                            valid_mask[j] = False
+            
+            pts_ref_good = pts_ref[valid_mask]
+            pts_i_good = pts_i[valid_mask]
+            
+            track_info = {
+                'total_tracks': len(pts0),
+                'active_tracks': np.sum(valid_mask),
+                'src_points': pts_ref_good.copy(),
+                'dst_points': pts_i_good.copy(),
+                'inliers': None
+            }
+            
+            if len(pts_ref_good) < 8:
+                print(f"[CameraSolver] CoTracker Frame {i}: Not enough visible tracks ({len(pts_ref_good)})")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                cv2.putText(debug_frame, f"Frame {i}: {len(pts_ref_good)} tracks (need 8+)", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                debug_frames.append(debug_frame)
+                track_info_list.append(track_info)
+                continue
+            
+            # Estimate Essential Matrix
+            E, inliers_mask = cv2.findEssentialMat(
+                pts_ref_good, pts_i_good, K,
+                method=cv2.RANSAC,
+                prob=0.999,
+                threshold=ransac_threshold
+            )
+            
+            if E is None:
+                print(f"[CameraSolver] CoTracker Frame {i}: Essential matrix failed")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                debug_frames.append(debug_frame)
+                track_info_list.append(track_info)
+                continue
+            
+            inliers_mask = inliers_mask.ravel() if inliers_mask is not None else np.ones(len(pts_ref_good))
+            track_info['inliers'] = inliers_mask.reshape(-1, 1)
+            
+            inlier_count = np.sum(inliers_mask)
+            inlier_ratio = inlier_count / len(pts_ref_good)
+            
+            # Recover rotation
+            _, R, t, _ = cv2.recoverPose(E, pts_ref_good, pts_i_good, K, 
+                                          mask=inliers_mask.copy().reshape(-1, 1).astype(np.uint8))
+            
+            pan, tilt, roll = self.rotation_matrix_to_euler(R)
+            
+            if i % 10 == 0:
+                print(f"[CameraSolver] CoTracker Frame {i}: {inlier_count}/{len(pts_ref_good)} inliers ({inlier_ratio:.1%}), pan={np.degrees(pan):.2f}°, tilt={np.degrees(tilt):.2f}°")
+            
+            rotations.append((pan, tilt, roll))
+            track_info_list.append(track_info)
+            
+            # Create debug visualization
+            debug_frame = self.create_debug_tracking_image(
+                frames[i],
+                pts_ref_good,
+                pts_i_good,
+                inliers_mask.reshape(-1, 1),
+                bg_masks[i] if bg_masks is not None else None
+            )
+            cv2.putText(debug_frame, f"CoTracker Frame {i}: {inlier_count}/{len(pts_ref_good)} ({inlier_ratio:.0%})", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            debug_frames.append(debug_frame)
+        
+        print(f"[CameraSolver] CoTracker solve complete!")
+        return rotations, debug_frames, track_info_list
     
     def estimate_homography_from_flow(
         self, 
@@ -513,6 +1107,7 @@ class CameraRotationSolver:
         images: torch.Tensor,
         foreground_masks: Optional[torch.Tensor] = None,
         sam3_masks: Optional[Any] = None,
+        tracking_method: str = "ORB (Feature-Based)",
         auto_mask_people: bool = True,
         detection_confidence: float = 0.5,
         mask_expansion: int = 20,
@@ -528,18 +1123,24 @@ class CameraRotationSolver:
             images: Video frames (N, H, W, C)
             foreground_masks: Foreground masks to exclude (N, H, W)
             sam3_masks: SAM3 video masks (alternative to foreground_masks)
+            tracking_method: "ORB (Feature-Based)" or "RAFT (Dense Flow)"
             auto_mask_people: Automatically detect and mask all people using YOLO
             detection_confidence: YOLO detection confidence threshold
             mask_expansion: Pixels to expand detected masks
             focal_length_px: Focal length in pixels
-            flow_threshold: Minimum flow magnitude
+            flow_threshold: Minimum flow magnitude (RAFT only)
             ransac_threshold: RANSAC threshold
             smoothing: Temporal smoothing window
             
         Returns:
             camera_rotations: Dict with per-frame rotation data
         """
+        use_klt = "KLT" in tracking_method
+        use_orb = "ORB" in tracking_method
+        use_raft = "RAFT" in tracking_method
+        
         print(f"[CameraSolver] Starting camera rotation solve...")
+        print(f"[CameraSolver] Tracking method: {tracking_method}")
         print(f"[CameraSolver] Input: {images.shape[0]} frames")
         
         # Convert images to numpy
@@ -594,6 +1195,106 @@ class CameraRotationSolver:
         else:
             print(f"[CameraSolver] No masks - using full frame (may include foreground motion)")
         
+        # ==== KLT PERSISTENT TRACKING (Professional Method) ====
+        if use_klt:
+            print(f"[CameraSolver] Using KLT persistent tracking (professional method)")
+            rotations, debug_tracking_frames, track_info = self.solve_rotation_klt_persistent(
+                frames, bg_masks, focal_length_px, ransac_threshold
+            )
+            
+            # Apply smoothing
+            if smoothing > 1:
+                rotations = self.smooth_rotations(rotations, smoothing)
+                print(f"[CameraSolver] Applied smoothing (window={smoothing})")
+            
+            # Build output
+            camera_rotation_data = {
+                "num_frames": num_frames,
+                "image_width": img_width,
+                "image_height": img_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "KLT (Persistent)",
+                "rotations": [
+                    {
+                        "frame": i,
+                        "pan": rot[0],
+                        "tilt": rot[1],
+                        "roll": rot[2],
+                        "pan_deg": np.degrees(rot[0]),
+                        "tilt_deg": np.degrees(rot[1]),
+                        "roll_deg": np.degrees(rot[2]),
+                    }
+                    for i, rot in enumerate(rotations)
+                ]
+            }
+            
+            # Summary
+            final_rot = rotations[-1] if rotations else (0, 0, 0)
+            print(f"[CameraSolver] Solve complete!")
+            print(f"[CameraSolver] Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°, roll={np.degrees(final_rot[2]):.2f}°")
+            
+            # Convert debug outputs
+            if fg_masks_for_debug is not None:
+                debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float()
+            else:
+                debug_masks_tensor = torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            
+            debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+            debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+            
+            return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+        
+        # ==== COTRACKER AI-BASED TRACKING ====
+        use_cotracker = "CoTracker" in tracking_method
+        if use_cotracker:
+            print(f"[CameraSolver] Using CoTracker AI-based tracking (handles occlusion)")
+            rotations, debug_tracking_frames, track_info = self.solve_rotation_cotracker(
+                frames, bg_masks, focal_length_px, ransac_threshold
+            )
+            
+            # Apply smoothing
+            if smoothing > 1:
+                rotations = self.smooth_rotations(rotations, smoothing)
+                print(f"[CameraSolver] Applied smoothing (window={smoothing})")
+            
+            # Build output
+            camera_rotation_data = {
+                "num_frames": num_frames,
+                "image_width": img_width,
+                "image_height": img_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "CoTracker (AI)",
+                "rotations": [
+                    {
+                        "frame": i,
+                        "pan": rot[0],
+                        "tilt": rot[1],
+                        "roll": rot[2],
+                        "pan_deg": np.degrees(rot[0]),
+                        "tilt_deg": np.degrees(rot[1]),
+                        "roll_deg": np.degrees(rot[2]),
+                    }
+                    for i, rot in enumerate(rotations)
+                ]
+            }
+            
+            # Summary
+            final_rot = rotations[-1] if rotations else (0, 0, 0)
+            print(f"[CameraSolver] Solve complete!")
+            print(f"[CameraSolver] Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°, roll={np.degrees(final_rot[2]):.2f}°")
+            
+            # Convert debug outputs
+            if fg_masks_for_debug is not None:
+                debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float()
+            else:
+                debug_masks_tensor = torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            
+            debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+            debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+            
+            return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+        
+        # ==== ORB / RAFT FRAME-TO-FRAME TRACKING ====
         # Prepare debug outputs
         debug_tracking_frames = []
         
@@ -630,32 +1331,46 @@ class CameraRotationSolver:
                 else:
                     mask = bg_masks[i] if i < len(bg_masks) else None
             
-            # Compute optical flow
-            try:
-                flow = self.compute_optical_flow(frame1, frame2)
-            except Exception as e:
-                print(f"[CameraSolver] Frame {i}: Flow computation failed - {e}")
-                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
-                # Add debug frame with error message
-                debug_frame = frame2.copy()
-                cv2.putText(debug_frame, f"Frame {i}: Flow failed", (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                debug_tracking_frames.append(debug_frame)
-                continue
+            # Estimate homography using selected method
+            homography = None
+            debug_info = None
             
-            # Estimate homography with debug info
-            homography, debug_info = self.estimate_homography_from_flow(
-                flow, mask, flow_threshold, ransac_threshold, return_debug=True
-            )
+            if use_orb:
+                # Feature-based tracking (ORB) - more robust for fast motion
+                try:
+                    homography, debug_info = self.estimate_homography_feature_based(
+                        frame1, frame2, mask, ransac_threshold
+                    )
+                except Exception as e:
+                    print(f"[CameraSolver] Frame {i}: ORB matching failed - {e}")
+            else:
+                # Dense optical flow (RAFT) - better for slow/detailed motion
+                try:
+                    flow = self.compute_optical_flow(frame1, frame2)
+                    homography, debug_info = self.estimate_homography_from_flow(
+                        flow, mask, flow_threshold, ransac_threshold, return_debug=True
+                    )
+                except Exception as e:
+                    print(f"[CameraSolver] Frame {i}: RAFT flow failed - {e}")
             
             # Create debug tracking image
-            debug_frame = self.create_debug_tracking_image(
-                frame2,
-                debug_info['src_points'] if debug_info else None,
-                debug_info['dst_points'] if debug_info else None,
-                debug_info['inliers'] if debug_info else None,
-                mask
-            )
+            if debug_info and debug_info.get('src_points') is not None:
+                debug_frame = self.create_debug_tracking_image(
+                    frame2,
+                    debug_info['src_points'],
+                    debug_info['dst_points'],
+                    debug_info['inliers'],
+                    mask
+                )
+            else:
+                debug_frame = frame2.copy()
+                cv2.putText(debug_frame, f"Frame {i}: No matches", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                if mask is not None:
+                    mask_overlay = np.zeros_like(debug_frame)
+                    mask_overlay[:, :, 2] = (mask * 100).astype(np.uint8)
+                    debug_frame = cv2.addWeighted(debug_frame, 0.7, mask_overlay, 0.3, 0)
+            
             # Add frame number
             cv2.putText(debug_frame, f"Frame {i}", (10, img_height - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
