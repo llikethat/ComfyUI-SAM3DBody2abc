@@ -22,7 +22,7 @@ Fixed settings:
 Version: 3.1.0
 """
 
-__version__ = "3.2.2"
+__version__ = "3.3.0"
 
 import os
 import sys
@@ -55,6 +55,7 @@ _fbx_export = _load_module("sam3d2abc_fbx_export", os.path.join(_nodes, "fbx_exp
 _video_proc = _load_module("sam3d2abc_video_proc", os.path.join(_nodes, "video_processor.py"))
 _fbx_viewer = _load_module("sam3d2abc_fbx_viewer", os.path.join(_nodes, "fbx_viewer.py"))
 _verify_overlay = _load_module("sam3d2abc_verify_overlay", os.path.join(_nodes, "verify_overlay.py"))
+_camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "camera_solver.py"))
 
 # Register accumulator nodes
 if _accumulator:
@@ -91,6 +92,11 @@ if _verify_overlay:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VerifyOverlay"] = "🔍 Verify Overlay"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VerifyOverlayBatch"] = "🔍 Verify Overlay (Sequence)"
+
+# Register camera solver node
+if _camera_solver:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraRotationSolver"] = _camera_solver.CameraRotationSolver
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraRotationSolver"] = "📷 Camera Rotation Solver"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

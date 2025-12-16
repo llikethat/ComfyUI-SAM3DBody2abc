@@ -130,6 +130,36 @@ Video Loader (fps output) ──────────────────
 | camera_smoothing | INT | Smoothing window for camera animation (0=none, 3=light, 5=medium, 9=heavy) |
 | sensor_width | FLOAT | Camera sensor width in mm (36mm = Full Frame) |
 
+#### Camera Rotation Solver (NEW in v3.3.0)
+| Input | Type | Description |
+|-------|------|-------------|
+| images | IMAGE | Video frames |
+| foreground_masks | MASK | Foreground masks (optional) |
+| sam3_masks | SAM3_VIDEO_MASKS | SAM3 masks to exclude foreground (optional) |
+| focal_length_px | FLOAT | Focal length in pixels (default: 1000) |
+| flow_threshold | FLOAT | Min flow magnitude to consider (default: 1.0) |
+| ransac_threshold | FLOAT | RANSAC threshold for homography (default: 3.0) |
+| smoothing | INT | Temporal smoothing window (default: 5) |
+
+| Output | Type | Description |
+|--------|------|-------------|
+| camera_rotations | CAMERA_ROTATION_DATA | Per-frame pan/tilt/roll values |
+
+**Why this node exists:**
+
+`pred_cam_t` from SAM3DBody tells us WHERE the body appears on screen, but it cannot distinguish between:
+- Body moving right in the world
+- Camera panning left
+- Both happening together
+
+This causes misalignment when reconstructing 3D camera motion. The Camera Rotation Solver analyzes **background motion** (excluding the masked person) to determine **actual camera rotation**.
+
+**How it works:**
+1. Inverts SAM3 masks to isolate background
+2. Computes dense optical flow using RAFT (GPU accelerated)
+3. Estimates homography from background flow
+4. Decomposes homography to extract pan/tilt/roll
+
 ### Verifying Correct Person Tracking
 
 Use the **Verify Overlay (Sequence)** node to check tracking:
@@ -346,6 +376,15 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.3.0
+- **NEW**: Camera Rotation Solver node
+  - Estimates actual camera rotation (pan/tilt/roll) from background motion
+  - Uses RAFT optical flow (GPU accelerated) on background regions
+  - Masks out foreground using SAM3 masks
+  - Solves the fundamental issue: pred_cam_t can't distinguish body movement from camera rotation
+  - Output can be used to improve 3D camera alignment
+- Requires: torchvision >= 0.14 (for RAFT), opencv-python
+
 ### v3.2.11
 - **REVERT**: Restored v3.2.9 camera rotation logic
   - v3.2.10 changes made alignment worse
@@ -509,6 +548,9 @@ Each frame creates a shape key with value keyframed:
 - ComfyUI
 - ComfyUI-SAM3DBody
 - Blender 3.6+ (system installation)
+- **For Camera Rotation Solver:**
+  - torchvision >= 0.14 (for RAFT optical flow)
+  - opencv-python
 
 ## Troubleshooting
 
