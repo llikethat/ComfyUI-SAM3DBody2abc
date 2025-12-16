@@ -594,10 +594,12 @@ class CameraRotationSolver:
         """
         Convert rotation matrix to Euler angles (pan, tilt, roll).
         
-        Uses YXZ convention (common for camera rotations):
-        - Pan (Y): Horizontal rotation
-        - Tilt (X): Vertical rotation  
-        - Roll (Z): Rotation around view axis
+        Uses camera convention:
+        - Pan (yaw): Horizontal rotation around Y axis (left/right)
+        - Tilt (pitch): Vertical rotation around X axis (up/down)
+        - Roll: Rotation around Z axis (camera tilt sideways)
+        
+        For broadcast tripod shots, roll should be ~0.
         
         Args:
             R: 3x3 rotation matrix
@@ -605,54 +607,77 @@ class CameraRotationSolver:
         Returns:
             (pan, tilt, roll) in radians
         """
-        # Handle gimbal lock cases
-        sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+        # Use scipy if available for more robust decomposition
+        try:
+            from scipy.spatial.transform import Rotation
+            r = Rotation.from_matrix(R)
+            # ZYX order: first pan (Y), then tilt (X), then roll (Z)
+            # This gives us intrinsic rotations in camera order
+            angles = r.as_euler('ZYX', degrees=False)
+            roll, pan, tilt = angles[0], angles[1], angles[2]
+            return (pan, tilt, roll)
+        except ImportError:
+            pass
         
-        singular = sy < 1e-6
+        # Fallback: manual extraction using ZYX convention
+        # R = Rz(roll) * Ry(pan) * Rx(tilt)
         
-        if not singular:
-            tilt = np.arctan2(-R[2, 0], sy)  # X rotation
-            pan = np.arctan2(R[1, 0], R[0, 0])  # Y rotation
-            roll = np.arctan2(R[2, 1], R[2, 2])  # Z rotation
+        # Check for gimbal lock (tilt near ±90°)
+        if abs(R[2, 0]) < 0.9999:
+            tilt = np.arcsin(-R[2, 0])
+            pan = np.arctan2(R[2, 1], R[2, 2])
+            roll = np.arctan2(R[1, 0], R[0, 0])
         else:
-            tilt = np.arctan2(-R[2, 0], sy)
-            pan = np.arctan2(-R[0, 1], R[1, 1])
+            # Gimbal lock case
             roll = 0
+            if R[2, 0] < 0:  # tilt = +90°
+                tilt = np.pi / 2
+                pan = np.arctan2(R[0, 1], R[0, 2])
+            else:  # tilt = -90°
+                tilt = -np.pi / 2
+                pan = np.arctan2(-R[0, 1], -R[0, 2])
         
         return (pan, tilt, roll)
     
     def load_cotracker(self):
-        """Load CoTracker model (downloads automatically on first use)."""
+        """Load CoTracker model (downloads automatically on first use via torch.hub)."""
         if hasattr(self, 'cotracker_model') and self.cotracker_model is not None:
             return True
         
         try:
             import torch
-            print(f"[CameraSolver] Loading CoTracker model...")
             
-            # Try to load CoTracker
+            # Ensure device is set
+            if self.device is None:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+            print(f"[CameraSolver] Loading CoTracker model on {self.device} (auto-download on first use)...")
+            
+            # CoTracker loads via torch.hub - no pip install needed
             try:
                 self.cotracker_model = torch.hub.load("facebookresearch/co-tracker", "cotracker2")
                 self.cotracker_model = self.cotracker_model.to(self.device)
                 self.cotracker_model.eval()
-                print(f"[CameraSolver] CoTracker loaded successfully on {self.device}")
+                print(f"[CameraSolver] CoTracker v2 loaded successfully on {self.device}")
                 return True
             except Exception as e:
-                print(f"[CameraSolver] CoTracker v2 failed, trying v1: {e}")
+                print(f"[CameraSolver] CoTracker v2 failed: {e}")
+                print(f"[CameraSolver] Trying CoTracker v1...")
                 try:
                     self.cotracker_model = torch.hub.load("facebookresearch/co-tracker", "cotracker_w8")
                     self.cotracker_model = self.cotracker_model.to(self.device)
                     self.cotracker_model.eval()
-                    print(f"[CameraSolver] CoTracker v1 loaded successfully")
+                    print(f"[CameraSolver] CoTracker v1 loaded successfully on {self.device}")
                     return True
                 except Exception as e2:
                     print(f"[CameraSolver] CoTracker loading failed: {e2}")
-                    print(f"[CameraSolver] Install with: pip install cotracker")
+                    print(f"[CameraSolver] CoTracker requires internet connection for first download")
+                    print(f"[CameraSolver] Falling back to KLT tracking...")
                     self.cotracker_model = None
                     return False
                     
-        except ImportError:
-            print(f"[CameraSolver] CoTracker not available. Install with: pip install cotracker")
+        except Exception as e:
+            print(f"[CameraSolver] CoTracker initialization error: {e}")
             self.cotracker_model = None
             return False
     
@@ -1063,22 +1088,14 @@ class CameraRotationSolver:
         if np.linalg.det(R_clean) < 0:
             R_clean = -R_clean
         
-        # Extract Euler angles (assuming Y-up convention for Maya)
-        # R = Ry(pan) * Rx(tilt) * Rz(roll)
-        
-        # Tilt (rotation around X axis)
-        tilt = np.arctan2(-R_clean[1, 2], R_clean[2, 2])
-        
-        # Pan (rotation around Y axis)
-        pan = np.arctan2(R_clean[0, 2], np.sqrt(R_clean[1, 2]**2 + R_clean[2, 2]**2))
-        
-        # Roll (rotation around Z axis)
-        roll = np.arctan2(-R_clean[0, 1], R_clean[0, 0])
-        
-        return pan, tilt, roll
+        # Use shared Euler angle extraction for consistency
+        return self.rotation_matrix_to_euler(R_clean)
     
     def smooth_rotations(self, rotations: List[Tuple[float, float, float]], window: int) -> List[Tuple[float, float, float]]:
-        """Apply moving average smoothing to rotation values."""
+        """
+        Apply moving average smoothing to rotation values.
+        Frame 0 is always preserved as (0,0,0) since it's the reference.
+        """
         if window <= 1 or len(rotations) < window:
             return rotations
         
@@ -1087,10 +1104,10 @@ class CameraRotationSolver:
         rolls = [r[2] for r in rotations]
         
         def smooth_array(values):
-            result = []
+            result = [values[0]]  # Preserve frame 0
             half = window // 2
-            for i in range(len(values)):
-                start = max(0, i - half)
+            for i in range(1, len(values)):  # Start from frame 1
+                start = max(1, i - half)  # Don't include frame 0 in smoothing window
                 end = min(len(values), i + half + 1)
                 avg = sum(values[start:end]) / (end - start)
                 result.append(avg)
@@ -1100,7 +1117,8 @@ class CameraRotationSolver:
         smoothed_tilts = smooth_array(tilts)
         smoothed_rolls = smooth_array(rolls)
         
-        return list(zip(smoothed_pans, smoothed_tilts, smoothed_rolls))
+        # Ensure frame 0 is exactly (0, 0, 0)
+        return [(0.0, 0.0, 0.0)] + list(zip(smoothed_pans[1:], smoothed_tilts[1:], smoothed_rolls[1:]))
     
     def solve_camera_rotation(
         self,

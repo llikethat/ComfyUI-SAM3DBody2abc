@@ -112,11 +112,21 @@ Video Loader (fps output) ──────────────────
 | object_id | INT | Which object to track (default: 1) |
 | bbox_threshold | FLOAT | Detection confidence threshold |
 
+| Output | Type | Description |
+|--------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | Accumulated mesh data for export |
+| debug_images | IMAGE | Debug visualization frames |
+| frame_count | INT | Number of processed frames |
+| status | STRING | Processing status message |
+| fps | FLOAT | Source FPS (passthrough) |
+| **focal_length_px** | FLOAT | **NEW** Focal length from SAM3DBody (for Camera Solver) |
+
 #### Export Animated FBX
 | Input | Type | Description |
 |-------|------|-------------|
 | mesh_sequence | MESH_SEQUENCE | From Video Batch Processor |
 | filename | STRING | Output filename |
+| **camera_rotations** | CAMERA_ROTATION_DATA | **NEW** From Camera Rotation Solver (optional) |
 | fps | FLOAT | 0 = use source fps from mesh_sequence |
 | frame_offset | INT | Start frame (1 for Maya, 0 for Blender) |
 | output_format | FBX/ABC | Export format |
@@ -130,23 +140,40 @@ Video Loader (fps output) ──────────────────
 | camera_smoothing | INT | Smoothing window for camera animation (0=none, 3=light, 5=medium, 9=heavy) |
 | sensor_width | FLOAT | Camera sensor width in mm (36mm = Full Frame) |
 
-#### Camera Rotation Solver (NEW in v3.3.0)
+#### Camera Rotation Solver (v3.4.0)
 | Input | Type | Description |
 |-------|------|-------------|
 | images | IMAGE | Video frames |
 | foreground_masks | MASK | Foreground masks (optional, overrides YOLO) |
 | sam3_masks | SAM3_VIDEO_MASKS | SAM3 masks (optional, overrides YOLO) |
+| tracking_method | DROPDOWN | KLT (Persistent), CoTracker (AI), ORB, or RAFT |
 | auto_mask_people | BOOLEAN | Auto-detect all people using YOLO (default: True) |
 | detection_confidence | FLOAT | YOLO detection confidence (default: 0.5) |
 | mask_expansion | INT | Expand masks by pixels (default: 20) |
 | focal_length_px | FLOAT | Focal length in pixels (default: 1000) |
-| flow_threshold | FLOAT | Min flow magnitude to consider (default: 1.0) |
-| ransac_threshold | FLOAT | RANSAC threshold for homography (default: 3.0) |
+| flow_threshold | FLOAT | Min flow magnitude - RAFT only (default: 1.0) |
+| ransac_threshold | FLOAT | RANSAC threshold (default: 3.0) |
 | smoothing | INT | Temporal smoothing window (default: 5) |
 
 | Output | Type | Description |
 |--------|------|-------------|
 | camera_rotations | CAMERA_ROTATION_DATA | Per-frame pan/tilt/roll values |
+| debug_masks | MASK | Visualization of detected foreground |
+| debug_tracking | IMAGE | Visualization of tracked points (green=inliers) |
+
+**Tracking Methods:**
+
+| Method | Speed | GPU | Occlusion | Best For |
+|--------|-------|-----|-----------|----------|
+| **KLT (Persistent)** | ⚡ Fast | ❌ CPU | ❌ Dies | Most footage (default) |
+| **CoTracker (AI)** | 🐢 Slow | ✅ GPU | ✅ Handles | Difficult shots, crossing paths |
+| ORB (Feature-Based) | ⚡ Fast | ❌ CPU | ❌ Per-frame | Backup option |
+| RAFT (Dense Flow) | 🐢 Slow | ✅ GPU | ❌ Per-frame | Slow/detailed motion |
+
+**Recommended: KLT (Persistent)** - Uses professional-style persistent tracking like PFTrack/SynthEyes:
+- Detects features in frame 0, tracks them across entire video
+- Estimates rotation relative to frame 0 (no drift!)
+- Fast (3 seconds for 50 frames)
 
 **Why this node exists:**
 
@@ -159,15 +186,15 @@ This causes misalignment when reconstructing 3D camera motion. The Camera Rotati
 
 **How it works:**
 1. Detects ALL people using YOLO (automatic, no setup needed)
-2. Inverts masks to isolate background
-3. Computes dense optical flow using RAFT (GPU accelerated)
-4. Estimates homography from background flow
-5. Decomposes homography to extract pan/tilt/roll
+2. Inverts masks to isolate background (bounding boxes are fine!)
+3. Tracks background features persistently (KLT) or with AI (CoTracker)
+4. Estimates rotation relative to frame 0 using Essential Matrix
+5. Decomposes to pan/tilt/roll with consistent Euler angles
 
 **Simplest usage (fully automatic):**
 ```
 Video Frames → Camera Rotation Solver → camera_rotations
-               (auto_mask_people=True)
+               (tracking_method=KLT, auto_mask_people=True)
 ```
 
 ### Verifying Correct Person Tracking
@@ -386,19 +413,62 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.4.1 - Full Pipeline Integration
+- **NEW**: Camera Rotation Solver → Export FBX integration
+  - Connect `camera_rotations` output directly to Export Animated FBX
+  - Solved rotations automatically override camera animation
+  - Forces Rotation mode when solved rotations are provided
+- **NEW**: Video Batch Processor outputs `focal_length_px`
+  - Connect directly to Camera Rotation Solver's `focal_length_px` input
+  - No more guessing focal length!
+- **IMPROVED**: Console output shows when using solved rotations
+  - `[Export] Using solved camera rotations from Camera Rotation Solver (50 frames)`
+  - `[Blender] Camera uses SOLVED rotation over 50 frames`
+
+**Complete Workflow:**
+```
+Video Loader ──┬──→ Video Batch Processor ──┬──→ mesh_sequence ──→ Export Animated FBX
+               │                            │                            ↑
+               │                            └──→ focal_length_px ────────┤
+               │                                                         │
+               └──→ Camera Rotation Solver ──→ camera_rotations ─────────┘
+```
+
+### v3.4.0 - Camera Solver Fixes & Improvements
+- **FIX**: Frame 0 now always (0,0,0) - smoothing no longer corrupts reference frame
+- **FIX**: CoTracker GPU device initialization (was showing `None`, now correctly uses `cuda`)
+- **FIX**: Consistent Euler angle extraction across all tracking methods
+  - Uses scipy.spatial.transform.Rotation when available (more robust)
+  - Fallback to manual ZYX convention extraction
+  - All methods (KLT, CoTracker, ORB, RAFT) now produce consistent rotation values
+- **IMPROVED**: Roll values now correctly near-zero for level tripod shots
+- **IMPROVED**: Smoothing preserves frame 0 as reference, only smooths frames 1+
+
+**Tested Results on 50-frame sprint footage:**
+| Method | Speed | Inliers | Quality |
+|--------|-------|---------|---------|
+| KLT (Persistent) | 2.95s ⚡ | 80-98% | ✅ Great |
+| CoTracker (AI) | 123s | 95-99% | ✅ Excellent |
+
+### v3.3.9
+- **FIX**: Corrected CoTracker installation docs - no pip install needed
+  - CoTracker auto-downloads via `torch.hub` on first use
+  - Just select "CoTracker (AI)" and it will download automatically
+  - Requires internet connection on first use only
+
 ### v3.3.8
 - **NEW**: CoTracker (Meta AI) integration for state-of-the-art point tracking
   - Handles occlusion (tracks points through obstacles)
   - GPU accelerated using PyTorch
   - More robust on fast motion and motion blur
-  - Auto-downloads model on first use (~200MB)
-  - Falls back to KLT if CoTracker not available
+  - Auto-downloads model on first use via torch.hub (~200MB)
+  - Falls back to KLT if CoTracker unavailable
 - **NEW**: 4 tracking methods available:
   - "KLT (Persistent)" - Professional CPU-based (default, recommended)
   - "CoTracker (AI)" - Meta's AI tracker (GPU, handles occlusion)
   - "ORB (Feature-Based)" - Sparse matching per frame
   - "RAFT (Dense Flow)" - Dense optical flow
-- **NOTE**: CoTracker requires: `pip install cotracker` (optional)
+- **NOTE**: CoTracker downloads automatically - no pip install needed!
 
 ### v3.3.7
 - **NEW**: KLT Persistent Tracking (Professional Method) - now DEFAULT

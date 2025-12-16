@@ -619,7 +619,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False, camera_smoothing=0, flip_x=False):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False, camera_smoothing=0, flip_x=False, solved_camera_rotations=None):
     """
     Create camera with focal length from SAM3DBody.
     
@@ -637,8 +637,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera_smoothing: Smoothing window for camera values to reduce jitter (0=none).
         flip_x: Whether X axis is flipped (affects camera pan direction).
         frame_offset: Starting frame number for keyframes.
+        solved_camera_rotations: Optional list of solved rotations from Camera Rotation Solver.
+                                Each entry has {frame, pan, tilt, roll} in radians.
     """
-    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, smoothing={camera_smoothing})...")
+    has_solved = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
+    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, smoothing={camera_smoothing}, solved_rotations={has_solved})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -813,7 +816,21 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 if frame_cam_t and len(frame_cam_t) > 2:
                     frame_distance = abs(frame_cam_t[2])
                 
-                if frame_cam_t and len(frame_cam_t) >= 3:
+                # Use solved camera rotations if available, otherwise compute from pred_cam_t
+                if has_solved and frame_idx < len(solved_camera_rotations):
+                    solved_rot = solved_camera_rotations[frame_idx]
+                    pan_angle = solved_rot.get("pan", 0.0) * pan_sign
+                    tilt_angle = solved_rot.get("tilt", 0.0) * tilt_sign
+                    roll_angle = solved_rot.get("roll", 0.0)
+                    
+                    # Apply rotation from base
+                    camera.rotation_euler = base_rotation.copy()
+                    camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                    camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                    # Roll is typically axis 2 (Z) for camera
+                    camera.rotation_euler[2] = base_rotation[2] + roll_angle
+                    
+                elif frame_cam_t and len(frame_cam_t) >= 3:
                     tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
                     
                     # CORRECT MATH: From SAM3DBody projection model:
@@ -828,14 +845,17 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     camera.rotation_euler = base_rotation.copy()
                     camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
                     camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
-                    
-                    # Camera position: just depth along base direction
-                    camera.location = base_dir * frame_distance
-                    
-                    camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
-                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+                
+                # Camera position: just depth along base direction
+                camera.location = base_dir * frame_distance
+                
+                camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
-            print(f"[Blender] Camera ROTATES (pan/tilt) over {len(all_frames)} frames (up_axis={up_axis})")
+            if has_solved:
+                print(f"[Blender] Camera uses SOLVED rotation over {len(all_frames)} frames (from Camera Rotation Solver)")
+            else:
+                print(f"[Blender] Camera ROTATES (pan/tilt from pred_cam_t) over {len(all_frames)} frames (up_axis={up_axis})")
         
         else:
             # TRANSLATION MODE: Camera moves laterally to follow character
@@ -1265,6 +1285,7 @@ def main():
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
     camera_smoothing = data.get("camera_smoothing", 0)  # Smoothing window for camera animation
+    solved_camera_rotations = data.get("solved_camera_rotations", None)  # From Camera Rotation Solver
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
@@ -1276,6 +1297,7 @@ def main():
     print(f"[Blender] Camera follow root: {camera_follow_root}")
     print(f"[Blender] Camera use rotation: {camera_use_rotation}")
     print(f"[Blender] Camera smoothing: {camera_smoothing}")
+    print(f"[Blender] Solved camera rotations: {len(solved_camera_rotations) if solved_camera_rotations else 0} frames")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -1334,7 +1356,7 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_smoothing, flip_x)
+        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_smoothing, flip_x, solved_camera_rotations)
         
         # Parent camera to root locator if requested
         # This makes camera follow character movement while preserving screen-space relationship

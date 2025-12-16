@@ -90,8 +90,8 @@ class VideoBatchProcessor:
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT")
-    RETURN_NAMES = ("mesh_sequence", "debug_images", "frame_count", "status", "fps")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "INT", "STRING", "FLOAT", "FLOAT")
+    RETURN_NAMES = ("mesh_sequence", "debug_images", "frame_count", "status", "fps", "focal_length_px")
     FUNCTION = "process_batch"
     CATEGORY = "SAM3DBody2abc"
     
@@ -485,6 +485,15 @@ class VideoBatchProcessor:
             print(f"[SAM3DBody2abc] Applying smoothing...")
             frames = self._apply_smoothing(frames, smoothing_strength)
         
+        # Compute average focal length from all frames
+        focal_lengths = []
+        for f in frames.values():
+            if f.get("focal_length") is not None:
+                focal_lengths.append(f["focal_length"])
+        
+        avg_focal_length = sum(focal_lengths) / len(focal_lengths) if focal_lengths else 1000.0
+        print(f"[SAM3DBody2abc] Focal length: {avg_focal_length:.1f}px (from {len(focal_lengths)} frames)")
+        
         # Build output - include fps for downstream nodes
         mesh_sequence = {
             "sequence_id": "batch",
@@ -493,6 +502,7 @@ class VideoBatchProcessor:
             "joint_parents": joint_parents,
             "mhr_path": mhr_path,
             "fps": fps,  # Pass through for export
+            "focal_length_px": avg_focal_length,  # Add for camera solver
         }
         
         if debug_images:
@@ -504,4 +514,4 @@ class VideoBatchProcessor:
         status = f"Processed {valid}/{len(frame_indices)} frames at {fps} fps"
         print(f"[SAM3DBody2abc] {status}")
         
-        return (mesh_sequence, debug_batch, len(frame_indices), status, fps)
+        return (mesh_sequence, debug_batch, len(frame_indices), status, fps, avg_focal_length)

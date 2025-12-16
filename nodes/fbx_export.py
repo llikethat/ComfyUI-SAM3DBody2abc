@@ -120,6 +120,9 @@ class ExportAnimatedFBX:
                 }),
             },
             "optional": {
+                "camera_rotations": ("CAMERA_ROTATION_DATA", {
+                    "tooltip": "Camera rotation data from Camera Rotation Solver. Overrides internal camera rotation calculation."
+                }),
                 "fps": ("FLOAT", {
                     "default": 0.0,
                     "min": 0.0,
@@ -194,6 +197,7 @@ class ExportAnimatedFBX:
         self,
         mesh_sequence: Dict,
         filename: str = "animation",
+        camera_rotations: Optional[Dict] = None,
         fps: float = 0.0,
         frame_offset: int = 1,
         output_format: str = "FBX",
@@ -215,13 +219,21 @@ class ExportAnimatedFBX:
             fps = mesh_sequence.get("fps", 24.0)
             print(f"[Export] Using fps from source: {fps}")
         
+        # Check if we have solved camera rotations from Camera Rotation Solver
+        has_solved_rotations = camera_rotations is not None and "rotations" in camera_rotations
+        if has_solved_rotations:
+            print(f"[Export] Using solved camera rotations from Camera Rotation Solver ({len(camera_rotations['rotations'])} frames)")
+            # Force rotation mode when using solved rotations
+            use_camera_rotation = True
+        else:
+            use_camera_rotation = ("Rotation" in camera_motion)
+        
         # Determine camera behavior based on world_translation mode
         # - "Baked into Camera": camera animated with inverse world offset
         # - "Root Locator + Animated Camera": camera parented to root, follows character
         # - "None" + rotation: camera rotates to frame body at origin
         animate_camera = (world_translation == "Baked into Camera")
         camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
-        use_camera_rotation = ("Rotation" in camera_motion)
         
         # Camera rotation works with: None, Baked into Camera, Root Locator + Animated Camera
         # It does NOT work with: Baked into Mesh/Joints, Root Locator (no animation), Separate Track
@@ -233,13 +245,14 @@ class ExportAnimatedFBX:
         
         if include_camera:
             if animate_camera:
-                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
+                mode_str = "SOLVED rotation" if has_solved_rotations else ("rotation (pan/tilt)" if use_camera_rotation else "translation")
                 print(f"[Export] Camera animated with {mode_str} (world_translation={world_translation})")
             elif camera_follow_root:
-                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
+                mode_str = "SOLVED rotation" if has_solved_rotations else ("rotation (pan/tilt)" if use_camera_rotation else "translation")
                 print(f"[Export] Camera follows root with {mode_str} (world_translation={world_translation})")
             elif use_camera_rotation and not rotation_incompatible:
-                print(f"[Export] Camera rotates (pan/tilt) to frame body at origin (world_translation={world_translation})")
+                mode_str = "SOLVED rotation" if has_solved_rotations else "rotation (pan/tilt)"
+                print(f"[Export] Camera {mode_str} to frame body at origin (world_translation={world_translation})")
             else:
                 print(f"[Export] Camera will be static (world_translation={world_translation})")
         
@@ -317,6 +330,19 @@ class ExportAnimatedFBX:
         if camera_smoothing > 0:
             print(f"[Export] Camera smoothing: {camera_smoothing} frames")
         
+        # Prepare solved camera rotations if available
+        solved_rotations = None
+        if has_solved_rotations:
+            solved_rotations = []
+            for rot_data in camera_rotations["rotations"]:
+                solved_rotations.append({
+                    "frame": rot_data.get("frame", 0),
+                    "pan": rot_data.get("pan", 0.0),
+                    "tilt": rot_data.get("tilt", 0.0),
+                    "roll": rot_data.get("roll", 0.0),
+                })
+            print(f"[Export] Solved rotations: {len(solved_rotations)} frames, final pan={np.degrees(solved_rotations[-1]['pan']):.2f}°, tilt={np.degrees(solved_rotations[-1]['tilt']):.2f}°")
+        
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
@@ -331,6 +357,7 @@ class ExportAnimatedFBX:
             "camera_follow_root": camera_follow_root,
             "camera_use_rotation": use_camera_rotation,
             "camera_smoothing": camera_smoothing,
+            "solved_camera_rotations": solved_rotations,  # From Camera Rotation Solver
             "frames": [],
         }
         
