@@ -346,6 +346,12 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.2.11
+- **REVERT**: Restored v3.2.9 camera rotation logic
+  - v3.2.10 changes made alignment worse
+  - Back to simpler approach that was closer to correct
+- Still investigating remaining ~0.6 unit vertical offset
+
 ### v3.2.10
 - **CRITICAL FIX**: Camera base rotation now correctly established for rotation mode
   - Bug: Static camera section pointed at OFFSET target, then rotation added MORE offset

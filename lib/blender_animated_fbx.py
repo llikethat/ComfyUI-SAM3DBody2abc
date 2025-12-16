@@ -1025,45 +1025,12 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             pan_axis = 1
             tilt_axis = 0
         
+        # Store base rotation from static camera setup
+        base_rotation = camera.rotation_euler.copy()
+        
         if camera_use_rotation:
             # ROTATION MODE: Camera pans/tilts to follow character (like real camera operator)
             print(f"[Blender] Using PAN/TILT rotation to frame character")
-            
-            # CRITICAL FIX: Set up camera to point at LOCAL ORIGIN (not offset target)
-            # The static camera section pointed at target+offset, which is WRONG for rotation mode
-            # We need base rotation that points straight at origin, then ADD pan/tilt from tx/ty
-            camera.location = base_dir * cam_distance
-            
-            # Create temporary target at origin for Track-To
-            origin_target = bpy.data.objects.new("origin_target_local", None)
-            origin_target.location = Vector((0, 0, 0))
-            bpy.context.collection.objects.link(origin_target)
-            
-            constraint = camera.constraints.new(type='TRACK_TO')
-            constraint.target = origin_target
-            constraint.track_axis = 'TRACK_NEGATIVE_Z'
-            
-            if up_axis == "Y" or up_axis == "-Y":
-                constraint.up_axis = 'UP_Y'
-            elif up_axis == "Z" or up_axis == "-Z":
-                constraint.up_axis = 'UP_Z'
-            else:
-                constraint.up_axis = 'UP_Y'
-            
-            bpy.context.view_layer.update()
-            base_rotation = camera.matrix_world.to_euler()
-            camera.rotation_euler = base_rotation.copy()
-            camera.constraints.remove(constraint)
-            bpy.data.objects.remove(origin_target)
-            
-            # Clean up the offset target that was created in static section
-            if target:
-                try:
-                    bpy.data.objects.remove(target)
-                except:
-                    pass
-            
-            print(f"[Blender] Camera base rotation: ({math.degrees(base_rotation.x):.1f}, {math.degrees(base_rotation.y):.1f}, {math.degrees(base_rotation.z):.1f}) degrees")
             
             # Collect all camera values first for smoothing
             all_tx = []
@@ -1096,27 +1063,18 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 tz = all_tz[frame_idx]
                 depth = abs(tz) if abs(tz) > 0.1 else 0.1
                 
-                # Compute pan/tilt angles to show origin at screen position (tx, ty)
-                # In SAM3DBody: tx > 0 means body appears on RIGHT in image
-                # In SAM3DBody: ty > 0 means body appears LOWER in image (Y points down in image coords)
-                #
-                # For Maya Y-up camera:
-                # - Positive Y rotation (pan) = camera turns LEFT = objects shift LEFT
-                # - Positive X rotation (tilt) = camera tilts DOWN = objects shift UP
-                #
-                # To show body on RIGHT (tx > 0): camera should pan LEFT (positive Y) → object goes right ✓
-                # To show body LOWER (ty > 0): camera should tilt UP (negative X) → object goes down ✓
-                #
-                # Therefore: pan_angle = atan2(tx, depth), tilt_angle = atan2(-ty, depth)
+                # Apply coordinate transform for pan (horizontal)
+                # flip_x affects whether we negate tx
+                if up_axis == "Y" or up_axis == "-Y":
+                    tx_cam = tx if flip_x else -tx
+                    # ty is NOT negated - positive ty means body lower in frame,
+                    # so camera should tilt DOWN (positive X rotation)
+                    ty_cam = ty
+                else:  # Z-up
+                    tx_cam = tx if flip_x else -tx
+                    ty_cam = ty
                 
-                if flip_x:
-                    tx_cam = tx   # Keep as-is
-                else:
-                    tx_cam = -tx  # Mirror
-                
-                # Tilt: NEGATE ty because SAM3DBody Y is down, Maya Y is up
-                ty_cam = -ty
-                
+                # Compute angles directly using atan2
                 pan_angle = math.atan2(tx_cam, depth)
                 tilt_angle = math.atan2(ty_cam, depth)
                 
