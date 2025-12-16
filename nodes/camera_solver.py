@@ -90,8 +90,8 @@ class CameraRotationSolver:
             }
         }
     
-    RETURN_TYPES = ("CAMERA_ROTATION_DATA",)
-    RETURN_NAMES = ("camera_rotations",)
+    RETURN_TYPES = ("CAMERA_ROTATION_DATA", "MASK", "IMAGE")
+    RETURN_NAMES = ("camera_rotations", "debug_masks", "debug_tracking")
     FUNCTION = "solve_camera_rotation"
     CATEGORY = "SAM3DBody2abc/Camera"
     
@@ -99,6 +99,7 @@ class CameraRotationSolver:
         self.raft_model = None
         self.yolo_model = None
         self.device = None
+        self.debug_points = []  # Store tracked points for visualization
     
     def load_raft(self):
         """Load RAFT model from torchvision."""
@@ -251,8 +252,9 @@ class CameraRotationSolver:
         flow: np.ndarray, 
         mask: Optional[np.ndarray], 
         flow_threshold: float,
-        ransac_threshold: float
-    ) -> Optional[np.ndarray]:
+        ransac_threshold: float,
+        return_debug: bool = False
+    ) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
         """
         Estimate homography from optical flow on background regions.
         
@@ -261,9 +263,11 @@ class CameraRotationSolver:
             mask: Background mask (H, W) - 1 for background, 0 for foreground
             flow_threshold: Minimum flow magnitude to use
             ransac_threshold: RANSAC threshold
+            return_debug: Whether to return debug info
             
         Returns:
             homography: 3x3 homography matrix, or None if estimation failed
+            debug_info: Dict with src_points, dst_points, inliers (if return_debug)
         """
         flow_height, flow_width = flow.shape[:2]
         
@@ -280,24 +284,40 @@ class CameraRotationSolver:
         # Destination points
         dst_points = src_points + np.column_stack([flow_x, flow_y])
         
+        # Track how many points at each stage
+        total_points = len(src_points)
+        
         # Apply mask if provided
         if mask is not None:
             mask_sampled = mask[::8, ::8].ravel()
             valid = mask_sampled > 0.5
+            points_after_mask = np.sum(valid)
             src_points = src_points[valid]
             dst_points = dst_points[valid]
             flow_x = flow_x[valid]
             flow_y = flow_y[valid]
+        else:
+            points_after_mask = total_points
         
         # Filter by flow magnitude
         flow_mag = np.sqrt(flow_x**2 + flow_y**2)
         valid = flow_mag > flow_threshold
+        points_after_flow = np.sum(valid)
         src_points = src_points[valid]
         dst_points = dst_points[valid]
         
+        debug_info = {
+            'total_points': total_points,
+            'points_after_mask': points_after_mask,
+            'points_after_flow': points_after_flow,
+            'src_points': src_points.copy() if len(src_points) > 0 else None,
+            'dst_points': dst_points.copy() if len(dst_points) > 0 else None,
+            'inliers': None
+        }
+        
         if len(src_points) < 10:
-            print(f"[CameraSolver] Warning: Not enough background points ({len(src_points)})")
-            return None
+            print(f"[CameraSolver] Warning: Not enough background points ({len(src_points)}) - total:{total_points}, after_mask:{points_after_mask}, after_flow:{points_after_flow}")
+            return None, debug_info if return_debug else None
         
         # Estimate homography with RANSAC
         homography, inliers = cv2.findHomography(
@@ -309,13 +329,81 @@ class CameraRotationSolver:
         
         if homography is None:
             print(f"[CameraSolver] Warning: Homography estimation failed")
-            return None
+            return None, debug_info if return_debug else None
+        
+        debug_info['inliers'] = inliers
         
         inlier_ratio = np.sum(inliers) / len(inliers) if inliers is not None else 0
         if inlier_ratio < 0.3:
-            print(f"[CameraSolver] Warning: Low inlier ratio ({inlier_ratio:.2f})")
+            print(f"[CameraSolver] Warning: Low inlier ratio ({inlier_ratio:.2f}) - {np.sum(inliers)}/{len(inliers)} inliers")
         
-        return homography
+        return homography, debug_info if return_debug else None
+    
+    def create_debug_tracking_image(
+        self,
+        frame: np.ndarray,
+        src_points: Optional[np.ndarray],
+        dst_points: Optional[np.ndarray],
+        inliers: Optional[np.ndarray],
+        mask: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """
+        Create debug visualization showing tracked points and flow.
+        
+        Args:
+            frame: Original frame (H, W, 3) uint8
+            src_points: Source points (N, 2)
+            dst_points: Destination points (N, 2)
+            inliers: Boolean array of inliers (N,)
+            mask: Background mask to visualize (H, W)
+            
+        Returns:
+            debug_frame: Frame with visualization (H, W, 3) uint8
+        """
+        debug_frame = frame.copy()
+        
+        # Overlay mask as semi-transparent blue (background regions)
+        if mask is not None:
+            mask_overlay = np.zeros_like(debug_frame)
+            mask_overlay[:, :, 0] = (mask * 100).astype(np.uint8)  # Blue channel for background
+            debug_frame = cv2.addWeighted(debug_frame, 0.7, mask_overlay, 0.3, 0)
+        
+        if src_points is None or dst_points is None:
+            # No points to draw
+            cv2.putText(debug_frame, "No valid points", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            return debug_frame
+        
+        # Draw points and flow vectors
+        for i in range(len(src_points)):
+            src = tuple(src_points[i].astype(int))
+            dst = tuple(dst_points[i].astype(int))
+            
+            if inliers is not None and i < len(inliers):
+                is_inlier = inliers[i][0] if len(inliers[i]) > 0 else inliers[i]
+            else:
+                is_inlier = True
+            
+            if is_inlier:
+                # Inlier: green point, green line
+                color = (0, 255, 0)
+            else:
+                # Outlier: red point, red line
+                color = (0, 0, 255)
+            
+            # Draw flow vector
+            cv2.arrowedLine(debug_frame, src, dst, color, 1, tipLength=0.3)
+            cv2.circle(debug_frame, src, 3, color, -1)
+        
+        # Add stats text
+        num_inliers = np.sum(inliers) if inliers is not None else 0
+        total = len(src_points)
+        ratio = num_inliers / total if total > 0 else 0
+        
+        cv2.putText(debug_frame, f"Points: {total}, Inliers: {num_inliers} ({ratio:.1%})", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        return debug_frame
     
     def decompose_homography_to_rotation(
         self, 
@@ -444,29 +532,36 @@ class CameraRotationSolver:
         # Determine foreground masks
         # Priority: provided masks > YOLO auto-detection > no masks
         bg_masks = None
+        fg_masks_for_debug = None
         
         if foreground_masks is not None:
             # Use provided foreground masks
             fg = foreground_masks.cpu().numpy()
+            fg_masks_for_debug = fg.copy()
             bg_masks = 1.0 - fg
             print(f"[CameraSolver] Using provided foreground masks")
             
         elif sam3_masks is not None:
             # Use SAM3 masks
             bg_masks = self._process_sam3_masks(sam3_masks, num_frames, img_height, img_width)
+            if bg_masks is not None:
+                fg_masks_for_debug = 1.0 - bg_masks
             print(f"[CameraSolver] Using SAM3 masks")
             
         elif auto_mask_people:
             # Auto-detect all people using YOLO
             print(f"[CameraSolver] Auto-masking people with YOLO...")
-            fg_masks = self.detect_people_yolo(frames, detection_confidence, mask_expansion)
-            if fg_masks is not None:
-                bg_masks = 1.0 - fg_masks
+            fg_masks_for_debug = self.detect_people_yolo(frames, detection_confidence, mask_expansion)
+            if fg_masks_for_debug is not None:
+                bg_masks = 1.0 - fg_masks_for_debug
                 print(f"[CameraSolver] YOLO auto-masking complete")
             else:
                 print(f"[CameraSolver] YOLO unavailable - using full frame")
         else:
             print(f"[CameraSolver] No masks - using full frame (may include foreground motion)")
+        
+        # Prepare debug outputs
+        debug_tracking_frames = []
         
         # Compute per-frame rotations
         rotations = []
@@ -476,6 +571,17 @@ class CameraRotationSolver:
         
         # First frame has no rotation (reference)
         rotations.append((0.0, 0.0, 0.0))
+        
+        # Create debug image for frame 0 (no tracking, just show mask)
+        if fg_masks_for_debug is not None:
+            debug_frame0 = self.create_debug_tracking_image(
+                frames[0], None, None, None, bg_masks[0] if bg_masks is not None else None
+            )
+        else:
+            debug_frame0 = frames[0].copy()
+            cv2.putText(debug_frame0, "Frame 0 (reference)", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        debug_tracking_frames.append(debug_frame0)
         
         for i in range(1, num_frames):
             frame1 = frames[i - 1]
@@ -496,10 +602,30 @@ class CameraRotationSolver:
             except Exception as e:
                 print(f"[CameraSolver] Frame {i}: Flow computation failed - {e}")
                 rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+                # Add debug frame with error message
+                debug_frame = frame2.copy()
+                cv2.putText(debug_frame, f"Frame {i}: Flow failed", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                debug_tracking_frames.append(debug_frame)
                 continue
             
-            # Estimate homography
-            homography = self.estimate_homography_from_flow(flow, mask, flow_threshold, ransac_threshold)
+            # Estimate homography with debug info
+            homography, debug_info = self.estimate_homography_from_flow(
+                flow, mask, flow_threshold, ransac_threshold, return_debug=True
+            )
+            
+            # Create debug tracking image
+            debug_frame = self.create_debug_tracking_image(
+                frame2,
+                debug_info['src_points'] if debug_info else None,
+                debug_info['dst_points'] if debug_info else None,
+                debug_info['inliers'] if debug_info else None,
+                mask
+            )
+            # Add frame number
+            cv2.putText(debug_frame, f"Frame {i}", (10, img_height - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            debug_tracking_frames.append(debug_frame)
             
             if homography is None:
                 # No valid homography, assume no rotation
@@ -510,6 +636,13 @@ class CameraRotationSolver:
             delta_pan, delta_tilt, delta_roll = self.decompose_homography_to_rotation(
                 homography, focal_length_px, img_width, img_height
             )
+            
+            # Sanity check: reject huge rotations (likely errors)
+            max_delta = np.radians(10)  # Max 10 degrees per frame
+            if abs(delta_pan) > max_delta or abs(delta_tilt) > max_delta or abs(delta_roll) > max_delta:
+                print(f"[CameraSolver] Frame {i}: Rejected large rotation delta (pan={np.degrees(delta_pan):.1f}°, tilt={np.degrees(delta_tilt):.1f}°, roll={np.degrees(delta_roll):.1f}°)")
+                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+                continue
             
             # Accumulate rotation
             cumulative_pan += delta_pan
@@ -551,7 +684,18 @@ class CameraRotationSolver:
         print(f"[CameraSolver] Solve complete!")
         print(f"[CameraSolver] Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°, roll={np.degrees(final_rot[2]):.2f}°")
         
-        return (camera_rotation_data,)
+        # Convert debug masks to tensor (N, H, W)
+        if fg_masks_for_debug is not None:
+            debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float()
+        else:
+            # Return empty masks if none available
+            debug_masks_tensor = torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+        
+        # Convert debug tracking frames to tensor (N, H, W, C)
+        debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+        debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+        
+        return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
     
     def _process_sam3_masks(self, sam3_masks, num_frames, img_height, img_width) -> np.ndarray:
         """Convert SAM3 masks to background masks."""

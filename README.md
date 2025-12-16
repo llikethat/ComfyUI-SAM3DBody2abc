@@ -386,6 +386,16 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.3.3
+- **NEW**: Debug outputs in Camera Rotation Solver
+  - `debug_masks` (MASK): Shows YOLO-detected foreground masks
+  - `debug_tracking` (IMAGE): Shows tracked points with flow vectors
+    - Green = inlier points (used for homography)
+    - Red = outlier points (rejected)
+    - Blue overlay = background region (used for tracking)
+- **NEW**: Sanity check - rejects rotation deltas > 10° per frame
+- **IMPROVED**: More detailed logging showing point counts at each stage
+
 ### v3.3.2
 - **NEW**: YOLO auto-masking in Camera Rotation Solver
   - Automatically detects and masks ALL people in video
