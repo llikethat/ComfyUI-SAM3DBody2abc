@@ -160,7 +160,7 @@ class CameraRotationSolver:
         Detect all people in video frames using YOLO.
         
         Args:
-            frames: Video frames (N, H, W, C) uint8
+            frames: Video frames (N, H, W, C) uint8 RGB
             confidence: Detection confidence threshold
             mask_expansion: Pixels to expand each detection mask
             
@@ -168,47 +168,63 @@ class CameraRotationSolver:
             foreground_masks: (N, H, W) float32, 1.0 where people detected
         """
         if not self.load_yolo():
+            print(f"[CameraSolver] YOLO model failed to load!")
             return None
         
-        num_frames, img_height, img_width, _ = frames.shape
+        num_frames, img_height, img_width, channels = frames.shape
         foreground_masks = np.zeros((num_frames, img_height, img_width), dtype=np.float32)
         
         total_detections = 0
         
         print(f"[CameraSolver] Detecting people in {num_frames} frames (confidence={confidence})...")
+        print(f"[CameraSolver] Frame shape: {frames.shape}, dtype: {frames.dtype}, range: [{frames.min()}-{frames.max()}]")
         
         for i in range(num_frames):
-            frame = frames[i]
+            frame_rgb = frames[i]
+            
+            # Convert RGB to BGR for YOLO/OpenCV
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
             
             # Run YOLO detection
-            results = self.yolo_model(frame, verbose=False, conf=confidence)
+            results = self.yolo_model(frame_bgr, verbose=False, conf=confidence)
             
+            frame_detections = 0
             for result in results:
                 boxes = result.boxes
-                if boxes is None:
+                if boxes is None or len(boxes) == 0:
                     continue
                 
                 for box in boxes:
+                    cls_id = int(box.cls)
+                    conf_val = float(box.conf)
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                    
+                    # Log first frame detections for debugging
+                    if i == 0:
+                        print(f"[CameraSolver] Frame 0: Detected class {cls_id} with conf {conf_val:.2f} at [{x1},{y1},{x2},{y2}]")
+                    
                     # Class 0 is 'person' in COCO
-                    if int(box.cls) == 0:
-                        # Get bounding box
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                        
+                    if cls_id == 0:
                         # Expand the box
-                        x1 = max(0, x1 - mask_expansion)
-                        y1 = max(0, y1 - mask_expansion)
-                        x2 = min(img_width, x2 + mask_expansion)
-                        y2 = min(img_height, y2 + mask_expansion)
+                        x1_exp = max(0, x1 - mask_expansion)
+                        y1_exp = max(0, y1 - mask_expansion)
+                        x2_exp = min(img_width, x2 + mask_expansion)
+                        y2_exp = min(img_height, y2 + mask_expansion)
                         
                         # Fill mask
-                        foreground_masks[i, y1:y2, x1:x2] = 1.0
+                        foreground_masks[i, y1_exp:y2_exp, x1_exp:x2_exp] = 1.0
+                        frame_detections += 1
                         total_detections += 1
             
+            if i == 0:
+                print(f"[CameraSolver] Frame 0: {frame_detections} people detected")
+            
             if (i + 1) % 20 == 0:
-                print(f"[CameraSolver] Processed {i + 1}/{num_frames} frames...")
+                print(f"[CameraSolver] Processed {i + 1}/{num_frames} frames ({frame_detections} people in this frame)...")
         
         avg_detections = total_detections / num_frames if num_frames > 0 else 0
         print(f"[CameraSolver] Person detection complete: {total_detections} total, ~{avg_detections:.1f} per frame")
+        print(f"[CameraSolver] Mask sum: {foreground_masks.sum():.0f} pixels marked as foreground")
         
         return foreground_masks
     
@@ -362,19 +378,23 @@ class CameraRotationSolver:
         """
         debug_frame = frame.copy()
         
+        # Frame is RGB, OpenCV uses BGR for colors
+        # We'll work in RGB and use RGB color tuples
+        
         # Overlay mask as semi-transparent blue (background regions)
         if mask is not None:
             mask_overlay = np.zeros_like(debug_frame)
-            mask_overlay[:, :, 0] = (mask * 100).astype(np.uint8)  # Blue channel for background
+            mask_overlay[:, :, 2] = (mask * 100).astype(np.uint8)  # Blue channel (index 2 in RGB) for background
             debug_frame = cv2.addWeighted(debug_frame, 0.7, mask_overlay, 0.3, 0)
         
         if src_points is None or dst_points is None:
-            # No points to draw
+            # No points to draw - add text showing frame info
             cv2.putText(debug_frame, "No valid points", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)  # Red in RGB
             return debug_frame
         
         # Draw points and flow vectors
+        # Colors in RGB: Green=(0,255,0), Red=(255,0,0)
         for i in range(len(src_points)):
             src = tuple(src_points[i].astype(int))
             dst = tuple(dst_points[i].astype(int))
@@ -385,17 +405,17 @@ class CameraRotationSolver:
                 is_inlier = True
             
             if is_inlier:
-                # Inlier: green point, green line
+                # Inlier: green point, green line (RGB)
                 color = (0, 255, 0)
             else:
-                # Outlier: red point, red line
-                color = (0, 0, 255)
+                # Outlier: red point, red line (RGB)
+                color = (255, 0, 0)
             
             # Draw flow vector
             cv2.arrowedLine(debug_frame, src, dst, color, 1, tipLength=0.3)
             cv2.circle(debug_frame, src, 3, color, -1)
         
-        # Add stats text
+        # Add stats text (white in RGB)
         num_inliers = np.sum(inliers) if inliers is not None else 0
         total = len(src_points)
         ratio = num_inliers / total if total > 0 else 0
@@ -527,6 +547,7 @@ class CameraRotationSolver:
         num_frames, img_height, img_width, C = frames.shape
         
         print(f"[CameraSolver] Frame size: {img_width}x{img_height}")
+        print(f"[CameraSolver] Input frames: shape={frames.shape}, dtype={frames.dtype}, range=[{frames.min()}-{frames.max()}]")
         print(f"[CameraSolver] Focal length: {focal_length_px}px")
         
         # Determine foreground masks
@@ -539,14 +560,27 @@ class CameraRotationSolver:
             fg = foreground_masks.cpu().numpy()
             fg_masks_for_debug = fg.copy()
             bg_masks = 1.0 - fg
-            print(f"[CameraSolver] Using provided foreground masks")
+            print(f"[CameraSolver] Using provided foreground masks: shape={fg.shape}")
             
         elif sam3_masks is not None:
-            # Use SAM3 masks
+            # Try to use SAM3 masks
             bg_masks = self._process_sam3_masks(sam3_masks, num_frames, img_height, img_width)
             if bg_masks is not None:
                 fg_masks_for_debug = 1.0 - bg_masks
-            print(f"[CameraSolver] Using SAM3 masks")
+                print(f"[CameraSolver] Using SAM3 masks successfully")
+            else:
+                print(f"[CameraSolver] SAM3 mask processing failed!")
+                # Fall back to YOLO if enabled
+                if auto_mask_people:
+                    print(f"[CameraSolver] Falling back to YOLO auto-masking...")
+                    fg_masks_for_debug = self.detect_people_yolo(frames, detection_confidence, mask_expansion)
+                    if fg_masks_for_debug is not None:
+                        bg_masks = 1.0 - fg_masks_for_debug
+                        print(f"[CameraSolver] YOLO fallback successful")
+                    else:
+                        print(f"[CameraSolver] YOLO also failed - using full frame")
+                else:
+                    print(f"[CameraSolver] auto_mask_people disabled - using full frame")
             
         elif auto_mask_people:
             # Auto-detect all people using YOLO
@@ -687,21 +721,31 @@ class CameraRotationSolver:
         # Convert debug masks to tensor (N, H, W)
         if fg_masks_for_debug is not None:
             debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float()
+            print(f"[CameraSolver] Debug masks: shape={debug_masks_tensor.shape}, sum={debug_masks_tensor.sum():.0f}, max={debug_masks_tensor.max():.2f}")
         else:
             # Return empty masks if none available
             debug_masks_tensor = torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            print(f"[CameraSolver] Debug masks: EMPTY (no foreground masks generated)")
         
         # Convert debug tracking frames to tensor (N, H, W, C)
+        print(f"[CameraSolver] Debug tracking frames: {len(debug_tracking_frames)} frames")
+        if len(debug_tracking_frames) > 0:
+            print(f"[CameraSolver] First frame shape: {debug_tracking_frames[0].shape}, dtype: {debug_tracking_frames[0].dtype}, range: [{debug_tracking_frames[0].min()}-{debug_tracking_frames[0].max()}]")
+        
         debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
         debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+        print(f"[CameraSolver] Debug tracking tensor: shape={debug_tracking_tensor.shape}, range=[{debug_tracking_tensor.min():.2f}-{debug_tracking_tensor.max():.2f}]")
         
         return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
     
     def _process_sam3_masks(self, sam3_masks, num_frames, img_height, img_width) -> np.ndarray:
         """Convert SAM3 masks to background masks."""
+        print(f"[CameraSolver] Processing SAM3 masks: type={type(sam3_masks)}")
+        
         try:
             # Handle different SAM3 mask formats
             if isinstance(sam3_masks, dict):
+                print(f"[CameraSolver] SAM3 masks is dict with {len(sam3_masks)} keys")
                 # Frame-indexed dict
                 bg_masks = []
                 for i in range(num_frames):
@@ -709,18 +753,68 @@ class CameraRotationSolver:
                         fg = sam3_masks[i]
                         if isinstance(fg, torch.Tensor):
                             fg = fg.cpu().numpy()
+                        print(f"[CameraSolver] Frame {i} mask shape: {fg.shape}") if i == 0 else None
+                        
+                        # Handle various shapes
+                        if len(fg.shape) == 3:
+                            fg = fg[0] if fg.shape[0] < fg.shape[1] else fg[:,:,0]  # Remove channel dim
+                        
                         if fg.shape[0] != img_height or fg.shape[1] != img_width:
-                            fg = cv2.resize(fg.astype(np.float32), (img_width, img_height))
+                            if fg.shape[0] > 0 and fg.shape[1] > 0:
+                                fg = cv2.resize(fg.astype(np.float32), (img_width, img_height))
+                            else:
+                                print(f"[CameraSolver] Frame {i}: Invalid mask shape {fg.shape}")
+                                fg = np.zeros((img_height, img_width), dtype=np.float32)
                         bg_masks.append(1.0 - fg)
                     else:
                         bg_masks.append(np.ones((img_height, img_width), dtype=np.float32))
-                return np.array(bg_masks)
+                result = np.array(bg_masks)
+                print(f"[CameraSolver] Processed dict masks: shape={result.shape}, sum={result.sum():.0f}")
+                return result
             
             elif isinstance(sam3_masks, torch.Tensor):
                 fg = sam3_masks.cpu().numpy()
+                print(f"[CameraSolver] SAM3 masks tensor shape: {fg.shape}")
+                
+                # Handle various tensor shapes: (N,H,W), (N,1,H,W), (N,C,H,W)
                 if len(fg.shape) == 4:
-                    fg = fg[:, 0]  # Take first channel
-                return 1.0 - fg
+                    fg = fg[:, 0]  # Take first channel: (N,1,H,W) -> (N,H,W)
+                elif len(fg.shape) == 2:
+                    fg = fg[np.newaxis, ...]  # Single mask: (H,W) -> (1,H,W)
+                
+                # Check if we need to resize
+                if fg.shape[1] != img_height or fg.shape[2] != img_width:
+                    print(f"[CameraSolver] Resizing masks from {fg.shape[1]}x{fg.shape[2]} to {img_height}x{img_width}")
+                    resized = []
+                    for i in range(fg.shape[0]):
+                        if fg[i].shape[0] > 0 and fg[i].shape[1] > 0:
+                            resized.append(cv2.resize(fg[i].astype(np.float32), (img_width, img_height)))
+                        else:
+                            resized.append(np.zeros((img_height, img_width), dtype=np.float32))
+                    fg = np.stack(resized, axis=0)
+                
+                result = 1.0 - fg
+                print(f"[CameraSolver] Processed tensor masks: shape={result.shape}, fg_sum={fg.sum():.0f}")
+                return result
+            
+            elif hasattr(sam3_masks, '__iter__'):
+                # List or other iterable
+                print(f"[CameraSolver] SAM3 masks is iterable with {len(sam3_masks)} items")
+                bg_masks = []
+                for i, mask in enumerate(sam3_masks):
+                    if isinstance(mask, torch.Tensor):
+                        mask = mask.cpu().numpy()
+                    if len(mask.shape) == 3:
+                        mask = mask[0]
+                    if mask.shape[0] != img_height or mask.shape[1] != img_width:
+                        if mask.shape[0] > 0 and mask.shape[1] > 0:
+                            mask = cv2.resize(mask.astype(np.float32), (img_width, img_height))
+                        else:
+                            mask = np.zeros((img_height, img_width), dtype=np.float32)
+                    bg_masks.append(1.0 - mask)
+                result = np.array(bg_masks)
+                print(f"[CameraSolver] Processed iterable masks: shape={result.shape}")
+                return result
             
             else:
                 print(f"[CameraSolver] Unknown SAM3 mask format: {type(sam3_masks)}")
@@ -728,6 +822,8 @@ class CameraRotationSolver:
                 
         except Exception as e:
             print(f"[CameraSolver] Error processing SAM3 masks: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
 

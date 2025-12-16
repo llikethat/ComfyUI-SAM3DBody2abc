@@ -386,6 +386,22 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.3.5
+- **FIX**: SAM3 mask processing - handles various tensor shapes correctly
+- **FIX**: Falls back to YOLO when SAM3 mask processing fails
+- **FIX**: YOLO detection debug logging scope issue
+- **IMPROVED**: Extensive debug output for SAM3 mask format detection
+- **IMPROVED**: Shows mask processing success/failure and fallback status
+
+### v3.3.4
+- **FIX**: RGB to BGR conversion for YOLO detection
+- **IMPROVED**: Extensive debug logging to diagnose detection issues
+  - Shows input frame statistics (shape, dtype, value range)
+  - Shows per-frame detection counts
+  - Shows frame 0 detection details (class, confidence, bbox)
+  - Shows mask sum and debug tensor statistics
+- **IMPROVED**: Fixed color channels in debug visualization (RGB consistency)
+
 ### v3.3.3
 - **NEW**: Debug outputs in Camera Rotation Solver
   - `debug_masks` (MASK): Shows YOLO-detected foreground masks
