@@ -31,9 +31,10 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     
     SAM3DBody computes pred_keypoints_2d from pred_keypoints_3d using perspective projection.
     The camera model is:
-    - 3D points are in body-centered coordinates
-    - cam_t = [tx, ty, tz] is the camera translation (body position in camera space)
-    - Projection: x_2d = fx * (X + tx) / (Z + tz) + cx
+    - 3D points are in body-centered coordinates (Y points UP)
+    - Image coordinates have Y pointing DOWN (y=0 is top)
+    - cam_t = [tx, ty, tz] is the camera translation
+    - Projection requires Y negation to convert 3D Y-up to image Y-down
     
     This should match pred_keypoints_2d when applied to pred_keypoints_3d.
     
@@ -62,12 +63,12 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     
     # SAM3DBody camera model:
     # Points in camera space = points_3d + cam_t
-    # Then perspective projection
+    # Then perspective projection with Y-axis flip (3D Y-up → image Y-down)
     tx, ty, tz = cam_t[0], cam_t[1], cam_t[2]
     
     # Add camera translation to get points in camera space
     X = points_3d[:, 0] + tx
-    Y = points_3d[:, 1] + ty
+    Y = -(points_3d[:, 1] + ty)  # NEGATE Y: 3D Y-up → image Y-down
     Z = points_3d[:, 2] + tz
     
     # Avoid division by zero

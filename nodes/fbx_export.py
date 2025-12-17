@@ -378,10 +378,10 @@ class ExportAnimatedFBX:
                 print(f"[Export DEBUG] focal_length: {first_focal}")
                 print(f"[Export DEBUG] image_size: {first_image_size}")
                 print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] CURRENT world_offset formula (magic 0.5):")
+                print(f"[Export DEBUG] world_offset formula:")
                 print(f"[Export DEBUG]   world_x = tx*|tz|*0.5 = {tx:.4f}*{abs(tz):.4f}*0.5 = {world_x:.4f}")
                 print(f"[Export DEBUG]   world_y = ty*|tz|*0.5 = {ty:.4f}*{abs(tz):.4f}*0.5 = {world_y:.4f}")
-                print(f"[Export DEBUG]   root_locator (Y-up) = ({-world_x:.4f}, {-world_y:.4f}, 0)")
+                print(f"[Export DEBUG]   root_locator (Y-up) = (-world_x, +world_y, 0) = ({-world_x:.4f}, {world_y:.4f}, 0)")
                 print(f"[Export DEBUG]")
                 
                 # What screen position does this correspond to?
@@ -389,12 +389,12 @@ class ExportAnimatedFBX:
                     focal = float(first_focal) if not isinstance(first_focal, (list, tuple)) else float(first_focal[0])
                     img_w, img_h = first_image_size[0], first_image_size[1]
                     cx, cy = img_w / 2, img_h / 2
-                    # Screen position from pred_cam_t (body at origin):
+                    # Screen position from pred_cam_t (with Y negation fix):
                     screen_x = focal * tx / tz + cx
-                    screen_y = focal * ty / tz + cy
-                    print(f"[Export DEBUG] SCREEN POSITION (body at origin):")
+                    screen_y = focal * (-ty) / tz + cy  # Fixed: negate ty
+                    print(f"[Export DEBUG] SCREEN POSITION (body at origin, Y-corrected):")
                     print(f"[Export DEBUG]   screen_x = focal*tx/tz + cx = {focal:.1f}*{tx:.4f}/{tz:.4f} + {cx:.0f} = {screen_x:.1f}px")
-                    print(f"[Export DEBUG]   screen_y = focal*ty/tz + cy = {focal:.1f}*{ty:.4f}/{tz:.4f} + {cy:.0f} = {screen_y:.1f}px")
+                    print(f"[Export DEBUG]   screen_y = focal*(-ty)/tz + cy = {focal:.1f}*{-ty:.4f}/{tz:.4f} + {cy:.0f} = {screen_y:.1f}px")
                     print(f"[Export DEBUG]   (Image center: {cx:.0f}, {cy:.0f})")
                 print(f"[Export DEBUG] ================================================================\n")
         

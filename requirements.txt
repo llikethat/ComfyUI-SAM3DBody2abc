@@ -1,62 +1,14 @@
-# ComfyUI-SAM3DBody-Video-Alembic Requirements
-# This extension works with the existing ComfyUI-SAM3DBody node
+# ComfyUI-SAM3DBody2abc Requirements
+# Core dependencies (usually already installed with ComfyUI)
+numpy
+torch
+torchvision>=0.14  # For RAFT optical flow (optional, for Camera Solver)
 
-# Core (typically already installed with ComfyUI)
-numpy>=1.20.0
-torch>=1.9.0
+# Computer Vision
+opencv-python
 
-# For mesh handling
-trimesh>=3.9.0
+# YOLO for person detection (Camera Solver)
+ultralytics
 
-# For overlay visualization (optional but recommended)
-opencv-python>=4.5.0
-pyrender>=0.1.45
-
-# For advanced mesh operations (optional)
-scipy>=1.7.0
-
-# ============================================================
-# OPTIONAL: Native Alembic Export
-# ============================================================
-# PyAlembic is optional - if not installed, the extension
-# will use Blender subprocess or OBJ sequence fallback.
-#
-# To install native Alembic:
-#   conda install -c conda-forge alembic
-#   OR
-#   pip install PyAlembic (may need to build from source)
-#
-# ============================================================
-# OPTIONAL: FBX Export
-# ============================================================
-# FBX export requires Blender to be installed on your system.
-# The extension will automatically find Blender if it's in
-# standard installation locations or in PATH.
-#
-# Blender download: https://www.blender.org/download/
-#
-# ============================================================
-# OPTIONAL: Auto FOV Calibration
-# ============================================================
-# GeoCalib (ECCV 2024) for automatic camera FOV estimation.
-# Provides better 3D reconstruction accuracy.
-#
-# To install:
-#   pip install -e "git+https://github.com/cvg/GeoCalib#egg=geocalib"
-#
-# ============================================================
-# OPTIONAL: SAM3 Multi-Character Segmentation
-# ============================================================
-# For selecting specific characters in multi-person videos.
-# Use the ComfyUI-SAM3 extension (NOT the raw sam3 package):
-#
-#   https://github.com/neverbiasu/ComfyUI-SAM3
-#
-# Install it as a ComfyUI custom node, then connect:
-#   SAM3VideoOutput → mask → SAM3DBody2abc BatchProcessor
-#
-# ============================================================
-
-# Required ComfyUI custom nodes (install separately):
-# - ComfyUI-SAM3DBody: https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody
-# - ComfyUI-VideoHelperSuite: https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite (optional, for video input)
+# Math utilities
+scipy

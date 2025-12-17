@@ -162,6 +162,14 @@ FLIP_X = False
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     """
     Convert pred_cam_t [tx, ty, tz] to world space offset.
+    
+    pred_cam_t from SAM3DBody:
+    - tx: positive = body RIGHT of center in screen
+    - ty: positive = body ABOVE center in screen (but screen Y points DOWN)
+    - tz: depth (camera distance)
+    
+    For Y-up 3D (Maya): positive Y = up
+    So ty positive → body above center → world Y should be POSITIVE
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
@@ -169,20 +177,22 @@ def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
     # Scale tx, ty by depth to get world units
+    # The 0.5 factor is empirically determined to match SAM3DBody's projection
     world_x = tx * abs(tz) * 0.5
     world_y = ty * abs(tz) * 0.5
     
     # Apply based on up_axis
+    # Note: ty positive = above screen center = positive Y in Y-up world
     if up_axis == "Y":
-        return Vector((-world_x, -world_y, 0))
+        return Vector((-world_x, world_y, 0))  # Fixed: was -world_y, now world_y
     elif up_axis == "Z":
-        return Vector((-world_x, 0, world_y))
+        return Vector((-world_x, 0, -world_y))  # Fixed: was world_y, now -world_y
     elif up_axis == "-Y":
-        return Vector((-world_x, world_y, 0))
-    elif up_axis == "-Z":
-        return Vector((-world_x, 0, -world_y))
-    else:
         return Vector((-world_x, -world_y, 0))
+    elif up_axis == "-Z":
+        return Vector((-world_x, 0, world_y))
+    else:
+        return Vector((-world_x, world_y, 0))
 
 
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):

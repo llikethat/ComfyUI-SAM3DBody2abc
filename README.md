@@ -413,6 +413,23 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.0 - Y-Axis Projection Fix
+- **CRITICAL FIX**: Fixed Y-axis projection for 3D to 2D conversion
+  - 3D Y points UP, image Y points DOWN - now correctly negated
+  - Mesh overlay now aligns correctly with video
+  - Root locator Y position now correct
+- **DEBUG**: Added projection comparison debug output
+  - Shows ground truth vs calculated 2D positions
+  - Helps verify projection accuracy
+- **DEBUG**: Added root_locator calculation debug output
+  - Shows pred_cam_t values and world offset calculation
+- **ADDED**: `requirements.txt` for easy dependency installation
+- **ADDED**: ultralytics dependency for YOLO person detection
+
+**Test Results:**
+Before fix: Average Y offset = +211px (body appeared too low)
+After fix: Average Y offset ≈ 0px (body aligns correctly)
+
 ### v3.4.1 - Full Pipeline Integration
 - **NEW**: Camera Rotation Solver → Export FBX integration
   - Connect `camera_rotations` output directly to Export Animated FBX
@@ -705,10 +722,24 @@ Video Loader ──┬──→ Video Batch Processor ──┬──→ mesh_se
 - ComfyUI
 - ComfyUI-SAM3DBody
 - Blender 3.6+ (system installation)
-- **For Camera Rotation Solver:**
-  - torchvision >= 0.14 (for RAFT optical flow)
-  - opencv-python
-  - ultralytics (for YOLO auto-masking): `pip install ultralytics`
+
+### Python Dependencies
+
+Install all dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+Or manually:
+```bash
+pip install numpy torch torchvision opencv-python ultralytics scipy
+```
+
+**Camera Rotation Solver specific:**
+- `torchvision >= 0.14` - For RAFT optical flow
+- `opencv-python` - For KLT tracking and image processing
+- `ultralytics` - For YOLO person detection
+- `scipy` - For rotation matrix decomposition
 
 ## Troubleshooting
 
@@ -761,3 +792,24 @@ If inverted, try toggling `flip_x`.
 ## License
 
 MIT License
+
+### Third-Party Licenses
+
+This project uses the following open-source libraries:
+
+| Library | License | Usage |
+|---------|---------|-------|
+| **NumPy** | BSD-3-Clause | Array operations |
+| **PyTorch** | BSD-3-Clause | Deep learning framework |
+| **TorchVision** | BSD-3-Clause | RAFT optical flow |
+| **OpenCV** | Apache-2.0 | Image processing, KLT tracking |
+| **Ultralytics (YOLOv8)** | AGPL-3.0 | Person detection |
+| **SciPy** | BSD-3-Clause | Rotation matrix decomposition |
+| **CoTracker** | CC-BY-NC-4.0 | AI point tracking (Meta Research) |
+| **Blender** | GPL-2.0+ | FBX/Alembic export |
+
+**Note on Ultralytics/YOLOv8**: The AGPL-3.0 license requires that if you distribute a modified version of this software, you must also distribute the source code. For commercial use, consider Ultralytics Enterprise license.
+
+**Note on CoTracker**: CC-BY-NC-4.0 is for non-commercial use only. For commercial applications, contact Meta for licensing.
+
+**Note on Blender**: This project calls Blender as an external tool via subprocess. The exported FBX/ABC files are not covered by GPL.
