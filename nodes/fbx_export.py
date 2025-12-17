@@ -361,6 +361,43 @@ class ExportAnimatedFBX:
             "frames": [],
         }
         
+        # DEBUG: Show root_locator calculation for frame 0
+        first_frame = frames[sorted_indices[0]]
+        first_cam_t = first_frame.get("pred_cam_t")
+        first_focal = first_frame.get("focal_length")
+        first_image_size = first_frame.get("image_size")
+        if first_cam_t is not None:
+            first_cam_t = to_list(first_cam_t)
+            if len(first_cam_t) >= 3:
+                tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
+                # This is how get_world_offset_from_cam_t calculates it:
+                world_x = tx * abs(tz) * 0.5
+                world_y = ty * abs(tz) * 0.5
+                print(f"\n[Export DEBUG] ========== ROOT_LOCATOR CALCULATION (Frame 0) ==========")
+                print(f"[Export DEBUG] pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
+                print(f"[Export DEBUG] focal_length: {first_focal}")
+                print(f"[Export DEBUG] image_size: {first_image_size}")
+                print(f"[Export DEBUG]")
+                print(f"[Export DEBUG] CURRENT world_offset formula (magic 0.5):")
+                print(f"[Export DEBUG]   world_x = tx*|tz|*0.5 = {tx:.4f}*{abs(tz):.4f}*0.5 = {world_x:.4f}")
+                print(f"[Export DEBUG]   world_y = ty*|tz|*0.5 = {ty:.4f}*{abs(tz):.4f}*0.5 = {world_y:.4f}")
+                print(f"[Export DEBUG]   root_locator (Y-up) = ({-world_x:.4f}, {-world_y:.4f}, 0)")
+                print(f"[Export DEBUG]")
+                
+                # What screen position does this correspond to?
+                if first_focal and first_image_size:
+                    focal = float(first_focal) if not isinstance(first_focal, (list, tuple)) else float(first_focal[0])
+                    img_w, img_h = first_image_size[0], first_image_size[1]
+                    cx, cy = img_w / 2, img_h / 2
+                    # Screen position from pred_cam_t (body at origin):
+                    screen_x = focal * tx / tz + cx
+                    screen_y = focal * ty / tz + cy
+                    print(f"[Export DEBUG] SCREEN POSITION (body at origin):")
+                    print(f"[Export DEBUG]   screen_x = focal*tx/tz + cx = {focal:.1f}*{tx:.4f}/{tz:.4f} + {cx:.0f} = {screen_x:.1f}px")
+                    print(f"[Export DEBUG]   screen_y = focal*ty/tz + cy = {focal:.1f}*{ty:.4f}/{tz:.4f} + {cy:.0f} = {screen_y:.1f}px")
+                    print(f"[Export DEBUG]   (Image center: {cx:.0f}, {cy:.0f})")
+                print(f"[Export DEBUG] ================================================================\n")
+        
         for idx in sorted_indices:
             frame = frames[idx]
             
