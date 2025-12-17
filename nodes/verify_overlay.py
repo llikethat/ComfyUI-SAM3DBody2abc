@@ -509,6 +509,34 @@ class VerifyOverlayBatch:
                 
                 joints_2d = None
                 
+                # DEBUG: Compare ground truth vs our projection (frame 0 only)
+                if img_idx == 0 and keypoints_2d is not None and joint_coords is not None and focal_length is not None and cam_t is not None:
+                    gt_2d = np.array(keypoints_2d)[:, :2] if np.array(keypoints_2d).ndim == 2 else np.array(keypoints_2d)
+                    our_2d = project_points_to_2d(np.array(joint_coords), focal_length, np.array(cam_t), w, h)
+                    
+                    print(f"\n[DEBUG] ========== PROJECTION COMPARISON (Frame 0) ==========")
+                    print(f"[DEBUG] Image size: {w}x{h}, Focal: {focal_length:.1f}px")
+                    print(f"[DEBUG] pred_cam_t: tx={cam_t[0]:.4f}, ty={cam_t[1]:.4f}, tz={cam_t[2]:.4f}")
+                    print(f"[DEBUG] Ground truth joints: {gt_2d.shape}, Our projection: {our_2d.shape}")
+                    print(f"[DEBUG]")
+                    print(f"[DEBUG] Joint | Ground Truth (x,y) | Our Projection (x,y) | Diff (dx, dy)")
+                    print(f"[DEBUG] ------|-------------------|---------------------|---------------")
+                    
+                    num_compare = min(10, len(gt_2d), len(our_2d))
+                    total_dx, total_dy = 0.0, 0.0
+                    for i in range(num_compare):
+                        gt_x, gt_y = gt_2d[i][0], gt_2d[i][1]
+                        our_x, our_y = our_2d[i][0], our_2d[i][1]
+                        dx, dy = our_x - gt_x, our_y - gt_y
+                        total_dx += dx
+                        total_dy += dy
+                        print(f"[DEBUG]   {i:2d}  | ({gt_x:7.1f}, {gt_y:6.1f}) | ({our_x:7.1f}, {our_y:6.1f}) | ({dx:+6.1f}, {dy:+6.1f})")
+                    
+                    avg_dx, avg_dy = total_dx / num_compare, total_dy / num_compare
+                    print(f"[DEBUG] ------|-------------------|---------------------|---------------")
+                    print(f"[DEBUG] AVERAGE OFFSET: dx={avg_dx:+.1f}px, dy={avg_dy:+.1f}px")
+                    print(f"[DEBUG] ==========================================================\n")
+                
                 if keypoints_2d is not None:
                     # Use 2D keypoints directly
                     keypoints_2d = np.array(keypoints_2d)

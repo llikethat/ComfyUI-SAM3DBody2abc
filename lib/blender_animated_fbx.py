@@ -576,6 +576,17 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     """
     print("[Blender] Creating root locator with world translation...")
     
+    # DEBUG: Show first frame values
+    if all_frames:
+        first_cam_t = all_frames[0].get("pred_cam_t")
+        if first_cam_t and len(first_cam_t) >= 3:
+            tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
+            world_x = tx * abs(tz) * 0.5
+            world_y = ty * abs(tz) * 0.5
+            print(f"[Blender] DEBUG: Frame 0 pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
+            print(f"[Blender] DEBUG: world_offset calc: x={world_x:.4f}, y={world_y:.4f}")
+            print(f"[Blender] DEBUG: Final root_locator (up={up_axis}): x={-world_x:.4f}, y={-world_y:.4f}")
+    
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
@@ -809,19 +820,6 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 tilt_sign = -1
                 pan_sign = 1
             
-            # Get baseline body position from frame 0's pred_cam_t
-            # This is where the body appears on screen in the reference frame
-            # We need to add this to solved rotations so camera points at the body
-            baseline_pan = 0.0
-            baseline_tilt = 0.0
-            first_cam_t = all_frames[0].get("pred_cam_t") if all_frames else None
-            if first_cam_t and len(first_cam_t) >= 3:
-                tx0, ty0, tz0 = first_cam_t[0], first_cam_t[1], first_cam_t[2]
-                depth0 = abs(tz0) if abs(tz0) > 0.1 else 0.1
-                baseline_pan = math.atan2(tx0, depth0) * pan_sign
-                baseline_tilt = math.atan2(ty0, depth0) * tilt_sign
-                print(f"[Blender] Baseline body position: pan={math.degrees(baseline_pan):.2f}°, tilt={math.degrees(baseline_tilt):.2f}°")
-            
             for frame_idx, frame_data in enumerate(all_frames):
                 frame_cam_t = frame_data.get("pred_cam_t")
                 
@@ -832,35 +830,27 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 # Use solved camera rotations if available, otherwise compute from pred_cam_t
                 if has_solved and frame_idx < len(solved_camera_rotations):
                     solved_rot = solved_camera_rotations[frame_idx]
-                    # Solved rotation = actual camera motion relative to frame 0
-                    # We need: baseline (where body is) + solved (camera motion)
-                    solved_pan = solved_rot.get("pan", 0.0) * pan_sign
-                    solved_tilt = solved_rot.get("tilt", 0.0) * tilt_sign
+                    # Solved rotation = actual camera motion from background tracking
+                    # This should be the SAME for all runners in the same video!
+                    pan_angle = solved_rot.get("pan", 0.0) * pan_sign
+                    tilt_angle = solved_rot.get("tilt", 0.0) * tilt_sign
                     roll_angle = solved_rot.get("roll", 0.0)
                     
-                    # Combine baseline body position + solved camera rotation
-                    pan_angle = baseline_pan + solved_pan
-                    tilt_angle = baseline_tilt + solved_tilt
-                    
-                    # Apply rotation from base
+                    # Apply solved rotation only - no per-body baseline offset
                     camera.rotation_euler = base_rotation.copy()
                     camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
                     camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
-                    # Roll is typically axis 2 (Z) for camera
                     camera.rotation_euler[2] = base_rotation[2] + roll_angle
                     
                 elif frame_cam_t and len(frame_cam_t) >= 3:
                     tx, ty, tz = frame_cam_t[0], frame_cam_t[1], frame_cam_t[2]
                     
-                    # CORRECT MATH: From SAM3DBody projection model:
-                    # x_2d = focal * tx / tz + cx  (body at origin appears at this screen position)
-                    # Camera rotation angle = atan2(tx, tz) - angle from forward axis
-                    # Using atan2 is safer and handles edge cases better
+                    # Fallback: compute from pred_cam_t (body screen position)
+                    # This is per-body and should only be used when no solved rotation available
                     depth = abs(tz) if abs(tz) > 0.1 else 0.1
                     pan_angle = math.atan2(tx, depth) * pan_sign
                     tilt_angle = math.atan2(ty, depth) * tilt_sign
                     
-                    # Apply rotation from base
                     camera.rotation_euler = base_rotation.copy()
                     camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
                     camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
@@ -872,7 +862,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
             if has_solved:
-                print(f"[Blender] Camera uses SOLVED rotation + baseline offset over {len(all_frames)} frames")
+                print(f"[Blender] Camera uses SOLVED rotation over {len(all_frames)} frames (same for all bodies)")
             else:
                 print(f"[Blender] Camera ROTATES (pan/tilt from pred_cam_t) over {len(all_frames)} frames (up_axis={up_axis})")
         
