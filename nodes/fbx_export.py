@@ -370,7 +370,7 @@ class ExportAnimatedFBX:
             first_cam_t = to_list(first_cam_t)
             if len(first_cam_t) >= 3:
                 tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
-                # This is how get_world_offset_from_cam_t calculates it (FIXED - no tz scaling):
+                # This is how get_world_offset_from_cam_t calculates it (FIXED):
                 world_x = tx  # Direct, no scaling
                 world_y = ty  # Direct, no scaling
                 print(f"\n[Export DEBUG] ========== ROOT_LOCATOR CALCULATION (Frame 0) ==========")
@@ -378,10 +378,14 @@ class ExportAnimatedFBX:
                 print(f"[Export DEBUG] focal_length: {first_focal}")
                 print(f"[Export DEBUG] image_size: {first_image_size}")
                 print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] world_offset formula (FIXED - no depth scaling):")
+                print(f"[Export DEBUG] world_offset formula:")
                 print(f"[Export DEBUG]   world_x = tx = {tx:.4f}")
                 print(f"[Export DEBUG]   world_y = ty = {ty:.4f}")
-                print(f"[Export DEBUG]   root_locator (Y-up) = (world_x, world_y, 0) = ({world_x:.4f}, {world_y:.4f}, 0)")
+                print(f"[Export DEBUG]")
+                print(f"[Export DEBUG] COORDINATE MAPPING (Y-up export for Maya):")
+                print(f"[Export DEBUG]   Blender (X, Y, Z) = ({world_x:.4f}, 0, {world_y:.4f})")
+                print(f"[Export DEBUG]   → Maya (X, Z, Y) = ({world_x:.4f}, 0, {world_y:.4f})")
+                print(f"[Export DEBUG]   root_locator in Maya: X={world_x:.4f}, Y={world_y:.4f}, Z=0")
                 print(f"[Export DEBUG]")
                 
                 # What screen position does this correspond to?

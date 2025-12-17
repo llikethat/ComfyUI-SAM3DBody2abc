@@ -413,6 +413,17 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.4 - Blender-to-Maya Coordinate Mapping Fix
+- **CRITICAL FIX**: Fixed coordinate axis mapping for Y-up export to Maya
+  - When Blender exports with up_axis="Y":
+    - Blender X → Maya X (horizontal)
+    - Blender Y → Maya Z (depth)
+    - Blender Z → Maya Y (vertical)
+  - Previous: `Vector((world_x, world_y, 0))` → world_y went to Maya Z (wrong!)
+  - Fixed: `Vector((world_x, 0, world_y))` → world_y goes to Maya Y (correct!)
+- Root locator now positions body at correct vertical position in Maya
+- Debug output updated to show coordinate mapping
+
 ### v3.5.3 - Root Locator Depth Scaling Fix
 - **CRITICAL FIX**: Removed incorrect `* tz * 0.5` depth scaling from world offset
   - Previous formula: `world_y = ty * |tz| * 0.5` → gave Y=2.21 (way too high!)

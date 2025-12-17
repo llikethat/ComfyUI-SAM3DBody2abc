@@ -169,9 +169,17 @@ def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     - tz: depth (camera distance)
     
     IMPORTANT: tx and ty are already in world units - no depth scaling needed!
-    The tz is only used for perspective projection division, not for world positioning.
     
-    The previous formula (tx * tz * 0.5) was WRONG - it over-scaled the offset.
+    COORDINATE SYSTEM MAPPING:
+    When exporting from Blender with up_axis="Y" (for Maya):
+    - Blender X → Maya X (right)
+    - Blender Y → Maya Z (depth/forward)
+    - Blender Z → Maya Y (up)
+    
+    So for Y-up export, we put:
+    - world_x in Blender X → becomes Maya X (horizontal)
+    - 0 in Blender Y → becomes Maya Z (depth = 0)
+    - world_y in Blender Z → becomes Maya Y (vertical)
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
@@ -184,18 +192,22 @@ def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     world_y = ty
     
     # Apply based on up_axis
-    # tx negative = body left → world X negative (same sign)
-    # ty positive = body above center → world Y positive (same sign)
+    # For Y-up (Maya): put vertical offset in Blender Z → becomes Maya Y
+    # For Z-up (Blender native): put vertical offset in Blender Z directly
     if up_axis == "Y":
-        return Vector((world_x, world_y, 0))
+        # Blender (X, Y, Z) → Maya (X, Z, Y)
+        return Vector((world_x, 0, world_y))
     elif up_axis == "Z":
+        # Blender native, no conversion needed
         return Vector((world_x, 0, world_y))
     elif up_axis == "-Y":
-        return Vector((world_x, -world_y, 0))
+        # Inverted Y-up
+        return Vector((world_x, 0, -world_y))
     elif up_axis == "-Z":
+        # Inverted Z-up
         return Vector((world_x, 0, -world_y))
     else:
-        return Vector((world_x, world_y, 0))
+        return Vector((world_x, 0, world_y))
 
 
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):
