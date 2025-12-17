@@ -413,6 +413,24 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.3 - Root Locator Depth Scaling Fix
+- **CRITICAL FIX**: Removed incorrect `* tz * 0.5` depth scaling from world offset
+  - Previous formula: `world_y = ty * |tz| * 0.5` → gave Y=2.21 (way too high!)
+  - New formula: `world_y = ty` → gives Y=0.81 (closer to correct)
+  - tx/ty from pred_cam_t are already in world units - no depth scaling needed!
+- Root locator now positions body much closer to correct vertical position
+- Debug output updated to show new formula
+
+### v3.5.1 - X-Axis Sign Fix & Debug Improvements
+- **FIX**: Fixed X-axis sign in `get_world_offset_from_cam_t()`
+  - tx negative (body LEFT of center) → world X negative (correct!)
+  - Previously was being negated incorrectly
+- **FIX**: Debug comparison now uses `pred_keypoints_3d` (70 joints) instead of `joint_coords` (127 joints)
+  - Apples-to-apples comparison with `pred_keypoints_2d`
+  - Now properly validates projection formula
+- **ADDED**: `pred_keypoints_3d` stored in mesh_sequence for projection validation
+- **IMPROVED**: Debug output now shows body position relative to center
+
 ### v3.5.0 - Y-Axis Projection Fix
 - **CRITICAL FIX**: Fixed Y-axis projection for 3D to 2D conversion
   - 3D Y points UP, image Y points DOWN - now correctly negated

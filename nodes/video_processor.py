@@ -451,6 +451,16 @@ class VideoBatchProcessor:
                             else:
                                 print(f"[SAM3DBody2abc] WARNING: pred_keypoints_2d is None!")
                             
+                            # Debug pred_keypoints_3d
+                            pred_kp_3d = output.get("pred_keypoints_3d")
+                            if pred_kp_3d is not None:
+                                if hasattr(pred_kp_3d, 'shape'):
+                                    print(f"[SAM3DBody2abc] pred_keypoints_3d shape: {pred_kp_3d.shape}")
+                                else:
+                                    print(f"[SAM3DBody2abc] pred_keypoints_3d type: {type(pred_kp_3d)}")
+                            else:
+                                print(f"[SAM3DBody2abc] WARNING: pred_keypoints_3d is None! Projection comparison will use joint_coords instead.")
+                            
                             bbox = output.get("bbox")
                             if bbox is not None:
                                 print(f"[SAM3DBody2abc] Detection bbox: {bbox}")
@@ -460,6 +470,7 @@ class VideoBatchProcessor:
                             "joint_coords": to_numpy(output.get("pred_joint_coords")),
                             "joint_rotations": to_numpy(output.get("pred_global_rots")),  # Per-joint rotations!
                             "pred_keypoints_2d": to_numpy(output.get("pred_keypoints_2d")),  # 2D keypoints for overlay
+                            "pred_keypoints_3d": to_numpy(output.get("pred_keypoints_3d")),  # 3D keypoints for projection validation
                             "pred_cam_t": to_numpy(output.get("pred_cam_t")),
                             "focal_length": focal_length,
                             "global_rot": to_numpy(output.get("global_rot")),  # Keep for compatibility

@@ -370,18 +370,18 @@ class ExportAnimatedFBX:
             first_cam_t = to_list(first_cam_t)
             if len(first_cam_t) >= 3:
                 tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
-                # This is how get_world_offset_from_cam_t calculates it:
-                world_x = tx * abs(tz) * 0.5
-                world_y = ty * abs(tz) * 0.5
+                # This is how get_world_offset_from_cam_t calculates it (FIXED - no tz scaling):
+                world_x = tx  # Direct, no scaling
+                world_y = ty  # Direct, no scaling
                 print(f"\n[Export DEBUG] ========== ROOT_LOCATOR CALCULATION (Frame 0) ==========")
                 print(f"[Export DEBUG] pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
                 print(f"[Export DEBUG] focal_length: {first_focal}")
                 print(f"[Export DEBUG] image_size: {first_image_size}")
                 print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] world_offset formula:")
-                print(f"[Export DEBUG]   world_x = tx*|tz|*0.5 = {tx:.4f}*{abs(tz):.4f}*0.5 = {world_x:.4f}")
-                print(f"[Export DEBUG]   world_y = ty*|tz|*0.5 = {ty:.4f}*{abs(tz):.4f}*0.5 = {world_y:.4f}")
-                print(f"[Export DEBUG]   root_locator (Y-up) = (-world_x, +world_y, 0) = ({-world_x:.4f}, {world_y:.4f}, 0)")
+                print(f"[Export DEBUG] world_offset formula (FIXED - no depth scaling):")
+                print(f"[Export DEBUG]   world_x = tx = {tx:.4f}")
+                print(f"[Export DEBUG]   world_y = ty = {ty:.4f}")
+                print(f"[Export DEBUG]   root_locator (Y-up) = (world_x, world_y, 0) = ({world_x:.4f}, {world_y:.4f}, 0)")
                 print(f"[Export DEBUG]")
                 
                 # What screen position does this correspond to?
@@ -391,11 +391,12 @@ class ExportAnimatedFBX:
                     cx, cy = img_w / 2, img_h / 2
                     # Screen position from pred_cam_t (with Y negation fix):
                     screen_x = focal * tx / tz + cx
-                    screen_y = focal * (-ty) / tz + cy  # Fixed: negate ty
+                    screen_y = focal * (-ty) / tz + cy  # Negate ty for image Y-down convention
                     print(f"[Export DEBUG] SCREEN POSITION (body at origin, Y-corrected):")
                     print(f"[Export DEBUG]   screen_x = focal*tx/tz + cx = {focal:.1f}*{tx:.4f}/{tz:.4f} + {cx:.0f} = {screen_x:.1f}px")
                     print(f"[Export DEBUG]   screen_y = focal*(-ty)/tz + cy = {focal:.1f}*{-ty:.4f}/{tz:.4f} + {cy:.0f} = {screen_y:.1f}px")
                     print(f"[Export DEBUG]   (Image center: {cx:.0f}, {cy:.0f})")
+                    print(f"[Export DEBUG]   Body is {'LEFT' if screen_x < cx else 'RIGHT'} of center, {'ABOVE' if screen_y < cy else 'BELOW'} center")
                 print(f"[Export DEBUG] ================================================================\n")
         
         for idx in sorted_indices:
