@@ -413,6 +413,14 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.5 - Projection Debug Improvement
+- **FIXED**: Debug comparison now properly uses `pred_keypoints_3d` (70 joints)
+  - Apples-to-apples comparison with `pred_keypoints_2d` (70 joints)
+  - Previously was comparing to `joint_coords` (127 joints) - different joint set!
+- **IMPROVED**: Better debug output showing which 3D data source is used
+- **IMPROVED**: Handles various shapes of keypoints data (squeezing if needed)
+- **ADDED**: Success/failure indicator for projection validation
+
 ### v3.5.4 - Blender-to-Maya Coordinate Mapping Fix
 - **CRITICAL FIX**: Fixed coordinate axis mapping for Y-up export to Maya
   - When Blender exports with up_axis="Y":

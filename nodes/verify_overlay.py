@@ -512,29 +512,44 @@ class VerifyOverlayBatch:
                 joints_2d = None
                 
                 # DEBUG: Compare ground truth vs our projection (frame 0 only)
-                if img_idx == 0:
+                if img_idx == 0 and keypoints_2d is not None and focal_length is not None and cam_t is not None:
                     print(f"\n[DEBUG] ========== PROJECTION COMPARISON (Frame 0) ==========")
-                    print(f"[DEBUG] Image size: {w}x{h}, Focal: {focal_length}")
-                    print(f"[DEBUG] pred_cam_t: {cam_t}")
-                    print(f"[DEBUG] Data availability:")
-                    print(f"[DEBUG]   pred_keypoints_2d: {keypoints_2d.shape if keypoints_2d is not None else 'None'}")
-                    print(f"[DEBUG]   pred_keypoints_3d: {np.array(keypoints_3d).shape if keypoints_3d is not None else 'None'}")
-                    print(f"[DEBUG]   joint_coords (127): {np.array(joint_coords).shape if joint_coords is not None else 'None'}")
+                    print(f"[DEBUG] Image size: {w}x{h}, Focal: {focal_length:.1f}px")
                     
-                    if keypoints_2d is not None and focal_length is not None and cam_t is not None:
-                        gt_2d = np.array(keypoints_2d)[:, :2] if np.array(keypoints_2d).ndim == 2 else np.array(keypoints_2d)
-                        cam_t_np = np.array(cam_t)
-                        
-                        # Use pred_keypoints_3d if available (same 70 joints), else fall back to joint_coords (127 joints)
-                        if keypoints_3d is not None:
-                            kp_3d = np.array(keypoints_3d)
-                            print(f"[DEBUG] Using pred_keypoints_3d (same {kp_3d.shape[0]} joints as ground truth)")
+                    cam_t_np = np.array(cam_t).flatten()
+                    tx, ty, tz = cam_t_np[0], cam_t_np[1], cam_t_np[2]
+                    print(f"[DEBUG] pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
+                    
+                    gt_2d = np.array(keypoints_2d)
+                    if gt_2d.ndim == 2:
+                        gt_2d = gt_2d[:, :2]
+                    
+                    # Check what 3D data is available
+                    kp_3d = None
+                    source_name = None
+                    
+                    if keypoints_3d is not None:
+                        kp_3d_raw = np.array(keypoints_3d)
+                        # Handle various shapes (squeeze if needed)
+                        if kp_3d_raw.ndim == 3 and kp_3d_raw.shape[0] == 1:
+                            kp_3d_raw = kp_3d_raw.squeeze(0)
+                        if kp_3d_raw.ndim == 2 and kp_3d_raw.shape[1] == 3:
+                            kp_3d = kp_3d_raw
+                            source_name = f"pred_keypoints_3d ({kp_3d.shape[0]} joints - SAME as ground truth)"
                         else:
-                            kp_3d = np.array(joint_coords)
-                            print(f"[DEBUG] WARNING: pred_keypoints_3d not available!")
-                            print(f"[DEBUG] Falling back to joint_coords ({kp_3d.shape[0]} joints) - DIFFERENT joint set!")
-                            print(f"[DEBUG] Comparison may not be meaningful!")
-                        
+                            print(f"[DEBUG] WARNING: pred_keypoints_3d has unexpected shape: {kp_3d_raw.shape}")
+                    
+                    if kp_3d is None and joint_coords is not None:
+                        kp_3d_raw = np.array(joint_coords)
+                        if kp_3d_raw.ndim == 2 and kp_3d_raw.shape[1] == 3:
+                            kp_3d = kp_3d_raw
+                            source_name = f"joint_coords ({kp_3d.shape[0]} joints - DIFFERENT from ground truth!)"
+                            print(f"[DEBUG] WARNING: Using joint_coords - comparison may not be meaningful!")
+                    
+                    print(f"[DEBUG] Ground truth: pred_keypoints_2d ({gt_2d.shape[0]} joints)")
+                    print(f"[DEBUG] 3D source: {source_name if source_name else 'NONE AVAILABLE'}")
+                    
+                    if kp_3d is not None:
                         our_2d = project_points_to_2d(kp_3d, focal_length, cam_t_np, w, h)
                         
                         print(f"[DEBUG]")
@@ -554,7 +569,15 @@ class VerifyOverlayBatch:
                         avg_dx, avg_dy = total_dx / num_compare, total_dy / num_compare
                         print(f"[DEBUG] ------|-------------------|---------------------|---------------")
                         print(f"[DEBUG] AVERAGE OFFSET: dx={avg_dx:+.1f}px, dy={avg_dy:+.1f}px")
-                        print(f"[DEBUG] ==========================================================\n")
+                        
+                        if abs(avg_dx) < 5 and abs(avg_dy) < 5:
+                            print(f"[DEBUG] ✓ Projection formula appears CORRECT!")
+                        else:
+                            print(f"[DEBUG] ✗ Large offset detected - projection may need adjustment")
+                    else:
+                        print(f"[DEBUG] Cannot compare - no 3D keypoints available")
+                    
+                    print(f"[DEBUG] ==========================================================\n")
                 
                 if keypoints_2d is not None:
                     # Use 2D keypoints directly
