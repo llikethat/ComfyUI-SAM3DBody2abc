@@ -413,6 +413,12 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.9 - Fix Double Offset (Camera Target + Body Offset)
+- **CRITICAL FIX**: Removed target_offset when using body_offset (root mode)
+  - Previously: camera looked at target_offset AND body was at body_offset → DOUBLE OFFSET
+  - Now: camera looks at origin (0,0,0), body at body_offset → SINGLE CORRECT OFFSET
+  - This should fix the ~0.28 horizontal offset issue!
+
 ### v3.5.8 - Debug Build for X Offset Investigation
 - Added detailed 3D center analysis debug output
   - Mesh center vs Joints center vs Pelvis

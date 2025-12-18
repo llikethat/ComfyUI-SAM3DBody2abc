@@ -739,29 +739,31 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         tx, ty = first_cam_t[0], first_cam_t[1]
         cam_distance = abs(first_cam_t[2])
     
-    # Convert tx, ty to camera target offset in world units
-    # SAM3DBody projection: screen_pos = focal * (3D_pos / depth) + center + (tx, ty) * scale
-    # The scale factor is approximately: depth * 0.5 (empirically determined)
-    # For camera to see body at offset (tx, ty), target should be at (-tx, -ty) * scale
-    scale_factor = cam_distance * 0.5
-    
-    # Compute target offset (where camera looks)
-    # Body is at origin, camera target is offset so body appears at (tx, ty) in frame
-    if up_axis == "Y":
-        # Y-up: camera looks along -Z, X is right, Y is up
-        target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
-    elif up_axis == "Z":
-        # Z-up: camera looks along -Y, X is right, Z is up
-        target_offset = Vector((tx * scale_factor, 0, -ty * scale_factor))
-    elif up_axis == "-Y":
-        target_offset = Vector((tx * scale_factor, ty * scale_factor, 0))
-    elif up_axis == "-Z":
-        target_offset = Vector((tx * scale_factor, 0, ty * scale_factor))
+    # IMPORTANT: When using world_translation_mode="root", body offset is applied
+    # directly to the mesh/skeleton via get_body_offset_from_cam_t().
+    # In this case, camera should look straight at origin - NO target_offset!
+    # 
+    # The body_offset positions the body correctly relative to camera.
+    # Adding target_offset would DOUBLE-count the offset.
+    if world_translation_mode == "root":
+        target_offset = Vector((0, 0, 0))
+        print(f"[Blender] Root mode: Camera looks at origin, body_offset applied to mesh/skeleton")
     else:
-        target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
+        # Legacy mode: body at origin, camera target offset to frame correctly
+        scale_factor = cam_distance * 0.5
+        if up_axis == "Y":
+            target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
+        elif up_axis == "Z":
+            target_offset = Vector((tx * scale_factor, 0, -ty * scale_factor))
+        elif up_axis == "-Y":
+            target_offset = Vector((tx * scale_factor, ty * scale_factor, 0))
+        elif up_axis == "-Z":
+            target_offset = Vector((tx * scale_factor, 0, ty * scale_factor))
+        else:
+            target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
     
     print(f"[Blender] pred_cam_t: tx={tx:.3f}, ty={ty:.3f}, tz={cam_distance:.2f}")
-    print(f"[Blender] Camera target offset: {target_offset} (scale={scale_factor:.2f})")
+    print(f"[Blender] Camera target offset: {target_offset}")
     
     # Create target for camera orientation
     target = bpy.data.objects.new("cam_target", None)
