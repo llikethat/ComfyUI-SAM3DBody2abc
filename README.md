@@ -413,6 +413,11 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.8 - Debug Build for X Offset Investigation
+- Added detailed 3D center analysis debug output
+  - Mesh center vs Joints center vs Pelvis
+  - Should reveal why X offset is ~0.26 too far left
+
 ### v3.5.7 - Vertical Offset Sign Fix
 - **CRITICAL FIX**: Negated ty in body offset calculation
   - SAM3DBody: ty positive = body above image center

@@ -464,6 +464,45 @@ class VideoBatchProcessor:
                             bbox = output.get("bbox")
                             if bbox is not None:
                                 print(f"[SAM3DBody2abc] Detection bbox: {bbox}")
+                            
+                            # DEBUG: Investigate mesh vs joints 3D center offset
+                            pred_verts = output.get("pred_vertices")
+                            pred_joints = output.get("pred_joint_coords")
+                            pred_cam_t = output.get("pred_cam_t")
+                            
+                            if pred_verts is not None and pred_joints is not None:
+                                verts_np = pred_verts.cpu().numpy() if hasattr(pred_verts, 'cpu') else np.array(pred_verts)
+                                joints_np = pred_joints.cpu().numpy() if hasattr(pred_joints, 'cpu') else np.array(pred_joints)
+                                
+                                # Handle batch dimension if present
+                                if verts_np.ndim == 3:
+                                    verts_np = verts_np[0]
+                                if joints_np.ndim == 3:
+                                    joints_np = joints_np[0]
+                                
+                                # Calculate 3D centers
+                                mesh_center_3d = np.mean(verts_np, axis=0)
+                                joints_center_3d = np.mean(joints_np, axis=0)
+                                pelvis_3d = joints_np[0] if len(joints_np) > 0 else np.zeros(3)  # Joint 0 is typically pelvis
+                                
+                                print(f"\n[SAM3DBody2abc] ===== 3D CENTER ANALYSIS =====")
+                                print(f"[SAM3DBody2abc] Mesh vertices: {verts_np.shape}")
+                                print(f"[SAM3DBody2abc] Skeleton joints: {joints_np.shape}")
+                                print(f"[SAM3DBody2abc] Mesh center 3D: X={mesh_center_3d[0]:.4f}, Y={mesh_center_3d[1]:.4f}, Z={mesh_center_3d[2]:.4f}")
+                                print(f"[SAM3DBody2abc] Joints center 3D: X={joints_center_3d[0]:.4f}, Y={joints_center_3d[1]:.4f}, Z={joints_center_3d[2]:.4f}")
+                                print(f"[SAM3DBody2abc] Pelvis (joint 0) 3D: X={pelvis_3d[0]:.4f}, Y={pelvis_3d[1]:.4f}, Z={pelvis_3d[2]:.4f}")
+                                print(f"[SAM3DBody2abc] Mesh vs Joints offset: dX={mesh_center_3d[0]-joints_center_3d[0]:.4f}, dY={mesh_center_3d[1]-joints_center_3d[1]:.4f}, dZ={mesh_center_3d[2]-joints_center_3d[2]:.4f}")
+                                print(f"[SAM3DBody2abc] Mesh vs Pelvis offset: dX={mesh_center_3d[0]-pelvis_3d[0]:.4f}, dY={mesh_center_3d[1]-pelvis_3d[1]:.4f}, dZ={mesh_center_3d[2]-pelvis_3d[2]:.4f}")
+                                
+                                if pred_cam_t is not None:
+                                    cam_t_np = pred_cam_t.cpu().numpy() if hasattr(pred_cam_t, 'cpu') else np.array(pred_cam_t)
+                                    cam_t_np = cam_t_np.flatten()
+                                    print(f"[SAM3DBody2abc] pred_cam_t: tx={cam_t_np[0]:.4f}, ty={cam_t_np[1]:.4f}, tz={cam_t_np[2]:.4f}")
+                                    
+                                    # The projection model assumes body at origin, camera at (tx, ty, tz)
+                                    # So the body's screen position is determined by tx/tz and ty/tz
+                                    # If mesh has an inherent offset from origin, we need to account for it
+                                    print(f"[SAM3DBody2abc] ========================================\n")
                         
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
