@@ -413,6 +413,13 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.7 - Vertical Offset Sign Fix
+- **CRITICAL FIX**: Negated ty in body offset calculation
+  - SAM3DBody: ty positive = body above image center
+  - Maya camera rotated -90° around X flips the vertical axis
+  - Now: `-ty` in Blender → `+ty` in Maya camera view (correct alignment!)
+- Both Alembic and FBX exports now align correctly without manual adjustment
+
 ### v3.5.6 - Body Offset Fix for Camera Alignment
 - **CRITICAL FIX**: Separated root_locator and body offset
   - root_locator now stays at (0, 0, 0) - no offset applied

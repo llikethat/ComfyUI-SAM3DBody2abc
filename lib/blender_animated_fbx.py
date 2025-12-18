@@ -179,23 +179,24 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
     
     pred_cam_t from SAM3DBody:
     - tx: horizontal offset (positive = body right of center)
-    - ty: vertical offset (positive = body above center)
+    - ty: vertical offset (positive = body above center IN IMAGE SPACE)
     - tz: depth (camera distance)
+    
+    IMPORTANT: ty must be NEGATED because:
+    1. SAM3DBody: ty positive = body above image center
+    2. Maya camera is rotated -90° around X
+    3. After axis conversion + camera rotation, the sign is flipped
+    4. So we negate ty to compensate: -ty in code → +ty in Maya camera view
     
     For Maya with camera rotated -90° around X:
     - Maya X = horizontal in camera view
-    - Maya Z = vertical in camera view
+    - Maya Z = vertical in camera view (after camera rotation)
     - Maya Y = depth
     
     Blender Y-up export mapping:
     - Blender X → Maya X
-    - Blender Y → Maya Z
+    - Blender Y → Maya Z  
     - Blender Z → Maya Y
-    
-    So for body to appear at correct position in Maya camera view:
-    - Blender X = tx (horizontal)
-    - Blender Y = ty (vertical in camera view → Maya Z)
-    - Blender Z = 0 (depth → Maya Y)
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
@@ -203,20 +204,20 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
     # Apply based on up_axis
+    # NOTE: ty is NEGATED to match camera view convention
     if up_axis == "Y":
-        # For Maya: tx→horizontal, ty→vertical in camera view
+        # For Maya: tx→horizontal, -ty→vertical in camera view
         # Blender (X, Y, Z) → Maya (X, Z, Y)
-        # So: Blender Y → Maya Z (vertical in camera)
-        return Vector((tx, ty, 0))
+        return Vector((tx, -ty, 0))
     elif up_axis == "Z":
         # Blender native Z-up
-        return Vector((tx, 0, ty))
-    elif up_axis == "-Y":
-        return Vector((tx, -ty, 0))
-    elif up_axis == "-Z":
         return Vector((tx, 0, -ty))
+    elif up_axis == "-Y":
+        return Vector((tx, ty, 0))  # Double negative = positive
+    elif up_axis == "-Z":
+        return Vector((tx, 0, ty))  # Double negative = positive
     else:
-        return Vector((tx, ty, 0))
+        return Vector((tx, -ty, 0))
 
 
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):

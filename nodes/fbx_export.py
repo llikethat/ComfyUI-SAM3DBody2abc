@@ -375,11 +375,11 @@ class ExportAnimatedFBX:
                 print(f"[Export DEBUG] focal_length: {first_focal}")
                 print(f"[Export DEBUG] image_size: {first_image_size}")
                 print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] NEW APPROACH (v3.5.6):")
+                print(f"[Export DEBUG] NEW APPROACH (v3.5.7):")
                 print(f"[Export DEBUG]   root_locator = (0, 0, 0)  ← Fixed at origin")
-                print(f"[Export DEBUG]   body_offset in Blender = (tx, ty, 0) = ({tx:.4f}, {ty:.4f}, 0)")
-                print(f"[Export DEBUG]   body_offset in Maya = (tx, 0, ty) = ({tx:.4f}, 0, {ty:.4f})")
-                print(f"[Export DEBUG]   (Maya X = horizontal, Maya Z = vertical in camera view)")
+                print(f"[Export DEBUG]   body_offset in Blender = (tx, -ty, 0) = ({tx:.4f}, {-ty:.4f}, 0)")
+                print(f"[Export DEBUG]   body_offset in Maya = (tx, 0, -ty) = ({tx:.4f}, 0, {-ty:.4f})")
+                print(f"[Export DEBUG]   (ty negated due to camera rotation convention)")
                 print(f"[Export DEBUG]")
                 
                 # What screen position does this correspond to?
