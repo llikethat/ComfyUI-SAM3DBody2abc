@@ -413,6 +413,19 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.6 - Body Offset Fix for Camera Alignment
+- **CRITICAL FIX**: Separated root_locator and body offset
+  - root_locator now stays at (0, 0, 0) - no offset applied
+  - Body offset (tx, ty) applied directly to mesh and skeleton
+  - This fixes alignment because root_locator moves both camera AND body together
+- **CRITICAL FIX**: Removed Y negation in projection formula
+  - SAM3DBody's pred_keypoints_3d are already in image-aligned coordinates
+  - Projection now matches pred_keypoints_2d (dx=0, dy=0)
+- **IMPROVED**: Body offset uses correct Maya coordinate mapping
+  - Blender (X, Y, 0) → Maya (X, 0, Y) for camera view alignment
+  - Maya X = horizontal in camera view
+  - Maya Z = vertical in camera view (camera rotated -90° around X)
+
 ### v3.5.5 - Projection Debug Improvement
 - **FIXED**: Debug comparison now properly uses `pred_keypoints_3d` (70 joints)
   - Apples-to-apples comparison with `pred_keypoints_2d` (70 joints)

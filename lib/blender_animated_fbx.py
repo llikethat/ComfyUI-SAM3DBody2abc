@@ -161,53 +161,62 @@ FLIP_X = False
 
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     """
-    Convert pred_cam_t [tx, ty, tz] to world space offset.
+    Get world offset for root_locator.
+    
+    IMPORTANT: root_locator should be at origin (0,0,0) because it parents both
+    the body and camera. Moving root_locator moves both together, which doesn't
+    affect the body's position relative to camera (i.e., alignment in camera view).
+    
+    The actual body offset relative to camera is handled by get_body_offset_from_cam_t().
+    """
+    # Root locator stays at origin - body offset is applied separately
+    return Vector((0, 0, 0))
+
+
+def get_body_offset_from_cam_t(pred_cam_t, up_axis):
+    """
+    Get offset to apply to body mesh/skeleton for correct camera alignment.
     
     pred_cam_t from SAM3DBody:
-    - tx, ty: Camera-space offset of body from camera center
-      These are already in world units (same scale as mesh vertices)
+    - tx: horizontal offset (positive = body right of center)
+    - ty: vertical offset (positive = body above center)
     - tz: depth (camera distance)
     
-    IMPORTANT: tx and ty are already in world units - no depth scaling needed!
+    For Maya with camera rotated -90° around X:
+    - Maya X = horizontal in camera view
+    - Maya Z = vertical in camera view
+    - Maya Y = depth
     
-    COORDINATE SYSTEM MAPPING:
-    When exporting from Blender with up_axis="Y" (for Maya):
-    - Blender X → Maya X (right)
-    - Blender Y → Maya Z (depth/forward)
-    - Blender Z → Maya Y (up)
+    Blender Y-up export mapping:
+    - Blender X → Maya X
+    - Blender Y → Maya Z
+    - Blender Z → Maya Y
     
-    So for Y-up export, we put:
-    - world_x in Blender X → becomes Maya X (horizontal)
-    - 0 in Blender Y → becomes Maya Z (depth = 0)
-    - world_y in Blender Z → becomes Maya Y (vertical)
+    So for body to appear at correct position in Maya camera view:
+    - Blender X = tx (horizontal)
+    - Blender Y = ty (vertical in camera view → Maya Z)
+    - Blender Z = 0 (depth → Maya Y)
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
     
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
-    # World position = camera-space offset directly
-    # NO tz scaling - tx/ty are already in world units!
-    world_x = tx
-    world_y = ty
-    
     # Apply based on up_axis
-    # For Y-up (Maya): put vertical offset in Blender Z → becomes Maya Y
-    # For Z-up (Blender native): put vertical offset in Blender Z directly
     if up_axis == "Y":
+        # For Maya: tx→horizontal, ty→vertical in camera view
         # Blender (X, Y, Z) → Maya (X, Z, Y)
-        return Vector((world_x, 0, world_y))
+        # So: Blender Y → Maya Z (vertical in camera)
+        return Vector((tx, ty, 0))
     elif up_axis == "Z":
-        # Blender native, no conversion needed
-        return Vector((world_x, 0, world_y))
+        # Blender native Z-up
+        return Vector((tx, 0, ty))
     elif up_axis == "-Y":
-        # Inverted Y-up
-        return Vector((world_x, 0, -world_y))
+        return Vector((tx, -ty, 0))
     elif up_axis == "-Z":
-        # Inverted Z-up
-        return Vector((world_x, 0, -world_y))
+        return Vector((tx, 0, -ty))
     else:
-        return Vector((world_x, 0, world_y))
+        return Vector((tx, ty, 0))
 
 
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):
@@ -1369,8 +1378,14 @@ def main():
     
     # Create root locator if needed (for "root" mode)
     root_locator = None
+    body_offset = Vector((0, 0, 0))
     if world_translation_mode == "root":
         root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
+        
+        # Get body offset for aligning body relative to camera
+        first_cam_t = frames[0].get("pred_cam_t")
+        body_offset = get_body_offset_from_cam_t(first_cam_t, up_axis)
+        print(f"[Blender] Body offset for camera alignment: {body_offset}")
     
     # Create mesh with shape keys
     mesh_obj = None
@@ -1379,9 +1394,17 @@ def main():
         # Parent mesh to root locator if in "root" mode
         if world_translation_mode == "root" and root_locator and mesh_obj:
             mesh_obj.parent = root_locator
+            # Apply body offset for correct camera alignment
+            mesh_obj.location = body_offset
+            print(f"[Blender] Mesh offset applied: {body_offset}")
     
     # Create skeleton (armature with bones and hierarchy)
-    create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset)
+    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset)
+    
+    # Apply body offset to skeleton as well
+    if world_translation_mode == "root" and root_locator and armature_obj:
+        armature_obj.location = body_offset
+        print(f"[Blender] Skeleton offset applied: {body_offset}")
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

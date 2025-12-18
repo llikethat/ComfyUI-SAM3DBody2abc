@@ -361,7 +361,7 @@ class ExportAnimatedFBX:
             "frames": [],
         }
         
-        # DEBUG: Show root_locator calculation for frame 0
+        # DEBUG: Show root_locator and body_offset calculation for frame 0
         first_frame = frames[sorted_indices[0]]
         first_cam_t = first_frame.get("pred_cam_t")
         first_focal = first_frame.get("focal_length")
@@ -370,22 +370,16 @@ class ExportAnimatedFBX:
             first_cam_t = to_list(first_cam_t)
             if len(first_cam_t) >= 3:
                 tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
-                # This is how get_world_offset_from_cam_t calculates it (FIXED):
-                world_x = tx  # Direct, no scaling
-                world_y = ty  # Direct, no scaling
-                print(f"\n[Export DEBUG] ========== ROOT_LOCATOR CALCULATION (Frame 0) ==========")
+                print(f"\n[Export DEBUG] ========== BODY ALIGNMENT (Frame 0) ==========")
                 print(f"[Export DEBUG] pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
                 print(f"[Export DEBUG] focal_length: {first_focal}")
                 print(f"[Export DEBUG] image_size: {first_image_size}")
                 print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] world_offset formula:")
-                print(f"[Export DEBUG]   world_x = tx = {tx:.4f}")
-                print(f"[Export DEBUG]   world_y = ty = {ty:.4f}")
-                print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] COORDINATE MAPPING (Y-up export for Maya):")
-                print(f"[Export DEBUG]   Blender (X, Y, Z) = ({world_x:.4f}, 0, {world_y:.4f})")
-                print(f"[Export DEBUG]   → Maya (X, Z, Y) = ({world_x:.4f}, 0, {world_y:.4f})")
-                print(f"[Export DEBUG]   root_locator in Maya: X={world_x:.4f}, Y={world_y:.4f}, Z=0")
+                print(f"[Export DEBUG] NEW APPROACH (v3.5.6):")
+                print(f"[Export DEBUG]   root_locator = (0, 0, 0)  ← Fixed at origin")
+                print(f"[Export DEBUG]   body_offset in Blender = (tx, ty, 0) = ({tx:.4f}, {ty:.4f}, 0)")
+                print(f"[Export DEBUG]   body_offset in Maya = (tx, 0, ty) = ({tx:.4f}, 0, {ty:.4f})")
+                print(f"[Export DEBUG]   (Maya X = horizontal, Maya Z = vertical in camera view)")
                 print(f"[Export DEBUG]")
                 
                 # What screen position does this correspond to?
@@ -393,14 +387,13 @@ class ExportAnimatedFBX:
                     focal = float(first_focal) if not isinstance(first_focal, (list, tuple)) else float(first_focal[0])
                     img_w, img_h = first_image_size[0], first_image_size[1]
                     cx, cy = img_w / 2, img_h / 2
-                    # Screen position from pred_cam_t (with Y negation fix):
+                    # Screen position from pred_cam_t
                     screen_x = focal * tx / tz + cx
-                    screen_y = focal * (-ty) / tz + cy  # Negate ty for image Y-down convention
-                    print(f"[Export DEBUG] SCREEN POSITION (body at origin, Y-corrected):")
-                    print(f"[Export DEBUG]   screen_x = focal*tx/tz + cx = {focal:.1f}*{tx:.4f}/{tz:.4f} + {cx:.0f} = {screen_x:.1f}px")
-                    print(f"[Export DEBUG]   screen_y = focal*(-ty)/tz + cy = {focal:.1f}*{-ty:.4f}/{tz:.4f} + {cy:.0f} = {screen_y:.1f}px")
+                    screen_y = focal * ty / tz + cy  # NO negation - SAM3DBody coords are image-aligned
+                    print(f"[Export DEBUG] EXPECTED SCREEN POSITION:")
+                    print(f"[Export DEBUG]   screen_x = {screen_x:.1f}px")
+                    print(f"[Export DEBUG]   screen_y = {screen_y:.1f}px")
                     print(f"[Export DEBUG]   (Image center: {cx:.0f}, {cy:.0f})")
-                    print(f"[Export DEBUG]   Body is {'LEFT' if screen_x < cx else 'RIGHT'} of center, {'ABOVE' if screen_y < cy else 'BELOW'} center")
                 print(f"[Export DEBUG] ================================================================\n")
         
         for idx in sorted_indices:
