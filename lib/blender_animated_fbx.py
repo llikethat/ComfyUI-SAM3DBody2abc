@@ -220,6 +220,121 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
         return Vector((tx, -ty, 0))
 
 
+def apply_animated_body_offset(mesh_obj, armature_obj, frames, solved_camera_rotations, up_axis, frame_offset, smoothing=5):
+    """
+    Apply animated body offset that compensates for camera rotation.
+    
+    When camera rotates, the body position that gives correct screen alignment changes.
+    This function computes per-frame body offset that accounts for:
+    1. Target screen position from pred_cam_t
+    2. Camera rotation from solver
+    
+    Math:
+    - When camera pans right by θ, objects shift left on screen
+    - To keep body at target screen position, body must shift right in world
+    - Compensation: body_x = tx + depth × tan(pan_angle)
+    - Similarly for tilt: body_y = -ty - depth × tan(tilt_angle)
+    """
+    if not frames or not solved_camera_rotations:
+        print("[Blender] No frames or solved rotations for animated body offset")
+        return
+    
+    num_frames = len(frames)
+    has_solved = len(solved_camera_rotations) > 0
+    
+    if not has_solved:
+        print("[Blender] No solved rotations - body offset stays static")
+        return
+    
+    print(f"[Blender] Computing animated body offset with rotation compensation...")
+    
+    # Collect per-frame values
+    all_tx = []
+    all_ty = []
+    all_tz = []
+    all_pan = []
+    all_tilt = []
+    
+    for frame_idx in range(num_frames):
+        frame_data = frames[frame_idx]
+        pred_cam_t = frame_data.get("pred_cam_t", [0, 0, 5])
+        
+        tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
+        ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
+        tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
+        
+        all_tx.append(tx)
+        all_ty.append(ty)
+        all_tz.append(abs(tz) if abs(tz) > 0.1 else 5.0)
+        
+        if frame_idx < len(solved_camera_rotations):
+            rot = solved_camera_rotations[frame_idx]
+            all_pan.append(rot.get("pan", 0.0))
+            all_tilt.append(rot.get("tilt", 0.0))
+        else:
+            all_pan.append(0.0)
+            all_tilt.append(0.0)
+    
+    # Apply smoothing to ALL values (important for reducing jitter!)
+    if smoothing > 1:
+        all_tx = smooth_array(all_tx, smoothing)
+        all_ty = smooth_array(all_ty, smoothing)
+        all_tz = smooth_array(all_tz, smoothing)
+        all_pan = smooth_array(all_pan, smoothing)
+        all_tilt = smooth_array(all_tilt, smoothing)
+        print(f"[Blender] Applied smoothing (window={smoothing}) to body offset and camera rotation")
+    
+    # Compute compensated body offset for each frame
+    body_offsets = []
+    for frame_idx in range(num_frames):
+        tx = all_tx[frame_idx]
+        ty = all_ty[frame_idx]
+        depth = all_tz[frame_idx]
+        pan = all_pan[frame_idx]
+        tilt = all_tilt[frame_idx]
+        
+        # Compensate for camera rotation:
+        # When camera pans right (positive pan), body appears to move left
+        # To keep body at correct screen position, shift body right (add pan compensation)
+        pan_compensation = depth * math.tan(pan)
+        tilt_compensation = depth * math.tan(tilt)
+        
+        # Compensated body position
+        compensated_tx = tx + pan_compensation
+        compensated_ty = -ty - tilt_compensation  # ty negated as per convention
+        
+        if up_axis == "Y":
+            body_offset = Vector((compensated_tx, compensated_ty, 0))
+        elif up_axis == "Z":
+            body_offset = Vector((compensated_tx, 0, compensated_ty))
+        elif up_axis == "-Y":
+            body_offset = Vector((compensated_tx, -compensated_ty, 0))
+        elif up_axis == "-Z":
+            body_offset = Vector((compensated_tx, 0, -compensated_ty))
+        else:
+            body_offset = Vector((compensated_tx, compensated_ty, 0))
+        
+        body_offsets.append(body_offset)
+    
+    # Debug: print first and last frame values
+    print(f"[Blender] Frame 0: tx={all_tx[0]:.3f}, ty={all_ty[0]:.3f}, pan={math.degrees(all_pan[0]):.2f}°, offset={body_offsets[0]}")
+    print(f"[Blender] Frame {num_frames-1}: tx={all_tx[-1]:.3f}, ty={all_ty[-1]:.3f}, pan={math.degrees(all_pan[-1]):.2f}°, offset={body_offsets[-1]}")
+    
+    # Apply animated offset to mesh
+    if mesh_obj:
+        for frame_idx, offset in enumerate(body_offsets):
+            mesh_obj.location = offset
+            mesh_obj.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+        print(f"[Blender] Mesh animated with {num_frames} keyframes (rotation-compensated offset)")
+    
+    # Apply animated offset to armature
+    if armature_obj:
+        for frame_idx, offset in enumerate(body_offsets):
+            armature_obj.location = offset
+            armature_obj.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+        print(f"[Blender] Skeleton animated with {num_frames} keyframes (rotation-compensated offset)")
+
+
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):
     """
     Create mesh with per-vertex animation using shape keys.
@@ -1447,13 +1562,22 @@ def main():
     # Create root locator if needed (for "root" mode)
     root_locator = None
     body_offset = Vector((0, 0, 0))
+    use_animated_body_offset = False
+    
+    # Check if we should use animated body offset (when camera rotation is solved)
+    has_solved_rotations = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
+    if world_translation_mode == "root" and has_solved_rotations and camera_use_rotation and not camera_static:
+        use_animated_body_offset = True
+        print(f"[Blender] Will use ANIMATED body offset (compensates for camera rotation)")
+    
     if world_translation_mode == "root":
         root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
         
         # Get body offset for aligning body relative to camera
+        # This is used for static offset; animated offset is applied later
         first_cam_t = frames[0].get("pred_cam_t")
         body_offset = get_body_offset_from_cam_t(first_cam_t, up_axis)
-        print(f"[Blender] Body offset for camera alignment: {body_offset}")
+        print(f"[Blender] Body offset for camera alignment: {body_offset} (static baseline)")
     
     # Create mesh with shape keys
     mesh_obj = None
@@ -1462,17 +1586,27 @@ def main():
         # Parent mesh to root locator if in "root" mode
         if world_translation_mode == "root" and root_locator and mesh_obj:
             mesh_obj.parent = root_locator
-            # Apply body offset for correct camera alignment
-            mesh_obj.location = body_offset
-            print(f"[Blender] Mesh offset applied: {body_offset}")
+            if not use_animated_body_offset:
+                # Apply STATIC body offset for correct camera alignment
+                mesh_obj.location = body_offset
+                print(f"[Blender] Mesh offset applied (STATIC): {body_offset}")
     
     # Create skeleton (armature with bones and hierarchy)
     armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset)
     
     # Apply body offset to skeleton as well
     if world_translation_mode == "root" and root_locator and armature_obj:
-        armature_obj.location = body_offset
-        print(f"[Blender] Skeleton offset applied: {body_offset}")
+        if not use_animated_body_offset:
+            # Apply STATIC body offset
+            armature_obj.location = body_offset
+            print(f"[Blender] Skeleton offset applied (STATIC): {body_offset}")
+    
+    # Apply ANIMATED body offset if using solved camera rotations
+    # This must be done AFTER mesh and skeleton are created but BEFORE camera
+    if use_animated_body_offset:
+        # Use stronger smoothing for body offset to reduce jitter (default 5)
+        body_smoothing = max(camera_smoothing, 5)  # At least 5 for body
+        apply_animated_body_offset(mesh_obj, armature_obj, frames, solved_camera_rotations, up_axis, frame_offset, body_smoothing)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

@@ -413,6 +413,14 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.12 - Animated Body Offset with Rotation Compensation
+- **Major Fix**: Body offset is now ANIMATED when camera rotation is solved
+  - Static offset only correct at frame 0
+  - With camera pan/tilt, body position that gives correct alignment CHANGES per frame
+- **Rotation compensation**: `body_x = tx + depth × tan(pan)`, `body_y = -ty - depth × tan(tilt)`
+- **Stronger smoothing**: Body offset uses minimum smoothing of 5 to reduce jitter
+- Both camera and body offset values are smoothed together for consistency
+
 ### v3.5.11 - Fix Camera Rotation with Root Locator Mode
 - **BUG FIX**: camera_follow_root mode now properly uses solved_camera_rotations
   - Previously: Always computed pan/tilt from pred_cam_t (double-counting issue)
