@@ -413,6 +413,13 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.10 - Add Static Camera Option
+- Added **"Static"** option to camera_motion_mode
+  - Camera stays completely fixed (no rotation, no translation animation)
+  - Only body_offset positions the body correctly
+  - Simplest and most predictable alignment behavior
+- This is the recommended mode for accurate body alignment with "Root Locator + Animated Camera"
+
 ### v3.5.9 - Fix Double Offset (Camera Target + Body Offset)
 - **CRITICAL FIX**: Removed target_offset when using body_offset (root mode)
   - Previously: camera looked at target_offset AND body was at body_offset → DOUBLE OFFSET

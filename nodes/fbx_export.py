@@ -163,9 +163,9 @@ class ExportAnimatedFBX:
                     "default": True,
                     "tooltip": "Include camera. Static for most modes, animated for 'Baked into Camera', follows root for 'Root Locator + Animated Camera'"
                 }),
-                "camera_motion": (["Translation (Default)", "Rotation (Pan/Tilt)"], {
+                "camera_motion": (["Translation (Default)", "Rotation (Pan/Tilt)", "Static"], {
                     "default": "Translation (Default)",
-                    "tooltip": "How camera follows character. Translation: camera moves laterally. Rotation: camera pans/tilts (tripod-like). Only applies when world_translation is 'Baked into Camera' or 'Root Locator + Animated Camera'."
+                    "tooltip": "How camera follows character. Translation: camera moves laterally. Rotation: camera pans/tilts (tripod-like). Static: camera stays fixed, body offset handles alignment. Only applies when world_translation is 'Root Locator + Animated Camera'."
                 }),
                 "camera_smoothing": ("INT", {
                     "default": 0,
@@ -225,8 +225,13 @@ class ExportAnimatedFBX:
             print(f"[Export] Using solved camera rotations from Camera Rotation Solver ({len(camera_rotations['rotations'])} frames)")
             # Force rotation mode when using solved rotations
             use_camera_rotation = True
+            camera_static = False
+        elif camera_motion == "Static":
+            use_camera_rotation = False
+            camera_static = True
         else:
             use_camera_rotation = ("Rotation" in camera_motion)
+            camera_static = False
         
         # Determine camera behavior based on world_translation mode
         # - "Baked into Camera": camera animated with inverse world offset
@@ -326,7 +331,7 @@ class ExportAnimatedFBX:
             elif isinstance(joint_parents, list):
                 print(f"[Export] joint_parents length: {len(joint_parents)}")
         
-        print(f"[Export] Camera motion mode: {'Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation'}")
+        print(f"[Export] Camera motion mode: {'Static' if camera_static else ('Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation')}")
         if camera_smoothing > 0:
             print(f"[Export] Camera smoothing: {camera_smoothing} frames")
         
@@ -356,6 +361,7 @@ class ExportAnimatedFBX:
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
             "camera_use_rotation": use_camera_rotation,
+            "camera_static": camera_static,  # New: disable all camera animation
             "camera_smoothing": camera_smoothing,
             "solved_camera_rotations": solved_rotations,  # From Camera Rotation Solver
             "frames": [],

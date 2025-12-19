@@ -665,7 +665,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     return track
 
 
-def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False, camera_smoothing=0, flip_x=False, solved_camera_rotations=None):
+def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, world_translation_mode="none", animate_camera=False, frame_offset=0, camera_follow_root=False, camera_use_rotation=False, camera_static=False, camera_smoothing=0, flip_x=False, solved_camera_rotations=None):
     """
     Create camera with focal length from SAM3DBody.
     
@@ -680,6 +680,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                            LOCAL animation to show character at correct screen position.
         camera_use_rotation: If True, use pan/tilt rotation instead of translation.
                             Better for tripod/handheld shots where camera rotates to follow subject.
+        camera_static: If True, camera stays completely fixed (no rotation or translation animation).
+                      Used with body_offset to position body correctly.
         camera_smoothing: Smoothing window for camera values to reduce jitter (0=none).
         flip_x: Whether X axis is flipped (affects camera pan direction).
         frame_offset: Starting frame number for keyframes.
@@ -687,7 +689,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                                 Each entry has {frame, pan, tilt, roll} in radians.
     """
     has_solved = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
-    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, smoothing={camera_smoothing}, solved_rotations={has_solved})...")
+    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, static={camera_static}, smoothing={camera_smoothing}, solved_rotations={has_solved})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -1066,7 +1068,10 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     # For camera_follow_root: animate camera LOCAL position or rotation
     # Camera is parented to root_locator, so we need local animation
     # to show character at correct screen position (not always centered)
-    if camera_follow_root:
+    # 
+    # EXCEPTION: If camera_static is True, skip ALL camera animation!
+    # In static mode, body_offset positions the body correctly and camera stays fixed.
+    if camera_follow_root and not camera_static:
         print(f"[Blender] Adding local animation for camera (follows root locator)...")
         
         # Get base camera direction based on up_axis
@@ -1193,6 +1198,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             
             print(f"[Blender] Camera local translation animated over {len(all_frames)} frames")
             print(f"[Blender] Camera TRANSLATES to keep character at correct screen position")
+    
+    elif camera_follow_root and camera_static:
+        # Static camera mode - no animation needed
+        # body_offset positions the body correctly relative to the fixed camera
+        print(f"[Blender] Camera STATIC - body_offset positions character, no camera animation")
     
     # Animate focal length if it varies across frames
     focal_lengths = []
@@ -1330,6 +1340,7 @@ def main():
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
+    camera_static = data.get("camera_static", False)  # Disable all camera animation
     camera_smoothing = data.get("camera_smoothing", 0)  # Smoothing window for camera animation
     solved_camera_rotations = data.get("solved_camera_rotations", None)  # From Camera Rotation Solver
     
@@ -1342,6 +1353,7 @@ def main():
     print(f"[Blender] Animate camera: {animate_camera}")
     print(f"[Blender] Camera follow root: {camera_follow_root}")
     print(f"[Blender] Camera use rotation: {camera_use_rotation}")
+    print(f"[Blender] Camera static: {camera_static}")
     print(f"[Blender] Camera smoothing: {camera_smoothing}")
     print(f"[Blender] Solved camera rotations: {len(solved_camera_rotations) if solved_camera_rotations else 0} frames")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
@@ -1416,14 +1428,16 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_smoothing, flip_x, solved_camera_rotations)
+        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_static, camera_smoothing, flip_x, solved_camera_rotations)
         
         # Parent camera to root locator if requested
         # This makes camera follow character movement while preserving screen-space relationship
         if camera_follow_root and root_locator and camera_obj:
             camera_obj.parent = root_locator
             print(f"[Blender] Camera parented to root_locator - follows character movement")
-            if camera_use_rotation:
+            if camera_static:
+                print(f"[Blender] Camera is STATIC - body_offset positions character correctly")
+            elif camera_use_rotation:
                 print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
             else:
                 print(f"[Blender] Camera uses local TRANSLATION to frame character")
