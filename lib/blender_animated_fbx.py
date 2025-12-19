@@ -1103,65 +1103,118 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             # ROTATION MODE: Camera pans/tilts to follow character (like real camera operator)
             print(f"[Blender] Using PAN/TILT rotation to frame character")
             
-            # Collect all camera values first for smoothing
-            all_tx = []
-            all_ty = []
-            all_tz = []
-            for frame_data in all_frames:
-                frame_cam_t = frame_data.get("pred_cam_t", [0, 0, 3])
-                if frame_cam_t and len(frame_cam_t) >= 3:
-                    all_tx.append(frame_cam_t[0])
-                    all_ty.append(frame_cam_t[1])
-                    all_tz.append(frame_cam_t[2])
-                else:
-                    all_tx.append(0)
-                    all_ty.append(0)
-                    all_tz.append(3)
+            # Check if we have solved camera rotations from Camera Solver
+            has_solved = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
             
-            # Apply smoothing if requested
-            if camera_smoothing > 1:
-                all_tx = smooth_array(all_tx, camera_smoothing)
-                all_ty = smooth_array(all_ty, camera_smoothing)
-                all_tz = smooth_array(all_tz, camera_smoothing)
-                print(f"[Blender] Applied camera smoothing (window={camera_smoothing})")
+            if has_solved:
+                # USE SOLVED ROTATIONS FROM CAMERA SOLVER
+                # These come from background tracking and represent actual camera movement
+                # body_offset (from frame 0) handles initial positioning
+                # solved rotations handle frame-to-frame camera pan/tilt
+                print(f"[Blender] Using SOLVED camera rotations ({len(solved_camera_rotations)} frames)")
+                
+                # Get first frame depth for camera distance
+                first_cam_t = all_frames[0].get("pred_cam_t", [0, 0, 5])
+                base_depth = abs(first_cam_t[2]) if first_cam_t and len(first_cam_t) > 2 else 5.0
+                
+                for frame_idx in range(len(all_frames)):
+                    if frame_idx < len(solved_camera_rotations):
+                        solved_rot = solved_camera_rotations[frame_idx]
+                        pan_angle = solved_rot.get("pan", 0.0)
+                        tilt_angle = solved_rot.get("tilt", 0.0)
+                        roll_angle = solved_rot.get("roll", 0.0)
+                    else:
+                        pan_angle = 0.0
+                        tilt_angle = 0.0
+                        roll_angle = 0.0
+                    
+                    # Get per-frame depth (camera distance can vary)
+                    frame_cam_t = all_frames[frame_idx].get("pred_cam_t")
+                    if frame_cam_t and len(frame_cam_t) > 2:
+                        depth = abs(frame_cam_t[2])
+                    else:
+                        depth = base_depth
+                    
+                    # Apply solved rotation
+                    # Note: solved rotations are already in the correct sign convention
+                    camera.rotation_euler = base_rotation.copy()
+                    camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                    camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                    camera.rotation_euler[2] = base_rotation[2] + roll_angle
+                    
+                    # Camera distance from root
+                    camera.location = base_dir * depth
+                    
+                    camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
+                
+                print(f"[Blender] Camera rotation from SOLVED values (background tracking)")
+                print(f"[Blender] body_offset is STATIC (frame 0) - camera rotation handles alignment")
             
-            # Print first frame values for debugging
-            print(f"[Blender] Frame 0 pred_cam_t: tx={all_tx[0]:.3f}, ty={all_ty[0]:.3f}, tz={all_tz[0]:.3f}")
-            
-            for frame_idx in range(len(all_frames)):
-                tx = all_tx[frame_idx]
-                ty = all_ty[frame_idx]
-                tz = all_tz[frame_idx]
-                depth = abs(tz) if abs(tz) > 0.1 else 0.1
+            else:
+                # FALLBACK: Compute pan/tilt from pred_cam_t
+                # This is per-body and may cause issues with multi-body alignment
+                print(f"[Blender] No solved rotations - computing from pred_cam_t (fallback)")
                 
-                # Apply coordinate transform for pan (horizontal)
-                # flip_x affects whether we negate tx
-                if up_axis == "Y" or up_axis == "-Y":
-                    tx_cam = tx if flip_x else -tx
-                    # ty is NOT negated - positive ty means body lower in frame,
-                    # so camera should tilt DOWN (positive X rotation)
-                    ty_cam = ty
-                else:  # Z-up
-                    tx_cam = tx if flip_x else -tx
-                    ty_cam = ty
+                # Collect all camera values first for smoothing
+                all_tx = []
+                all_ty = []
+                all_tz = []
+                for frame_data in all_frames:
+                    frame_cam_t = frame_data.get("pred_cam_t", [0, 0, 3])
+                    if frame_cam_t and len(frame_cam_t) >= 3:
+                        all_tx.append(frame_cam_t[0])
+                        all_ty.append(frame_cam_t[1])
+                        all_tz.append(frame_cam_t[2])
+                    else:
+                        all_tx.append(0)
+                        all_ty.append(0)
+                        all_tz.append(3)
                 
-                # Compute angles directly using atan2
-                pan_angle = math.atan2(tx_cam, depth)
-                tilt_angle = math.atan2(ty_cam, depth)
+                # Apply smoothing if requested
+                if camera_smoothing > 1:
+                    all_tx = smooth_array(all_tx, camera_smoothing)
+                    all_ty = smooth_array(all_ty, camera_smoothing)
+                    all_tz = smooth_array(all_tz, camera_smoothing)
+                    print(f"[Blender] Applied camera smoothing (window={camera_smoothing})")
                 
-                # Apply rotation
-                camera.rotation_euler = base_rotation.copy()
-                camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
-                camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                # Print first frame values for debugging
+                print(f"[Blender] Frame 0 pred_cam_t: tx={all_tx[0]:.3f}, ty={all_ty[0]:.3f}, tz={all_tz[0]:.3f}")
                 
-                # Also animate depth (camera distance from root)
-                camera.location = base_dir * depth
+                for frame_idx in range(len(all_frames)):
+                    tx = all_tx[frame_idx]
+                    ty = all_ty[frame_idx]
+                    tz = all_tz[frame_idx]
+                    depth = abs(tz) if abs(tz) > 0.1 else 0.1
+                    
+                    # Apply coordinate transform for pan (horizontal)
+                    # flip_x affects whether we negate tx
+                    if up_axis == "Y" or up_axis == "-Y":
+                        tx_cam = tx if flip_x else -tx
+                        # ty is NOT negated - positive ty means body lower in frame,
+                        # so camera should tilt DOWN (positive X rotation)
+                        ty_cam = ty
+                    else:  # Z-up
+                        tx_cam = tx if flip_x else -tx
+                        ty_cam = ty
+                    
+                    # Compute angles directly using atan2
+                    pan_angle = math.atan2(tx_cam, depth)
+                    tilt_angle = math.atan2(ty_cam, depth)
+                    
+                    # Apply rotation
+                    camera.rotation_euler = base_rotation.copy()
+                    camera.rotation_euler[pan_axis] = base_rotation[pan_axis] + pan_angle
+                    camera.rotation_euler[tilt_axis] = base_rotation[tilt_axis] + tilt_angle
+                    
+                    # Also animate depth (camera distance from root)
+                    camera.location = base_dir * depth
+                    
+                    camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+                    camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
                 
-                camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
-                camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
-            
-            print(f"[Blender] Camera pan/tilt animated over {len(all_frames)} frames")
-            print(f"[Blender] Camera ROTATES to follow character (realistic tripod behavior)")
+                print(f"[Blender] Camera pan/tilt animated over {len(all_frames)} frames")
+                print(f"[Blender] Camera ROTATES to follow character (from pred_cam_t fallback)")
         
         else:
             # TRANSLATION MODE: Camera moves laterally to show character at offset position

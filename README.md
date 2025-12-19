@@ -413,6 +413,14 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.11 - Fix Camera Rotation with Root Locator Mode
+- **BUG FIX**: camera_follow_root mode now properly uses solved_camera_rotations
+  - Previously: Always computed pan/tilt from pred_cam_t (double-counting issue)
+  - Now: Uses solved rotations from Camera Solver when available
+- body_offset is STATIC (from frame 0) - handles initial positioning
+- Solved camera rotations handle frame-to-frame pan/tilt
+- This properly separates body alignment from camera movement
+
 ### v3.5.10 - Add Static Camera Option
 - Added **"Static"** option to camera_motion_mode
   - Camera stays completely fixed (no rotation, no translation animation)
