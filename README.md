@@ -413,6 +413,14 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.18 - Rewrite Depth-KLT with Proper Filtering
+- **REWRITE**: Complete rewrite of Depth-KLT algorithm
+  - Now uses **persistent tracking from frame 0** (like regular KLT) instead of frame-to-frame
+  - **Hard depth filtering**: Keeps only top 40% features by depth (distant = background)
+  - Uses same Essential Matrix approach as working regular KLT
+  - No more accumulated delta drift
+- Previous version had random weighted sampling which caused catastrophic failures (pan=-236°!)
+
 ### v3.5.17 - Fix DepthAnything+KLT Dispatch
 - **BUGFIX**: Fixed tracking method dispatch - "DepthAnything + KLT" was incorrectly using regular KLT
   - "DepthAnything + KLT" contains "KLT", so it matched regular KLT first

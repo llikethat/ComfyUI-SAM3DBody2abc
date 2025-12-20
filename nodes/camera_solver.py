@@ -1946,38 +1946,45 @@ class CameraRotationSolver:
     
     def solve_rotation_depth_klt(self, frames, bg_masks, focal_length_px, ransac_threshold, external_depths=None):
         """
-        Use depth estimation to weight KLT features by distance.
-        Prioritizes distant (background) features for more accurate camera rotation.
+        Depth-weighted KLT tracking - filters to keep only distant (background) features.
+        
+        Uses same persistent tracking approach as regular KLT, but:
+        1. Estimates depth for all potential features
+        2. Filters to keep only features with HIGH depth (distant = background)
+        3. Tracks these distant features persistently from frame 0
         
         Args:
             external_depths: Pre-computed depth maps (N, H, W) - if provided, skip internal depth estimation
         """
-        num_frames = frames.shape[0]
-        img_height, img_width = frames.shape[1:3]
+        num_frames, img_height, img_width = frames.shape[:3]
+        cx, cy = img_width / 2, img_height / 2
         
-        # Use external depths if provided, otherwise estimate
+        # Camera intrinsic matrix
+        K = np.array([
+            [focal_length_px, 0, cx],
+            [0, focal_length_px, cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        
+        # Get depth maps
         if external_depths is not None:
-            print(f"[CameraSolver] Using {len(external_depths)} externally provided depth maps")
+            print(f"[CameraSolver] Depth-KLT: Using {len(external_depths)} external depth maps")
             depths = []
             for i in range(num_frames):
                 if i < len(external_depths):
                     depth = external_depths[i]
-                    # Resize if needed
                     if depth.shape[0] != img_height or depth.shape[1] != img_width:
                         depth = cv2.resize(depth, (img_width, img_height))
                     depths.append(depth.astype(np.float32))
                 else:
                     depths.append(np.ones((img_height, img_width), dtype=np.float32))
-            print(f"[CameraSolver] External depth maps ready: {len(depths)} frames")
         else:
             # Load depth model
             if not self.load_depth_anything():
-                print(f"[CameraSolver] DepthAnything failed and no external depths provided, falling back to regular KLT")
+                print(f"[CameraSolver] Depth-KLT: No depth available, falling back to regular KLT")
                 return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)[:2]
             
-            print(f"[CameraSolver] Estimating depth for {num_frames} frames...")
-            
-            # Estimate depth for all frames
+            print(f"[CameraSolver] Depth-KLT: Estimating depth for {num_frames} frames...")
             depths = []
             for i in range(num_frames):
                 depth = self.estimate_depth(frames[i])
@@ -1988,123 +1995,194 @@ class CameraRotationSolver:
                 if i % 10 == 0:
                     print(f"[CameraSolver] Depth estimated for frame {i}/{num_frames}")
         
-        # Convert to grayscale
-        gray_frames = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
+        # Convert first frame to grayscale
+        gray0 = cv2.cvtColor(frames[0], cv2.COLOR_RGB2GRAY)
         
-        # KLT parameters
-        feature_params = dict(maxCorners=500, qualityLevel=0.01, minDistance=10, blockSize=7)
-        lk_params = dict(winSize=(21, 21), maxLevel=3, 
-                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+        # Create mask for feature detection (background only from YOLO)
+        detection_mask = None
+        if bg_masks is not None:
+            detection_mask = (bg_masks[0] * 255).astype(np.uint8)
         
-        # Detect features in first frame
-        mask0 = (bg_masks[0] * 255).astype(np.uint8) if bg_masks is not None else None
-        p0 = cv2.goodFeaturesToTrack(gray_frames[0], mask=mask0, **feature_params)
+        # Detect features in frame 0
+        feature_params = dict(
+            maxCorners=1000,  # Detect more, we'll filter by depth
+            qualityLevel=0.005,
+            minDistance=10,
+            blockSize=7,
+            mask=detection_mask
+        )
         
-        if p0 is None or len(p0) < 10:
-            print(f"[CameraSolver] Not enough features, falling back to regular KLT")
+        pts0 = cv2.goodFeaturesToTrack(gray0, **feature_params)
+        
+        if pts0 is None or len(pts0) < 50:
+            print(f"[CameraSolver] Depth-KLT: Not enough features ({len(pts0) if pts0 else 0}), falling back to regular KLT")
             return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)[:2]
         
-        # Weight features by depth (higher depth = further = more reliable for camera)
+        pts0 = pts0.reshape(-1, 2)
+        print(f"[CameraSolver] Depth-KLT: Detected {len(pts0)} candidate features")
+        
+        # Get depth at each feature location
         depth0 = depths[0]
-        feature_weights = []
-        for pt in p0:
-            x, y = int(pt[0][0]), int(pt[0][1])
+        feature_depths = []
+        for pt in pts0:
+            x, y = int(pt[0]), int(pt[1])
             x = min(max(x, 0), img_width - 1)
             y = min(max(y, 0), img_height - 1)
-            weight = depth0[y, x]
-            feature_weights.append(weight)
+            feature_depths.append(depth0[y, x])
         
-        feature_weights = np.array(feature_weights)
-        # Normalize weights to 0-1 range
-        if feature_weights.max() > feature_weights.min():
-            feature_weights = (feature_weights - feature_weights.min()) / (feature_weights.max() - feature_weights.min())
+        feature_depths = np.array(feature_depths)
+        
+        # Filter to keep only DISTANT features (high depth = far = background)
+        # Keep top 40% by depth
+        depth_threshold = np.percentile(feature_depths, 60)  # Top 40%
+        distant_mask = feature_depths >= depth_threshold
+        
+        pts0_filtered = pts0[distant_mask]
+        
+        if len(pts0_filtered) < 30:
+            print(f"[CameraSolver] Depth-KLT: Not enough distant features ({len(pts0_filtered)}), using all features")
+            pts0_filtered = pts0
         else:
-            feature_weights = np.ones_like(feature_weights)
+            print(f"[CameraSolver] Depth-KLT: Filtered to {len(pts0_filtered)} distant features (depth >= {depth_threshold:.3f})")
         
-        print(f"[CameraSolver] Depth-KLT: {len(p0)} features, depth range: {feature_weights.min():.2f}-{feature_weights.max():.2f}")
+        original_pts0 = pts0_filtered.copy()
         
-        # Build camera matrix
-        cx, cy = img_width / 2, img_height / 2
-        K = np.array([[focal_length_px, 0, cx], [0, focal_length_px, cy], [0, 0, 1]], dtype=np.float64)
+        # KLT tracking parameters
+        lk_params = dict(
+            winSize=(21, 21),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        )
         
+        # Track features across all frames (PERSISTENT from frame 0)
         rotations = [(0.0, 0.0, 0.0)]  # Frame 0 is reference
-        debug_tracking_frames = [frames[0].copy()]
+        debug_frames = []
         
-        cumulative_pan, cumulative_tilt, cumulative_roll = 0.0, 0.0, 0.0
+        # Create debug frame for frame 0
+        debug_frame0 = frames[0].copy()
+        for pt in pts0_filtered:
+            cv2.circle(debug_frame0, tuple(pt.astype(int)), 4, (0, 255, 0), -1)
+        cv2.putText(debug_frame0, f"Depth-KLT Frame 0: {len(pts0_filtered)} distant features", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        debug_frames.append(debug_frame0)
+        
+        # Current tracked points and their correspondence to original points
+        current_pts = pts0_filtered.copy()
+        valid_mask = np.ones(len(pts0_filtered), dtype=bool)
+        prev_gray = gray0.copy()
         
         for i in range(1, num_frames):
-            # Track features
-            p1, status, err = cv2.calcOpticalFlowPyrLK(gray_frames[i-1], gray_frames[i], p0, None, **lk_params)
+            # Convert current frame to grayscale
+            gray_i = cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY)
             
-            if p1 is None or status is None:
-                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
-                debug_tracking_frames.append(frames[i].copy())
+            # Track from previous frame to current frame
+            pts_to_track = current_pts[valid_mask].reshape(-1, 1, 2).astype(np.float32)
+            
+            if len(pts_to_track) < 8:
+                print(f"[CameraSolver] Depth-KLT Frame {i}: Too few points ({len(pts_to_track)})")
+                rotations.append(rotations[-1])
+                debug_frames.append(frames[i].copy())
+                prev_gray = gray_i.copy()
                 continue
             
-            # Filter good points
-            good_mask = status.flatten() == 1
-            good_old = p0[good_mask]
-            good_new = p1[good_mask]
-            good_weights = feature_weights[good_mask]
+            next_pts, status, err = cv2.calcOpticalFlowPyrLK(
+                prev_gray, gray_i, pts_to_track, None, **lk_params
+            )
             
-            if len(good_old) < 8:
-                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
-                debug_tracking_frames.append(frames[i].copy())
+            if next_pts is None:
+                rotations.append(rotations[-1])
+                debug_frames.append(frames[i].copy())
+                prev_gray = gray_i.copy()
                 continue
             
-            # Use weighted RANSAC (approximate by sampling based on weights)
-            # Higher weighted points are more likely to be selected
-            prob = good_weights / good_weights.sum()
-            n_samples = min(len(good_old), 100)
-            indices = np.random.choice(len(good_old), size=n_samples, replace=False, p=prob)
+            next_pts = next_pts.reshape(-1, 2)
+            status = status.reshape(-1)
             
-            sampled_old = good_old[indices]
-            sampled_new = good_new[indices]
+            # Update valid mask
+            valid_indices = np.where(valid_mask)[0]
+            new_valid_mask = valid_mask.copy()
             
-            # Compute essential matrix
-            E, mask_E = cv2.findEssentialMat(sampled_old, sampled_new, K, method=cv2.RANSAC, threshold=ransac_threshold)
+            for j, idx in enumerate(valid_indices):
+                if status[j] != 1:
+                    new_valid_mask[idx] = False
+                else:
+                    pt = next_pts[j]
+                    x, y = int(pt[0]), int(pt[1])
+                    if x < 0 or x >= img_width or y < 0 or y >= img_height:
+                        new_valid_mask[idx] = False
+                    elif bg_masks is not None and bg_masks[i, y, x] < 0.5:
+                        new_valid_mask[idx] = False
             
-            if E is None or E.shape != (3, 3):
-                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
-                debug_tracking_frames.append(frames[i].copy())
+            # Update current points for valid tracks
+            new_current_pts = current_pts.copy()
+            valid_idx = 0
+            for j, idx in enumerate(valid_indices):
+                if status[j] == 1:
+                    new_current_pts[idx] = next_pts[valid_idx]
+                valid_idx += 1
+            
+            current_pts = new_current_pts
+            valid_mask = new_valid_mask
+            
+            # Get corresponding points in frame 0 and frame i
+            pts0_good = original_pts0[valid_mask]
+            pts_i_good = current_pts[valid_mask]
+            
+            if len(pts0_good) < 8:
+                print(f"[CameraSolver] Depth-KLT Frame {i}: Not enough tracks ({len(pts0_good)})")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                cv2.putText(debug_frame, f"Depth-KLT Frame {i}: {len(pts0_good)} tracks (need 8+)", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                debug_frames.append(debug_frame)
+                prev_gray = gray_i.copy()
                 continue
             
-            # Recover pose
-            _, R, t, _ = cv2.recoverPose(E, sampled_old, sampled_new, K)
+            # Estimate Essential Matrix (comparing frame 0 to frame i directly)
+            E, inliers_mask = cv2.findEssentialMat(
+                pts0_good, pts_i_good, K,
+                method=cv2.RANSAC,
+                prob=0.999,
+                threshold=ransac_threshold
+            )
             
-            # Extract rotation angles
-            rvec, _ = cv2.Rodrigues(R)
-            delta_pan = rvec[1, 0]
-            delta_tilt = rvec[0, 0]
-            delta_roll = rvec[2, 0]
+            if E is None:
+                rotations.append(rotations[-1])
+                debug_frames.append(frames[i].copy())
+                prev_gray = gray_i.copy()
+                continue
             
-            cumulative_pan += delta_pan
-            cumulative_tilt += delta_tilt
-            cumulative_roll += delta_roll
+            inliers_mask = inliers_mask.ravel() if inliers_mask is not None else np.ones(len(pts0_good))
+            inlier_count = np.sum(inliers_mask)
+            inlier_ratio = inlier_count / len(pts0_good)
             
-            rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+            # Recover rotation from Essential Matrix
+            _, R, t, mask_pose = cv2.recoverPose(E, pts0_good, pts_i_good, K, 
+                                                  mask=inliers_mask.copy().reshape(-1, 1).astype(np.uint8))
             
-            # Debug image
+            # Extract Euler angles from rotation matrix
+            pan, tilt, roll = self.rotation_matrix_to_euler(R)
+            
+            # Log progress
+            print(f"[CameraSolver] Depth-KLT Frame {i}: {inlier_count}/{len(pts0_good)} inliers ({inlier_ratio:.1%}), pan={np.degrees(pan):.2f}°, tilt={np.degrees(tilt):.2f}°")
+            
+            rotations.append((pan, tilt, roll))
+            
+            # Create debug visualization
             debug_frame = frames[i].copy()
-            inliers = mask_E.flatten() == 1 if mask_E is not None else np.ones(len(sampled_old), dtype=bool)
-            for j, (old, new) in enumerate(zip(sampled_old, sampled_new)):
-                color = (0, 255, 0) if inliers[j] else (0, 0, 255)
-                cv2.circle(debug_frame, tuple(new.astype(int).flatten()), 4, color, -1)
-                cv2.line(debug_frame, tuple(old.astype(int).flatten()), tuple(new.astype(int).flatten()), color, 1)
+            for j, (old, new) in enumerate(zip(pts0_good, pts_i_good)):
+                color = (0, 255, 0) if inliers_mask[j] else (0, 0, 255)
+                cv2.circle(debug_frame, tuple(new.astype(int)), 4, color, -1)
+                cv2.line(debug_frame, tuple(old.astype(int)), tuple(new.astype(int)), color, 1)
             
-            cv2.putText(debug_frame, f"Depth-KLT Frame {i}: pan={np.degrees(cumulative_pan):.1f}°", 
+            cv2.putText(debug_frame, f"Depth-KLT Frame {i}: pan={np.degrees(pan):.1f}° ({inlier_count}/{len(pts0_good)} inliers)", 
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            debug_tracking_frames.append(debug_frame)
+            debug_frames.append(debug_frame)
             
-            # Update features
-            p0 = good_new.reshape(-1, 1, 2)
-            feature_weights = good_weights
-            
-            if i % 10 == 0:
-                print(f"[CameraSolver] Depth-KLT Frame {i}: pan={np.degrees(cumulative_pan):.2f}°, tilt={np.degrees(cumulative_tilt):.2f}°")
+            prev_gray = gray_i.copy()
         
         print(f"[CameraSolver] Depth-KLT tracking complete!")
-        return rotations, debug_tracking_frames
+        return rotations, debug_frames
     
     def solve_rotation_duster(self, frames, focal_length_px):
         """
