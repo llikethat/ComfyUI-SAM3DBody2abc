@@ -413,6 +413,13 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.16 - External Depth Maps Input
+- **NEW**: Added `depth_maps` input to Camera Rotation Solver
+  - Connect output from DepthAnything V2, MiDaS, ZoeDepth, or any depth node
+  - When connected, uses external depth instead of loading internal model
+  - Supports various tensor shapes: (N, H, W), (N, H, W, C), (N, C, H, W)
+- **Workflow**: Run DepthAnything V2 node → Connect to Camera Solver depth_maps input → Select "DepthAnything + KLT" method
+
 ### v3.5.15 - Depth-Based Camera Tracking Methods
 Added 4 new depth-based tracking methods for more robust camera rotation estimation:
 

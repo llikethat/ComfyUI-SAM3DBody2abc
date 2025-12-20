@@ -61,9 +61,12 @@ class CameraRotationSolver:
             "optional": {
                 "foreground_masks": ("MASK",),
                 "sam3_masks": ("SAM3_VIDEO_MASKS",),
+                "depth_maps": ("IMAGE", {
+                    "tooltip": "Pre-computed depth maps from DepthAnything V2, MiDaS, or other depth nodes. Connect this for depth-weighted tracking."
+                }),
                 "tracking_method": (cls.TRACKING_METHODS, {
                     "default": "KLT (Persistent)",
-                    "tooltip": "KLT: Fast CPU tracking. CoTracker: AI-based (GPU). DepthAnything+KLT: Depth-weighted. DUSt3R: 3D reconstruction. COLMAP: Structure from Motion. DepthCrafter: Video depth."
+                    "tooltip": "KLT: Fast CPU tracking. CoTracker: AI-based (GPU). DepthAnything+KLT: Depth-weighted (requires depth_maps input). DUSt3R: 3D reconstruction. COLMAP: Structure from Motion. DepthCrafter: Video depth."
                 }),
                 "auto_mask_people": ("BOOLEAN", {
                     "default": True,
@@ -1412,6 +1415,7 @@ class CameraRotationSolver:
         images: torch.Tensor,
         foreground_masks: Optional[torch.Tensor] = None,
         sam3_masks: Optional[Any] = None,
+        depth_maps: Optional[torch.Tensor] = None,
         tracking_method: str = "ORB (Feature-Based)",
         auto_mask_people: bool = True,
         detection_confidence: float = 0.5,
@@ -1428,6 +1432,7 @@ class CameraRotationSolver:
             images: Video frames (N, H, W, C)
             foreground_masks: Foreground masks to exclude (N, H, W)
             sam3_masks: SAM3 video masks (alternative to foreground_masks)
+            depth_maps: Pre-computed depth maps from external nodes (N, H, W, C) or (N, H, W)
             tracking_method: "ORB (Feature-Based)" or "RAFT (Dense Flow)"
             auto_mask_people: Automatically detect and mask all people using YOLO
             detection_confidence: YOLO detection confidence threshold
@@ -1447,6 +1452,23 @@ class CameraRotationSolver:
         print(f"[CameraSolver] Starting camera rotation solve...")
         print(f"[CameraSolver] Tracking method: {tracking_method}")
         print(f"[CameraSolver] Input: {images.shape[0]} frames")
+        
+        # Process external depth maps if provided
+        external_depths = None
+        if depth_maps is not None:
+            print(f"[CameraSolver] External depth maps provided: shape={depth_maps.shape}")
+            depth_np = depth_maps.cpu().numpy()
+            # Handle different shapes: (N, H, W, C), (N, H, W), (N, C, H, W)
+            if len(depth_np.shape) == 4:
+                if depth_np.shape[-1] in [1, 3]:  # (N, H, W, C)
+                    depth_np = depth_np.mean(axis=-1)  # Convert to grayscale
+                elif depth_np.shape[1] in [1, 3]:  # (N, C, H, W)
+                    depth_np = depth_np.mean(axis=1)  # Convert to grayscale
+            # Normalize to 0-1 range
+            if depth_np.max() > 1.0:
+                depth_np = depth_np / 255.0
+            external_depths = depth_np.astype(np.float32)
+            print(f"[CameraSolver] Processed depth maps: shape={external_depths.shape}, range=[{external_depths.min():.3f}-{external_depths.max():.3f}]")
         
         # Convert images to numpy
         frames = (images.cpu().numpy() * 255).astype(np.uint8)
@@ -1611,8 +1633,10 @@ class CameraRotationSolver:
         use_depth_klt = "DepthAnything" in tracking_method
         if use_depth_klt:
             print(f"[CameraSolver] Using DepthAnything + KLT (depth-weighted tracking)")
+            if external_depths is not None:
+                print(f"[CameraSolver] Using externally provided depth maps")
             rotations, debug_tracking_frames = self.solve_rotation_depth_klt(
-                frames, bg_masks, focal_length_px, ransac_threshold
+                frames, bg_masks, focal_length_px, ransac_threshold, external_depths
             )
             
             # Reject outliers and smooth
@@ -1919,31 +1943,49 @@ class CameraRotationSolver:
     
     # ==== DEPTH-BASED TRACKING IMPLEMENTATIONS ====
     
-    def solve_rotation_depth_klt(self, frames, bg_masks, focal_length_px, ransac_threshold):
+    def solve_rotation_depth_klt(self, frames, bg_masks, focal_length_px, ransac_threshold, external_depths=None):
         """
         Use depth estimation to weight KLT features by distance.
         Prioritizes distant (background) features for more accurate camera rotation.
+        
+        Args:
+            external_depths: Pre-computed depth maps (N, H, W) - if provided, skip internal depth estimation
         """
         num_frames = frames.shape[0]
         img_height, img_width = frames.shape[1:3]
         
-        # Load depth model
-        if not self.load_depth_anything():
-            print(f"[CameraSolver] DepthAnything failed, falling back to regular KLT")
-            return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)[:2]
-        
-        print(f"[CameraSolver] Estimating depth for {num_frames} frames...")
-        
-        # Estimate depth for all frames
-        depths = []
-        for i in range(num_frames):
-            depth = self.estimate_depth(frames[i])
-            if depth is not None:
-                depths.append(depth)
-            else:
-                depths.append(np.ones((img_height, img_width), dtype=np.float32))
-            if i % 10 == 0:
-                print(f"[CameraSolver] Depth estimated for frame {i}/{num_frames}")
+        # Use external depths if provided, otherwise estimate
+        if external_depths is not None:
+            print(f"[CameraSolver] Using {len(external_depths)} externally provided depth maps")
+            depths = []
+            for i in range(num_frames):
+                if i < len(external_depths):
+                    depth = external_depths[i]
+                    # Resize if needed
+                    if depth.shape[0] != img_height or depth.shape[1] != img_width:
+                        depth = cv2.resize(depth, (img_width, img_height))
+                    depths.append(depth.astype(np.float32))
+                else:
+                    depths.append(np.ones((img_height, img_width), dtype=np.float32))
+            print(f"[CameraSolver] External depth maps ready: {len(depths)} frames")
+        else:
+            # Load depth model
+            if not self.load_depth_anything():
+                print(f"[CameraSolver] DepthAnything failed and no external depths provided, falling back to regular KLT")
+                return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)[:2]
+            
+            print(f"[CameraSolver] Estimating depth for {num_frames} frames...")
+            
+            # Estimate depth for all frames
+            depths = []
+            for i in range(num_frames):
+                depth = self.estimate_depth(frames[i])
+                if depth is not None:
+                    depths.append(depth)
+                else:
+                    depths.append(np.ones((img_height, img_width), dtype=np.float32))
+                if i % 10 == 0:
+                    print(f"[CameraSolver] Depth estimated for frame {i}/{num_frames}")
         
         # Convert to grayscale
         gray_frames = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
