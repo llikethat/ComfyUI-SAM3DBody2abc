@@ -314,13 +314,36 @@ class CameraRotationSolver:
                 print(f"[CameraSolver] Place in: {checkpoint_dir}")
                 return False
             
-            # Import and load model
+            # Import and load model with PyTorch 2.6+ compatibility
             try:
-                from dust3r.inference import load_model
-                self.duster_model = load_model(checkpoint_path, self.device)
+                # Load checkpoint with weights_only=False for PyTorch 2.6+ compatibility
+                print(f"[CameraSolver] Loading checkpoint from {checkpoint_path}...")
+                ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+                
+                # Parse model args
+                args = ckpt['args'].model.replace("ManyAR_PatchEmbed", "PatchEmbedDust3R")
+                if 'landscape_only' not in args:
+                    args = args[:-1] + ', landscape_only=False)'
+                else:
+                    args = args.replace(" ", "").replace('landscape_only=True', 'landscape_only=False')
+                
+                print(f"[CameraSolver] Instantiating model: {args[:100]}...")
+                
+                # Import required modules
+                from dust3r.model import AsymmetricCroCo3DStereo
+                
+                # Create model instance
+                net = eval(args)
+                
+                # Load weights
+                s = net.load_state_dict(ckpt['model'], strict=False)
+                print(f"[CameraSolver] Model loaded: {s}")
+                
+                self.duster_model = net.to(self.device).eval()
                 self.duster_path = dust3r_path
-                print(f"[CameraSolver] DUSt3R loaded successfully")
+                print(f"[CameraSolver] DUSt3R loaded successfully on {self.device}")
                 return True
+                
             except ImportError as e:
                 print(f"[CameraSolver] Failed to import dust3r: {e}")
                 print(f"[CameraSolver] Try: pip install roma huggingface-hub>=0.22")
