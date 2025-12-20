@@ -1954,7 +1954,7 @@ class CameraRotationSolver:
         if use_duster:
             print(f"[CameraSolver] Using DUSt3R (3D reconstruction for camera poses)")
             rotations, debug_tracking_frames = self.solve_rotation_duster(
-                frames, focal_length_px
+                frames, bg_masks, focal_length_px
             )
             
             # Reject outliers and smooth
@@ -2463,13 +2463,18 @@ class CameraRotationSolver:
         print(f"[CameraSolver] Depth-KLT tracking complete!")
         return rotations, debug_frames
     
-    def solve_rotation_duster(self, frames, focal_length_px):
+    def solve_rotation_duster(self, frames, bg_masks, focal_length_px):
         """
         Use DUSt3R for 3D reconstruction and camera pose estimation.
         DUSt3R directly predicts relative camera poses between frame pairs.
         
         This method uses the ComfyUI-dust3r package which must be installed
         in ComfyUI/custom_nodes/ComfyUI-dust3r
+        
+        Args:
+            frames: Video frames (N, H, W, 3)
+            bg_masks: Background masks (N, H, W) - 1 for background, 0 for foreground/people
+            focal_length_px: Focal length in pixels
         """
         num_frames = frames.shape[0]
         img_height, img_width = frames.shape[1:3]
@@ -2493,10 +2498,28 @@ class CameraRotationSolver:
             # Save frames to temp directory for DUSt3R
             with tempfile.TemporaryDirectory() as tmpdir:
                 image_paths = []
+                
+                # Check if we have background masks
+                use_masks = bg_masks is not None and len(bg_masks) == num_frames
+                if use_masks:
+                    print(f"[CameraSolver] DUSt3R: Applying background masks (masking out people)")
+                
                 for i, frame in enumerate(frames):
+                    # Apply background mask if available (black out people/foreground)
+                    if use_masks:
+                        mask = bg_masks[i]
+                        # Expand mask to 3 channels if needed
+                        if mask.ndim == 2:
+                            mask_3d = mask[:, :, np.newaxis]
+                        else:
+                            mask_3d = mask
+                        # Apply mask: keep background (mask=1), black out foreground (mask=0)
+                        masked_frame = (frame * mask_3d).astype(np.uint8)
+                    else:
+                        masked_frame = frame
+                    
                     path = os.path.join(tmpdir, f"frame_{i:04d}.png")
-                    # Convert BGR to RGB if needed and save
-                    img = Image.fromarray(frame)
+                    img = Image.fromarray(masked_frame)
                     img.save(path)
                     image_paths.append(path)
                 
@@ -2520,10 +2543,27 @@ class CameraRotationSolver:
                 print(f"[CameraSolver] DUSt3R: Running inference...")
                 output = inference(pairs, self.duster_model, self.device, batch_size=1)
                 
+                # Convert output tensors to float32 (fix for BFloat16 precision issue)
+                # torch.linalg.inv doesn't support BFloat16
+                def convert_to_float32(obj):
+                    if isinstance(obj, torch.Tensor):
+                        return obj.float()  # Convert to float32
+                    elif isinstance(obj, dict):
+                        return {k: convert_to_float32(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [convert_to_float32(v) for v in obj]
+                    return obj
+                
+                output = convert_to_float32(output)
+                print(f"[CameraSolver] DUSt3R: Converted output to float32")
+                
                 # Global alignment to get camera poses
                 print(f"[CameraSolver] DUSt3R: Running global alignment...")
                 mode = GlobalAlignerMode.PointCloudOptimizer if num_frames > 2 else GlobalAlignerMode.PairViewer
                 scene = global_aligner(output, device=self.device, mode=mode)
+                
+                # Convert scene parameters to float32 as well
+                scene = scene.float()
                 
                 if mode == GlobalAlignerMode.PointCloudOptimizer:
                     loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
