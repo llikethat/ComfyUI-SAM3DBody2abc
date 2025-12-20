@@ -111,6 +111,16 @@ class CameraRotationSolver:
                     "max": 15,
                     "tooltip": "Temporal smoothing window for rotation values (0=none)"
                 }),
+                "cotracker_coords": ("TRACKING_COORDS", {
+                    "tooltip": "Optional: Tracking coordinates from CoTracker node (comfyui_cotracker_node). Format: (N, T, P, 2) where N=batch, T=frames, P=points, 2=xy"
+                }),
+                "cotracker_visibility": ("TRACKING_VISIBILITY", {
+                    "tooltip": "Optional: Visibility mask from CoTracker node. Format: (N, T, P) boolean"
+                }),
+                "verbose_debug": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Enable verbose debug output with detailed per-frame tracking info"
+                }),
             }
         }
     
@@ -1081,6 +1091,178 @@ class CameraRotationSolver:
         print(f"[CameraSolver] CoTracker solve complete!")
         return rotations, debug_frames, track_info_list
     
+    def solve_rotation_from_cotracker_data(
+        self,
+        frames: np.ndarray,
+        cotracker_coords: torch.Tensor,
+        cotracker_visibility: Optional[torch.Tensor],
+        bg_masks: Optional[np.ndarray],
+        focal_length_px: float,
+        ransac_threshold: float = 3.0,
+        verbose_debug: bool = False
+    ) -> Tuple[List[Tuple[float, float, float]], List[np.ndarray]]:
+        """
+        Solve camera rotation using external CoTracker tracking data from comfyui_cotracker_node.
+        
+        This allows using the CoTracker ComfyUI node (s9roll7/comfyui_cotracker_node) 
+        for point tracking, then feeding the results here for camera rotation estimation.
+        
+        Args:
+            frames: Video frames (N, H, W, 3) uint8 RGB
+            cotracker_coords: Tracking coordinates from CoTracker node
+                              Shape: (B, T, P, 2) where B=batch, T=frames, P=points, 2=xy
+            cotracker_visibility: Optional visibility mask from CoTracker
+                                  Shape: (B, T, P) boolean
+            bg_masks: Background masks (N, H, W) float, 1.0 = background
+            focal_length_px: Focal length in pixels
+            ransac_threshold: RANSAC threshold
+            verbose_debug: Print detailed per-frame info
+            
+        Returns:
+            rotations: List of (pan, tilt, roll) tuples per frame
+            debug_frames: List of debug visualization frames
+        """
+        num_frames, img_height, img_width = frames.shape[:3]
+        cx, cy = img_width / 2, img_height / 2
+        
+        # Camera intrinsic matrix
+        K = np.array([
+            [focal_length_px, 0, cx],
+            [0, focal_length_px, cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        
+        # Process CoTracker input
+        # Expected shape: (B, T, P, 2) from comfyui_cotracker_node
+        coords_np = cotracker_coords.cpu().numpy()
+        
+        # Handle different input shapes
+        if len(coords_np.shape) == 4:
+            # (B, T, P, 2) - standard format
+            coords_np = coords_np[0]  # Remove batch dimension -> (T, P, 2)
+        elif len(coords_np.shape) == 3:
+            # (T, P, 2) - already correct
+            pass
+        else:
+            print(f"[CameraSolver] CoTracker data unexpected shape: {coords_np.shape}")
+            print(f"[CameraSolver] Expected (B, T, P, 2) or (T, P, 2)")
+            return [(0.0, 0.0, 0.0)] * num_frames, [frames[i].copy() for i in range(num_frames)]
+        
+        track_frames, num_points, _ = coords_np.shape
+        print(f"[CameraSolver] External CoTracker data: {num_points} points across {track_frames} frames")
+        
+        # Handle frame count mismatch
+        if track_frames != num_frames:
+            print(f"[CameraSolver] Warning: CoTracker has {track_frames} frames, video has {num_frames}")
+            track_frames = min(track_frames, num_frames)
+        
+        # Process visibility if provided
+        if cotracker_visibility is not None:
+            vis_np = cotracker_visibility.cpu().numpy()
+            if len(vis_np.shape) == 3:
+                vis_np = vis_np[0]  # Remove batch dimension
+        else:
+            # Assume all visible
+            vis_np = np.ones((track_frames, num_points), dtype=bool)
+        
+        # Reference points from frame 0
+        pts_ref = coords_np[0]  # (P, 2)
+        
+        rotations = [(0.0, 0.0, 0.0)]  # Frame 0 is reference
+        debug_frames = []
+        
+        # Create debug frame for frame 0
+        debug_frame0 = frames[0].copy()
+        for j, pt in enumerate(pts_ref):
+            if vis_np[0, j] if j < vis_np.shape[1] else True:
+                cv2.circle(debug_frame0, (int(pt[0]), int(pt[1])), 4, (0, 255, 0), -1)
+        cv2.putText(debug_frame0, f"CoTracker External Frame 0: {num_points} points", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        debug_frames.append(debug_frame0)
+        
+        for i in range(1, track_frames):
+            # Get tracked points for this frame
+            pts_i = coords_np[i]  # (P, 2)
+            vis_i = vis_np[i] if i < vis_np.shape[0] else np.ones(num_points, dtype=bool)
+            
+            # Filter by visibility
+            valid_mask = vis_i.astype(bool)
+            
+            # Also filter by background mask if available
+            if bg_masks is not None and i < len(bg_masks):
+                for j in range(len(pts_i)):
+                    if valid_mask[j]:
+                        x, y = int(pts_i[j, 0]), int(pts_i[j, 1])
+                        if 0 <= x < img_width and 0 <= y < img_height:
+                            if bg_masks[i, y, x] < 0.5:  # In foreground
+                                valid_mask[j] = False
+                        else:
+                            valid_mask[j] = False
+            
+            pts_ref_good = pts_ref[valid_mask]
+            pts_i_good = pts_i[valid_mask]
+            
+            if len(pts_ref_good) < 8:
+                if verbose_debug:
+                    print(f"[CameraSolver] CoTracker External Frame {i}: Not enough valid points ({len(pts_ref_good)})")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                cv2.putText(debug_frame, f"Frame {i}: {len(pts_ref_good)} points (need 8+)", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                debug_frames.append(debug_frame)
+                continue
+            
+            # Estimate Essential Matrix
+            E, inliers_mask = cv2.findEssentialMat(
+                pts_ref_good, pts_i_good, K,
+                method=cv2.RANSAC,
+                prob=0.999,
+                threshold=ransac_threshold
+            )
+            
+            if E is None:
+                if verbose_debug:
+                    print(f"[CameraSolver] CoTracker External Frame {i}: Essential matrix failed")
+                rotations.append(rotations[-1])
+                debug_frame = frames[i].copy()
+                debug_frames.append(debug_frame)
+                continue
+            
+            inliers_mask = inliers_mask.ravel() if inliers_mask is not None else np.ones(len(pts_ref_good))
+            inlier_count = np.sum(inliers_mask)
+            inlier_ratio = inlier_count / len(pts_ref_good)
+            
+            # Recover rotation
+            _, R, t, _ = cv2.recoverPose(E, pts_ref_good, pts_i_good, K, 
+                                          mask=inliers_mask.copy().reshape(-1, 1).astype(np.uint8))
+            
+            pan, tilt, roll = self.rotation_matrix_to_euler(R)
+            
+            if verbose_debug or i % 10 == 0:
+                print(f"[CameraSolver] CoTracker External Frame {i}: {inlier_count}/{len(pts_ref_good)} inliers ({inlier_ratio:.1%}), pan={np.degrees(pan):.2f}°, tilt={np.degrees(tilt):.2f}°")
+            
+            rotations.append((pan, tilt, roll))
+            
+            # Create debug visualization
+            debug_frame = frames[i].copy()
+            for j, (ref_pt, cur_pt) in enumerate(zip(pts_ref_good, pts_i_good)):
+                color = (0, 255, 0) if inliers_mask[j] else (0, 0, 255)
+                cv2.circle(debug_frame, (int(cur_pt[0]), int(cur_pt[1])), 4, color, -1)
+                cv2.line(debug_frame, (int(ref_pt[0]), int(ref_pt[1])), 
+                        (int(cur_pt[0]), int(cur_pt[1])), color, 1)
+            
+            cv2.putText(debug_frame, f"CoTracker External {i}: pan={np.degrees(pan):.1f}° ({inlier_count}/{len(pts_ref_good)})", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            debug_frames.append(debug_frame)
+        
+        # Pad rotations if track_frames < num_frames
+        while len(rotations) < num_frames:
+            rotations.append(rotations[-1])
+            debug_frames.append(frames[len(debug_frames)].copy())
+        
+        print(f"[CameraSolver] CoTracker External solve complete!")
+        return rotations, debug_frames
+    
     def estimate_homography_from_flow(
         self, 
         flow: np.ndarray, 
@@ -1424,6 +1606,9 @@ class CameraRotationSolver:
         flow_threshold: float = 1.0,
         ransac_threshold: float = 3.0,
         smoothing: int = 5,
+        cotracker_coords: Optional[torch.Tensor] = None,
+        cotracker_visibility: Optional[torch.Tensor] = None,
+        verbose_debug: bool = False,
     ) -> Tuple[Dict]:
         """
         Solve for camera rotation from video frames.
@@ -1441,12 +1626,18 @@ class CameraRotationSolver:
             flow_threshold: Minimum flow magnitude (RAFT only)
             ransac_threshold: RANSAC threshold
             smoothing: Temporal smoothing window
+            cotracker_coords: Optional tracking coordinates from CoTracker node (N, T, P, 2)
+            cotracker_visibility: Optional visibility mask from CoTracker node (N, T, P)
+            verbose_debug: Enable verbose per-frame debug output
             
         Returns:
             camera_rotations: Dict with per-frame rotation data
         """
         # Check tracking method - order matters! Check specific methods before generic ones
-        use_depth_klt = "DepthAnything" in tracking_method
+        use_depth_klt = "DepthAnything" in tracking_method and "KLT" in tracking_method  # Only for "DepthAnything + KLT"
+        use_depthcrafter = "DepthCrafter" in tracking_method
+        use_duster = "DUSt3R" in tracking_method
+        use_cotracker = "CoTracker" in tracking_method
         use_klt = "KLT" in tracking_method and not use_depth_klt  # Regular KLT only if not depth-weighted
         use_orb = "ORB" in tracking_method
         use_raft = "RAFT" in tracking_method
@@ -1454,6 +1645,14 @@ class CameraRotationSolver:
         print(f"[CameraSolver] Starting camera rotation solve...")
         print(f"[CameraSolver] Tracking method: {tracking_method}")
         print(f"[CameraSolver] Input: {images.shape[0]} frames")
+        if verbose_debug:
+            print(f"[CameraSolver] Verbose debug enabled")
+        
+        # Check for CoTracker external tracking data
+        if cotracker_coords is not None:
+            print(f"[CameraSolver] External CoTracker coords provided: shape={cotracker_coords.shape}")
+            if cotracker_visibility is not None:
+                print(f"[CameraSolver] External CoTracker visibility provided: shape={cotracker_visibility.shape}")
         
         # Process external depth maps if provided
         external_depths = None
@@ -1577,12 +1776,19 @@ class CameraRotationSolver:
             return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
         
         # ==== COTRACKER AI-BASED TRACKING ====
-        use_cotracker = "CoTracker" in tracking_method
         if use_cotracker:
-            print(f"[CameraSolver] Using CoTracker AI-based tracking (handles occlusion)")
-            rotations, debug_tracking_frames, track_info = self.solve_rotation_cotracker(
-                frames, bg_masks, focal_length_px, ransac_threshold
-            )
+            # Check if external CoTracker data is provided
+            if cotracker_coords is not None:
+                print(f"[CameraSolver] Using external CoTracker tracking data")
+                rotations, debug_tracking_frames = self.solve_rotation_from_cotracker_data(
+                    frames, cotracker_coords, cotracker_visibility, 
+                    bg_masks, focal_length_px, ransac_threshold, verbose_debug
+                )
+            else:
+                print(f"[CameraSolver] Using internal CoTracker AI-based tracking (handles occlusion)")
+                rotations, debug_tracking_frames, track_info = self.solve_rotation_cotracker(
+                    frames, bg_masks, focal_length_px, ransac_threshold
+                )
             
             # Reject outliers before smoothing
             rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
@@ -1598,7 +1804,7 @@ class CameraRotationSolver:
                 "image_width": img_width,
                 "image_height": img_height,
                 "focal_length_px": focal_length_px,
-                "tracking_method": "CoTracker (AI)",
+                "tracking_method": "CoTracker (AI)" + (" - External" if cotracker_coords is not None else ""),
                 "rotations": [
                     {
                         "frame": i,
@@ -1670,7 +1876,6 @@ class CameraRotationSolver:
             return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
         
         # DUSt3R: AI-based 3D reconstruction
-        use_duster = "DUSt3R" in tracking_method
         if use_duster:
             print(f"[CameraSolver] Using DUSt3R (3D reconstruction for camera poses)")
             rotations, debug_tracking_frames = self.solve_rotation_duster(
@@ -1744,7 +1949,6 @@ class CameraRotationSolver:
             return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
         
         # DepthCrafter: Video-native depth
-        use_depthcrafter = "DepthCrafter" in tracking_method
         if use_depthcrafter:
             print(f"[CameraSolver] Using DepthCrafter (Video-native depth)")
             rotations, debug_tracking_frames = self.solve_rotation_depthcrafter(
@@ -2598,11 +2802,340 @@ class CameraRotationSolver:
             return None
 
 
+class ManualCameraData:
+    """
+    Create camera rotation data manually from external tracking software.
+    
+    Use this when you have solved the camera in Maya, 3DEqualizer, SynthEyes, 
+    PFTrack, or any other tracking application and want to use those values
+    to place the SAM3D body in world space.
+    """
+    
+    INTERPOLATION_MODES = ["Linear", "Ease In/Out", "Hold After End", "Constant"]
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "num_frames": ("INT", {
+                    "default": 50,
+                    "min": 1,
+                    "max": 10000,
+                    "tooltip": "Total number of frames in your video"
+                }),
+                "total_pan_degrees": ("FLOAT", {
+                    "default": 0.0,
+                    "min": -180.0,
+                    "max": 180.0,
+                    "step": 0.1,
+                    "tooltip": "Total camera pan (Y rotation) in degrees. Positive = pan right."
+                }),
+                "total_tilt_degrees": ("FLOAT", {
+                    "default": 0.0,
+                    "min": -90.0,
+                    "max": 90.0,
+                    "step": 0.1,
+                    "tooltip": "Total camera tilt (X rotation) in degrees. Positive = tilt up."
+                }),
+                "total_roll_degrees": ("FLOAT", {
+                    "default": 0.0,
+                    "min": -180.0,
+                    "max": 180.0,
+                    "step": 0.1,
+                    "tooltip": "Total camera roll (Z rotation) in degrees."
+                }),
+            },
+            "optional": {
+                "motion_start_frame": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 10000,
+                    "tooltip": "Frame where camera motion starts (0-indexed). Frame 0 is always the reference."
+                }),
+                "motion_end_frame": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 10000,
+                    "tooltip": "Frame where camera motion ends (-1 = last frame). After this, rotation stays constant."
+                }),
+                "interpolation": (cls.INTERPOLATION_MODES, {
+                    "default": "Hold After End",
+                    "tooltip": "How to interpolate rotation between start and end frames"
+                }),
+                "image_width": ("INT", {
+                    "default": 1280,
+                    "min": 1,
+                    "max": 8192,
+                    "tooltip": "Image width in pixels (for metadata)"
+                }),
+                "image_height": ("INT", {
+                    "default": 720,
+                    "min": 1,
+                    "max": 8192,
+                    "tooltip": "Image height in pixels (for metadata)"
+                }),
+                "focal_length_px": ("FLOAT", {
+                    "default": 1000.0,
+                    "min": 100.0,
+                    "max": 5000.0,
+                    "tooltip": "Focal length in pixels (for metadata)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("CAMERA_ROTATION_DATA",)
+    RETURN_NAMES = ("camera_rotations",)
+    FUNCTION = "create_camera_data"
+    CATEGORY = "SAM3DBody2abc/Camera"
+    
+    def create_camera_data(
+        self,
+        num_frames: int,
+        total_pan_degrees: float,
+        total_tilt_degrees: float,
+        total_roll_degrees: float,
+        motion_start_frame: int = 1,
+        motion_end_frame: int = -1,
+        interpolation: str = "Hold After End",
+        image_width: int = 1280,
+        image_height: int = 720,
+        focal_length_px: float = 1000.0,
+    ) -> Tuple[Dict]:
+        """Create camera rotation data from manual input."""
+        
+        print(f"[ManualCameraData] Creating camera data for {num_frames} frames")
+        print(f"[ManualCameraData] Total rotation: pan={total_pan_degrees}°, tilt={total_tilt_degrees}°, roll={total_roll_degrees}°")
+        
+        # Handle motion_end_frame = -1 (use last frame)
+        if motion_end_frame < 0:
+            motion_end_frame = num_frames - 1
+        
+        # Clamp to valid range
+        motion_start_frame = max(0, min(motion_start_frame, num_frames - 1))
+        motion_end_frame = max(motion_start_frame, min(motion_end_frame, num_frames - 1))
+        
+        print(f"[ManualCameraData] Motion range: frame {motion_start_frame} to {motion_end_frame}")
+        print(f"[ManualCameraData] Interpolation: {interpolation}")
+        
+        # Convert to radians
+        total_pan = np.radians(total_pan_degrees)
+        total_tilt = np.radians(total_tilt_degrees)
+        total_roll = np.radians(total_roll_degrees)
+        
+        # Generate per-frame rotations
+        rotations = []
+        
+        for i in range(num_frames):
+            if i <= motion_start_frame:
+                # Before motion starts - no rotation
+                t = 0.0
+            elif i >= motion_end_frame:
+                # After motion ends - full rotation (hold)
+                t = 1.0
+            else:
+                # During motion - interpolate
+                motion_duration = motion_end_frame - motion_start_frame
+                if motion_duration > 0:
+                    t = (i - motion_start_frame) / motion_duration
+                else:
+                    t = 1.0
+                
+                # Apply easing if requested
+                if interpolation == "Ease In/Out":
+                    # Smoothstep easing
+                    t = t * t * (3 - 2 * t)
+                elif interpolation == "Constant":
+                    # No interpolation - instant change at start
+                    t = 1.0 if i > motion_start_frame else 0.0
+            
+            pan = total_pan * t
+            tilt = total_tilt * t
+            roll = total_roll * t
+            
+            rotations.append({
+                "frame": i,
+                "pan": pan,
+                "tilt": tilt,
+                "roll": roll,
+                "pan_deg": np.degrees(pan),
+                "tilt_deg": np.degrees(tilt),
+                "roll_deg": np.degrees(roll),
+            })
+        
+        # Build output data
+        camera_rotation_data = {
+            "num_frames": num_frames,
+            "image_width": image_width,
+            "image_height": image_height,
+            "focal_length_px": focal_length_px,
+            "tracking_method": "Manual Input",
+            "motion_start_frame": motion_start_frame,
+            "motion_end_frame": motion_end_frame,
+            "rotations": rotations
+        }
+        
+        # Summary
+        final_rot = rotations[-1]
+        print(f"[ManualCameraData] Created {num_frames} frames of camera data")
+        print(f"[ManualCameraData] Final rotation: pan={final_rot['pan_deg']:.2f}°, tilt={final_rot['tilt_deg']:.2f}°, roll={final_rot['roll_deg']:.2f}°")
+        
+        return (camera_rotation_data,)
+
+
+class CameraDataFromJSON:
+    """
+    Load camera rotation data from a JSON file or string.
+    
+    Use this to import camera solve data exported from external applications.
+    
+    Expected JSON format:
+    {
+        "frames": [
+            {"frame": 0, "pan": 0.0, "tilt": 0.0, "roll": 0.0},
+            {"frame": 1, "pan": 0.5, "tilt": 0.1, "roll": 0.0},
+            ...
+        ]
+    }
+    
+    Rotation values should be in DEGREES.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "json_data": ("STRING", {
+                    "default": '{"frames": [{"frame": 0, "pan": 0, "tilt": 0, "roll": 0}]}',
+                    "multiline": True,
+                    "tooltip": "JSON string with camera rotation data, or path to JSON file"
+                }),
+            },
+            "optional": {
+                "image_width": ("INT", {
+                    "default": 1280,
+                    "min": 1,
+                    "max": 8192,
+                }),
+                "image_height": ("INT", {
+                    "default": 720,
+                    "min": 1,
+                    "max": 8192,
+                }),
+                "focal_length_px": ("FLOAT", {
+                    "default": 1000.0,
+                    "min": 100.0,
+                    "max": 5000.0,
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("CAMERA_ROTATION_DATA",)
+    RETURN_NAMES = ("camera_rotations",)
+    FUNCTION = "load_camera_data"
+    CATEGORY = "SAM3DBody2abc/Camera"
+    
+    def load_camera_data(
+        self,
+        json_data: str,
+        image_width: int = 1280,
+        image_height: int = 720,
+        focal_length_px: float = 1000.0,
+    ) -> Tuple[Dict]:
+        """Load camera rotation data from JSON."""
+        import json
+        import os
+        
+        print(f"[CameraDataFromJSON] Loading camera data...")
+        
+        # Try to load as file path first
+        data = None
+        if os.path.exists(json_data.strip()):
+            try:
+                with open(json_data.strip(), 'r') as f:
+                    data = json.load(f)
+                print(f"[CameraDataFromJSON] Loaded from file: {json_data.strip()}")
+            except Exception as e:
+                print(f"[CameraDataFromJSON] Failed to load file: {e}")
+        
+        # Try to parse as JSON string
+        if data is None:
+            try:
+                data = json.loads(json_data)
+                print(f"[CameraDataFromJSON] Parsed JSON string")
+            except Exception as e:
+                print(f"[CameraDataFromJSON] Failed to parse JSON: {e}")
+                # Return empty data
+                return ({
+                    "num_frames": 1,
+                    "image_width": image_width,
+                    "image_height": image_height,
+                    "focal_length_px": focal_length_px,
+                    "tracking_method": "JSON Import (Error)",
+                    "rotations": [{"frame": 0, "pan": 0, "tilt": 0, "roll": 0, "pan_deg": 0, "tilt_deg": 0, "roll_deg": 0}]
+                },)
+        
+        # Parse frames
+        frames_data = data.get("frames", [])
+        if not frames_data:
+            print(f"[CameraDataFromJSON] No frames found in JSON")
+            return ({
+                "num_frames": 1,
+                "image_width": image_width,
+                "image_height": image_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "JSON Import (Empty)",
+                "rotations": [{"frame": 0, "pan": 0, "tilt": 0, "roll": 0, "pan_deg": 0, "tilt_deg": 0, "roll_deg": 0}]
+            },)
+        
+        # Convert to our format
+        rotations = []
+        for frame_data in frames_data:
+            frame_idx = frame_data.get("frame", len(rotations))
+            pan_deg = frame_data.get("pan", 0.0)
+            tilt_deg = frame_data.get("tilt", 0.0)
+            roll_deg = frame_data.get("roll", 0.0)
+            
+            rotations.append({
+                "frame": frame_idx,
+                "pan": np.radians(pan_deg),
+                "tilt": np.radians(tilt_deg),
+                "roll": np.radians(roll_deg),
+                "pan_deg": pan_deg,
+                "tilt_deg": tilt_deg,
+                "roll_deg": roll_deg,
+            })
+        
+        # Sort by frame number
+        rotations.sort(key=lambda x: x["frame"])
+        
+        num_frames = len(rotations)
+        
+        # Build output
+        camera_rotation_data = {
+            "num_frames": num_frames,
+            "image_width": data.get("image_width", image_width),
+            "image_height": data.get("image_height", image_height),
+            "focal_length_px": data.get("focal_length_px", focal_length_px),
+            "tracking_method": "JSON Import",
+            "rotations": rotations
+        }
+        
+        final_rot = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0, "roll_deg": 0}
+        print(f"[CameraDataFromJSON] Loaded {num_frames} frames")
+        print(f"[CameraDataFromJSON] Final rotation: pan={final_rot['pan_deg']:.2f}°, tilt={final_rot['tilt_deg']:.2f}°")
+        
+        return (camera_rotation_data,)
+
+
 # Node registration
 NODE_CLASS_MAPPINGS = {
     "CameraRotationSolver": CameraRotationSolver,
+    "ManualCameraData": ManualCameraData,
+    "CameraDataFromJSON": CameraDataFromJSON,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CameraRotationSolver": "Camera Rotation Solver",
+    "ManualCameraData": "Manual Camera Data",
+    "CameraDataFromJSON": "Camera Data from JSON",
 }

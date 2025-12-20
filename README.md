@@ -413,6 +413,54 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.20 - External Tracking Node Integration
+Added support for external ComfyUI tracking nodes:
+
+**New Inputs:**
+- `cotracker_coords` - Accept tracking data from `comfyui_cotracker_node` (s9roll7)
+- `cotracker_visibility` - Visibility mask from CoTracker
+- `verbose_debug` - Enable detailed per-frame debug output
+
+**Compatible External Nodes:**
+| Node | GitHub | Purpose |
+|------|--------|---------|
+| ComfyUI-DepthCrafter-Nodes | akatz-ai | Temporally consistent video depth |
+| comfyui_cotracker_node | s9roll7 | AI point tracking |
+| ComfyUI-DUSt3R | logtd | 3D reconstruction |
+| ComfyUI-dust3r | chaojie | 3D reconstruction |
+| DepthAnything V2 | (various) | Per-frame depth estimation |
+
+**Workflow Examples:**
+
+1. **DepthCrafter + Camera Solver:**
+```
+Load Video → DepthCrafter → Camera Rotation Solver (depth_maps input)
+```
+
+2. **CoTracker + Camera Solver:**
+```
+Load Video → CoTrackerNode → Camera Rotation Solver (cotracker_coords input)
+```
+
+### v3.5.19 - Manual Camera Data Input
+Added two new nodes for importing external camera data:
+
+1. **Manual Camera Data** - Create camera rotation data by entering values directly
+   - Input total pan/tilt/roll in degrees
+   - Specify motion start/end frames
+   - Choose interpolation: Linear, Ease In/Out, Hold After End, Constant
+   - Perfect for when you've solved the camera in Maya/3DEqualizer/SynthEyes
+
+2. **Camera Data from JSON** - Import camera data from JSON file or string
+   - Load per-frame rotation data from external tracking software
+   - JSON format: `{"frames": [{"frame": 0, "pan": 0, "tilt": 0, "roll": 0}, ...]}`
+   - Rotation values in degrees
+
+Example workflow:
+```
+Manual Camera Data (pan=3.686°, end_frame=24) → FBX Export (camera_rotations)
+```
+
 ### v3.5.18 - Rewrite Depth-KLT with Proper Filtering
 - **REWRITE**: Complete rewrite of Depth-KLT algorithm
   - Now uses **persistent tracking from frame 0** (like regular KLT) instead of frame-to-frame
