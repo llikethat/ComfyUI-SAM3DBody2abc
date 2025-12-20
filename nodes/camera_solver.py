@@ -253,34 +253,83 @@ class CameraRotationSolver:
             return False
     
     def load_duster(self):
-        """Load DUSt3R model for 3D reconstruction."""
+        """Load DUSt3R model for 3D reconstruction.
+        Works with ComfyUI-dust3r custom node package.
+        """
         if self.duster_model is not None:
             return True
         
         try:
             print(f"[CameraSolver] Loading DUSt3R model...")
             
+            import sys
+            import os
+            
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             
-            # DUSt3R from torch hub
+            # Find ComfyUI-dust3r in custom_nodes
+            possible_paths = []
+            
             try:
-                from dust3r.inference import inference
-                from dust3r.model import AsymmetricCroCo3DStereo
-                from dust3r.utils.device import to_numpy
-                
-                model_path = "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"
-                self.duster_model = AsymmetricCroCo3DStereo.from_pretrained(model_path)
-                self.duster_model = self.duster_model.to(self.device).eval()
-                self.duster_type = "native"
+                import folder_paths
+                comfy_path = os.path.dirname(folder_paths.__file__)
+                possible_paths.append(os.path.join(comfy_path, 'custom_nodes', 'ComfyUI-dust3r'))
+                possible_paths.append(os.path.join(comfy_path, 'custom_nodes', 'ComfyUI-dust3r-main'))
+            except ImportError:
+                pass
+            
+            # Add common paths
+            possible_paths.extend([
+                '/workspace/ComfyUI/custom_nodes/ComfyUI-dust3r',
+                '/workspace/ComfyUI/custom_nodes/ComfyUI-dust3r-main',
+                os.path.expanduser('~/ComfyUI/custom_nodes/ComfyUI-dust3r'),
+            ])
+            
+            dust3r_path = None
+            for path in possible_paths:
+                if os.path.exists(path) and os.path.isdir(path):
+                    # Check if it has the dust3r subfolder
+                    if os.path.exists(os.path.join(path, 'dust3r')):
+                        dust3r_path = path
+                        break
+            
+            if dust3r_path is None:
+                print(f"[CameraSolver] ComfyUI-dust3r not found in custom_nodes")
+                print(f"[CameraSolver] Install via ComfyUI Manager or clone from:")
+                print(f"[CameraSolver]   https://github.com/chaojie/ComfyUI-dust3r")
+                return False
+            
+            # Add to sys.path
+            if dust3r_path not in sys.path:
+                sys.path.insert(0, dust3r_path)
+                print(f"[CameraSolver] Added {dust3r_path} to path")
+            
+            # Check for checkpoint
+            checkpoint_dir = os.path.join(dust3r_path, 'checkpoints')
+            checkpoint_path = os.path.join(checkpoint_dir, 'DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth')
+            
+            if not os.path.exists(checkpoint_path):
+                print(f"[CameraSolver] DUSt3R checkpoint not found")
+                print(f"[CameraSolver] Download from: https://download.europe.naverlabs.com/ComputerVision/DUSt3R/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth")
+                print(f"[CameraSolver] Place in: {checkpoint_dir}")
+                return False
+            
+            # Import and load model
+            try:
+                from dust3r.inference import load_model
+                self.duster_model = load_model(checkpoint_path, self.device)
+                self.duster_path = dust3r_path
                 print(f"[CameraSolver] DUSt3R loaded successfully")
                 return True
-            except ImportError:
-                print(f"[CameraSolver] DUSt3R not installed. Run: pip install dust3r")
-                print(f"[CameraSolver] Or clone from: https://github.com/naver/dust3r")
+            except ImportError as e:
+                print(f"[CameraSolver] Failed to import dust3r: {e}")
+                print(f"[CameraSolver] Try: pip install roma huggingface-hub>=0.22")
                 return False
                 
         except Exception as e:
             print(f"[CameraSolver] Failed to load DUSt3R: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def load_depthcrafter(self):
@@ -2392,8 +2441,12 @@ class CameraRotationSolver:
         """
         Use DUSt3R for 3D reconstruction and camera pose estimation.
         DUSt3R directly predicts relative camera poses between frame pairs.
+        
+        This method uses the ComfyUI-dust3r package which must be installed
+        in ComfyUI/custom_nodes/ComfyUI-dust3r
         """
         num_frames = frames.shape[0]
+        img_height, img_width = frames.shape[1:3]
         
         if not self.load_duster():
             print(f"[CameraSolver] DUSt3R not available, falling back to KLT")
@@ -2406,49 +2459,78 @@ class CameraRotationSolver:
             from dust3r.utils.image import load_images
             from dust3r.image_pairs import make_pairs
             from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
+            from dust3r.utils.device import to_numpy
             import tempfile
             import os
+            from PIL import Image
             
             # Save frames to temp directory for DUSt3R
             with tempfile.TemporaryDirectory() as tmpdir:
                 image_paths = []
                 for i, frame in enumerate(frames):
                     path = os.path.join(tmpdir, f"frame_{i:04d}.png")
-                    cv2.imwrite(path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    # Convert BGR to RGB if needed and save
+                    img = Image.fromarray(frame)
+                    img.save(path)
                     image_paths.append(path)
                 
-                # Load images for DUSt3R
+                print(f"[CameraSolver] DUSt3R: Loading {len(image_paths)} images...")
+                
+                # Load images for DUSt3R (resizes to 512)
                 images = load_images(image_paths, size=512)
                 
-                # Create pairs (sequential)
-                pairs = make_pairs(images, scene_graph='swin', prefilter=None, symmetrize=True)
+                print(f"[CameraSolver] DUSt3R: Creating image pairs...")
+                
+                # Create pairs - use 'complete' for small sequences, 'swin' for longer
+                if num_frames <= 10:
+                    scene_graph = 'complete'
+                else:
+                    scene_graph = 'swin-5'  # sliding window of 5
+                
+                pairs = make_pairs(images, scene_graph=scene_graph, prefilter=None, symmetrize=True)
+                print(f"[CameraSolver] DUSt3R: Created {len(pairs)} pairs using '{scene_graph}' graph")
                 
                 # Run inference
-                output = inference(pairs, self.duster_model, self.device, batch_size=1)
+                print(f"[CameraSolver] DUSt3R: Running inference...")
+                output = inference(pairs, self.duster_model, self.device, batch_size=1, verbose=True)
                 
                 # Global alignment to get camera poses
-                scene = global_aligner(output, device=self.device, mode=GlobalAlignerMode.PointCloudOptimizer)
-                scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
+                print(f"[CameraSolver] DUSt3R: Running global alignment...")
+                mode = GlobalAlignerMode.PointCloudOptimizer if num_frames > 2 else GlobalAlignerMode.PairViewer
+                scene = global_aligner(output, device=self.device, mode=mode)
                 
-                # Extract camera poses
-                poses = scene.get_im_poses()  # List of 4x4 matrices
+                if mode == GlobalAlignerMode.PointCloudOptimizer:
+                    loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
+                    print(f"[CameraSolver] DUSt3R: Global alignment complete, final loss={loss:.4f}")
+                
+                # Extract camera poses (cam-to-world 4x4 matrices)
+                poses = scene.get_im_poses()  # Tensor of shape (N, 4, 4)
+                poses_np = to_numpy(poses)
+                
+                print(f"[CameraSolver] DUSt3R: Extracted {len(poses_np)} camera poses")
                 
                 # Convert to rotations relative to frame 0
                 rotations = [(0.0, 0.0, 0.0)]
-                pose0_inv = np.linalg.inv(poses[0].cpu().numpy())
+                pose0_inv = np.linalg.inv(poses_np[0])
                 
-                for i in range(1, len(poses)):
-                    pose_rel = pose0_inv @ poses[i].cpu().numpy()
+                for i in range(1, len(poses_np)):
+                    # Get relative pose from frame 0 to frame i
+                    pose_rel = pose0_inv @ poses_np[i]
                     R = pose_rel[:3, :3]
-                    rvec, _ = cv2.Rodrigues(R)
-                    pan = rvec[1, 0]
-                    tilt = rvec[0, 0]
-                    roll = rvec[2, 0]
+                    
+                    # Convert rotation matrix to Euler angles using our consistent method
+                    pan, tilt, roll = self.rotation_matrix_to_euler(R)
+                    
+                    if i % 10 == 0 or i == len(poses_np) - 1:
+                        print(f"[CameraSolver] DUSt3R Frame {i}: pan={np.degrees(pan):.2f}°, tilt={np.degrees(tilt):.2f}°, roll={np.degrees(roll):.2f}°")
+                    
                     rotations.append((pan, tilt, roll))
                 
-                print(f"[CameraSolver] DUSt3R: Extracted {len(rotations)} camera poses")
+                print(f"[CameraSolver] DUSt3R: Pose extraction complete!")
+                final_rot = rotations[-1]
+                print(f"[CameraSolver] DUSt3R Final: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°")
                 
-                # Debug frames
+                # Debug frames with pose visualization
                 debug_tracking_frames = []
                 for i, frame in enumerate(frames):
                     debug_frame = frame.copy()
@@ -2461,6 +2543,8 @@ class CameraRotationSolver:
                 
         except Exception as e:
             print(f"[CameraSolver] DUSt3R failed: {e}")
+            import traceback
+            traceback.print_exc()
             print(f"[CameraSolver] Falling back to KLT")
             return self.solve_rotation_klt_persistent(frames, None, focal_length_px, 3.0)[:2]
     
