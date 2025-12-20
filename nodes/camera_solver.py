@@ -2518,7 +2518,7 @@ class CameraRotationSolver:
                 
                 # Run inference
                 print(f"[CameraSolver] DUSt3R: Running inference...")
-                output = inference(pairs, self.duster_model, self.device, batch_size=1, verbose=True)
+                output = inference(pairs, self.duster_model, self.device, batch_size=1)
                 
                 # Global alignment to get camera poses
                 print(f"[CameraSolver] DUSt3R: Running global alignment...")
