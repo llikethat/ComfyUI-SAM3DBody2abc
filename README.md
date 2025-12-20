@@ -413,6 +413,11 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.17 - Fix DepthAnything+KLT Dispatch
+- **BUGFIX**: Fixed tracking method dispatch - "DepthAnything + KLT" was incorrectly using regular KLT
+  - "DepthAnything + KLT" contains "KLT", so it matched regular KLT first
+  - Now correctly routes to depth-weighted tracking when selected
+
 ### v3.5.16 - External Depth Maps Input
 - **NEW**: Added `depth_maps` input to Camera Rotation Solver
   - Connect output from DepthAnything V2, MiDaS, ZoeDepth, or any depth node

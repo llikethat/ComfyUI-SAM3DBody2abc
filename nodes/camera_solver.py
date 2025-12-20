@@ -1445,7 +1445,9 @@ class CameraRotationSolver:
         Returns:
             camera_rotations: Dict with per-frame rotation data
         """
-        use_klt = "KLT" in tracking_method
+        # Check tracking method - order matters! Check specific methods before generic ones
+        use_depth_klt = "DepthAnything" in tracking_method
+        use_klt = "KLT" in tracking_method and not use_depth_klt  # Regular KLT only if not depth-weighted
         use_orb = "ORB" in tracking_method
         use_raft = "RAFT" in tracking_method
         
@@ -1630,7 +1632,6 @@ class CameraRotationSolver:
         # ==== DEPTH-BASED TRACKING METHODS ====
         
         # DepthAnything + KLT: Use depth to weight background features
-        use_depth_klt = "DepthAnything" in tracking_method
         if use_depth_klt:
             print(f"[CameraSolver] Using DepthAnything + KLT (depth-weighted tracking)")
             if external_depths is not None:
