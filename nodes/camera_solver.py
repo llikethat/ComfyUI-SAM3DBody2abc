@@ -2587,53 +2587,28 @@ class CameraRotationSolver:
                 # Ensure model is in float32
                 self.duster_model = self.duster_model.float()
                 
-                # Save current default dtype and set to float32
-                original_dtype = torch.get_default_dtype()
-                torch.set_default_dtype(torch.float32)
-                
                 # Disable autocast to prevent BFloat16
                 with torch.cuda.amp.autocast(enabled=False):
                     output = inference(pairs, self.duster_model, self.device, batch_size=1)
                 
-                # Convert output tensors to float32 (extra safety)
-                def convert_to_float32(obj):
-                    if isinstance(obj, torch.Tensor):
-                        return obj.float()
-                    elif isinstance(obj, dict):
-                        return {k: convert_to_float32(v) for k, v in obj.items()}
-                    elif isinstance(obj, list):
-                        return [convert_to_float32(v) for v in obj]
-                    return obj
-                
-                output = convert_to_float32(output)
-                print(f"[CameraSolver] DUSt3R: Inference complete, output converted to float32")
+                print(f"[CameraSolver] DUSt3R: Inference complete")
                 
                 # Global alignment to get camera poses
                 print(f"[CameraSolver] DUSt3R: Running global alignment...")
                 mode = GlobalAlignerMode.PointCloudOptimizer if num_frames > 2 else GlobalAlignerMode.PairViewer
                 
-                # Create scene and ensure float32
-                with torch.cuda.amp.autocast(enabled=False):
+                # Create scene (don't convert to float32 as it breaks gradients)
+                # The patched inv functions handle BFloat16 conversion
+                # Enable gradients (ComfyUI might run with no_grad)
+                with torch.enable_grad(), torch.cuda.amp.autocast(enabled=False):
                     scene = global_aligner(output, device=self.device, mode=mode)
-                    
-                    # Force entire scene module to float32
-                    scene = scene.to(dtype=torch.float32)
-                    
-                    # Also ensure all nested dict attributes are float32
-                    for attr_name in ['pred_i', 'pred_j', 'conf_i', 'conf_j']:
-                        if hasattr(scene, attr_name):
-                            attr = getattr(scene, attr_name)
-                            if isinstance(attr, dict):
-                                for k, v in attr.items():
-                                    if isinstance(v, torch.Tensor) and v.dtype == torch.bfloat16:
-                                        attr[k] = v.float()
-                    
+                
+                # Run optimization outside autocast to preserve gradients
+                # Explicitly enable gradients (ComfyUI might have them disabled)
+                with torch.enable_grad():
                     if mode == GlobalAlignerMode.PointCloudOptimizer:
                         loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
                         print(f"[CameraSolver] DUSt3R: Global alignment complete, final loss={loss:.4f}")
-                
-                # Restore dtype
-                torch.set_default_dtype(original_dtype)
                 
                 # Extract camera poses (cam-to-world 4x4 matrices)
                 poses = scene.get_im_poses()  # Tensor of shape (N, 4, 4)
