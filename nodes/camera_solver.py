@@ -2599,16 +2599,18 @@ class CameraRotationSolver:
                 
                 # Create scene (don't convert to float32 as it breaks gradients)
                 # The patched inv functions handle BFloat16 conversion
-                # Enable gradients (ComfyUI might run with no_grad)
-                with torch.enable_grad(), torch.cuda.amp.autocast(enabled=False):
+                with torch.cuda.amp.autocast(enabled=False):
                     scene = global_aligner(output, device=self.device, mode=mode)
                 
-                # Run optimization outside autocast to preserve gradients
-                # Explicitly enable gradients (ComfyUI might have them disabled)
-                with torch.enable_grad():
-                    if mode == GlobalAlignerMode.PointCloudOptimizer:
-                        loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
-                        print(f"[CameraSolver] DUSt3R: Global alignment complete, final loss={loss:.4f}")
+                # For PointCloudOptimizer, use MST initialization only (skip gradient optimization)
+                # dust3r's inference uses @torch.no_grad(), so outputs don't have gradients
+                # MST initialization uses PnP RANSAC which doesn't need gradients
+                if mode == GlobalAlignerMode.PointCloudOptimizer:
+                    print(f"[CameraSolver] DUSt3R: Running MST initialization (no gradient refinement)")
+                    # Use the already-imported and patched init_im_poses module
+                    with torch.no_grad():
+                        init_im_poses_module.init_minimum_spanning_tree(scene, niter_PnP=100)
+                    print(f"[CameraSolver] DUSt3R: MST initialization complete")
                 
                 # Extract camera poses (cam-to-world 4x4 matrices)
                 poses = scene.get_im_poses()  # Tensor of shape (N, 4, 4)
