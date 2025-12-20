@@ -2591,47 +2591,46 @@ class CameraRotationSolver:
                 original_dtype = torch.get_default_dtype()
                 torch.set_default_dtype(torch.float32)
                 
-                try:
-                    # Disable autocast to prevent BFloat16
-                    with torch.cuda.amp.autocast(enabled=False):
-                        output = inference(pairs, self.duster_model, self.device, batch_size=1)
+                # Disable autocast to prevent BFloat16
+                with torch.cuda.amp.autocast(enabled=False):
+                    output = inference(pairs, self.duster_model, self.device, batch_size=1)
+                
+                # Convert output tensors to float32 (extra safety)
+                def convert_to_float32(obj):
+                    if isinstance(obj, torch.Tensor):
+                        return obj.float()
+                    elif isinstance(obj, dict):
+                        return {k: convert_to_float32(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [convert_to_float32(v) for v in obj]
+                    return obj
+                
+                output = convert_to_float32(output)
+                print(f"[CameraSolver] DUSt3R: Inference complete, output converted to float32")
+                
+                # Global alignment to get camera poses
+                print(f"[CameraSolver] DUSt3R: Running global alignment...")
+                mode = GlobalAlignerMode.PointCloudOptimizer if num_frames > 2 else GlobalAlignerMode.PairViewer
+                
+                # Create scene and ensure float32
+                with torch.cuda.amp.autocast(enabled=False):
+                    scene = global_aligner(output, device=self.device, mode=mode)
                     
-                    # Convert output tensors to float32 (extra safety)
-                    def convert_to_float32(obj):
-                        if isinstance(obj, torch.Tensor):
-                            return obj.float()
-                        elif isinstance(obj, dict):
-                            return {k: convert_to_float32(v) for k, v in obj.items()}
-                        elif isinstance(obj, list):
-                            return [convert_to_float32(v) for v in obj]
-                        return obj
+                    # Force entire scene module to float32
+                    scene = scene.to(dtype=torch.float32)
                     
-                    output = convert_to_float32(output)
-                    print(f"[CameraSolver] DUSt3R: Inference complete, output converted to float32")
+                    # Also ensure all nested dict attributes are float32
+                    for attr_name in ['pred_i', 'pred_j', 'conf_i', 'conf_j']:
+                        if hasattr(scene, attr_name):
+                            attr = getattr(scene, attr_name)
+                            if isinstance(attr, dict):
+                                for k, v in attr.items():
+                                    if isinstance(v, torch.Tensor) and v.dtype == torch.bfloat16:
+                                        attr[k] = v.float()
                     
-                    # Global alignment to get camera poses
-                    print(f"[CameraSolver] DUSt3R: Running global alignment...")
-                    mode = GlobalAlignerMode.PointCloudOptimizer if num_frames > 2 else GlobalAlignerMode.PairViewer
-                    
-                    # Create scene and ensure float32
-                    with torch.cuda.amp.autocast(enabled=False):
-                        scene = global_aligner(output, device=self.device, mode=mode)
-                        
-                        # Force entire scene module to float32
-                        scene = scene.to(dtype=torch.float32)
-                        
-                        # Also ensure all nested dict attributes are float32
-                        for attr_name in ['pred_i', 'pred_j', 'conf_i', 'conf_j']:
-                            if hasattr(scene, attr_name):
-                                attr = getattr(scene, attr_name)
-                                if isinstance(attr, dict):
-                                    for k, v in attr.items():
-                                        if isinstance(v, torch.Tensor) and v.dtype == torch.bfloat16:
-                                            attr[k] = v.float()
-                        
-                        if mode == GlobalAlignerMode.PointCloudOptimizer:
-                            loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
-                            print(f"[CameraSolver] DUSt3R: Global alignment complete, final loss={loss:.4f}")
+                    if mode == GlobalAlignerMode.PointCloudOptimizer:
+                        loss = scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
+                        print(f"[CameraSolver] DUSt3R: Global alignment complete, final loss={loss:.4f}")
                 
                 # Restore dtype
                 torch.set_default_dtype(original_dtype)
