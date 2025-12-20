@@ -33,9 +33,24 @@ class CameraRotationSolver:
     """
     Estimates camera rotation from video frames using background optical flow.
     Automatically masks all people using YOLO, or accepts manual masks.
+    
+    Depth-based methods available for more robust tracking:
+    - DepthAnything: Uses depth to prioritize distant (background) features
+    - DUSt3R: AI-based 3D reconstruction for camera poses
+    - COLMAP: Traditional Structure from Motion
+    - DepthCrafter: Video-native temporally consistent depth
     """
     
-    TRACKING_METHODS = ["KLT (Persistent)", "CoTracker (AI)", "ORB (Feature-Based)", "RAFT (Dense Flow)"]
+    TRACKING_METHODS = [
+        "KLT (Persistent)", 
+        "CoTracker (AI)", 
+        "ORB (Feature-Based)", 
+        "RAFT (Dense Flow)",
+        "DepthAnything + KLT",
+        "DUSt3R (3D Reconstruction)",
+        "COLMAP (Structure from Motion)",
+        "DepthCrafter (Video Depth)"
+    ]
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -48,7 +63,7 @@ class CameraRotationSolver:
                 "sam3_masks": ("SAM3_VIDEO_MASKS",),
                 "tracking_method": (cls.TRACKING_METHODS, {
                     "default": "KLT (Persistent)",
-                    "tooltip": "KLT: Professional persistent tracking (fast, CPU). CoTracker: AI-based, handles occlusion (GPU). ORB: Sparse features. RAFT: Dense flow."
+                    "tooltip": "KLT: Fast CPU tracking. CoTracker: AI-based (GPU). DepthAnything+KLT: Depth-weighted. DUSt3R: 3D reconstruction. COLMAP: Structure from Motion. DepthCrafter: Video depth."
                 }),
                 "auto_mask_people": ("BOOLEAN", {
                     "default": True,
@@ -106,6 +121,11 @@ class CameraRotationSolver:
         self.yolo_model = None
         self.device = None
         self.debug_points = []  # Store tracked points for visualization
+        # Depth models
+        self.depth_anything_model = None
+        self.depth_anything_transform = None
+        self.duster_model = None
+        self.depthcrafter_model = None
     
     def load_raft(self):
         """Load RAFT model from torchvision."""
@@ -155,6 +175,182 @@ class CameraRotationSolver:
         except Exception as e:
             print(f"[CameraSolver] Warning: Failed to load YOLO model: {e}")
             return False
+    
+    def load_depth_anything(self):
+        """Load DepthAnything V2 model for monocular depth estimation."""
+        if self.depth_anything_model is not None:
+            return True
+        
+        try:
+            # Try to import depth_anything_v2
+            print(f"[CameraSolver] Loading DepthAnything V2 model...")
+            
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # Try different import methods
+            try:
+                # Method 1: HuggingFace transformers
+                from transformers import pipeline
+                self.depth_anything_model = pipeline(
+                    task="depth-estimation",
+                    model="depth-anything/Depth-Anything-V2-Small-hf",
+                    device=0 if torch.cuda.is_available() else -1
+                )
+                self.depth_anything_type = "pipeline"
+                print(f"[CameraSolver] DepthAnything V2 loaded via HuggingFace pipeline")
+                return True
+            except Exception as e1:
+                print(f"[CameraSolver] HuggingFace pipeline failed: {e1}")
+                
+                # Method 2: Try torch hub
+                try:
+                    self.depth_anything_model = torch.hub.load(
+                        'LiheYoung/Depth-Anything', 
+                        'depth_anything_vits14',
+                        pretrained=True
+                    )
+                    self.depth_anything_model = self.depth_anything_model.to(self.device).eval()
+                    self.depth_anything_type = "torch_hub"
+                    print(f"[CameraSolver] DepthAnything loaded via torch hub")
+                    return True
+                except Exception as e2:
+                    print(f"[CameraSolver] Torch hub failed: {e2}")
+                    
+                    # Method 3: Use MiDaS as fallback
+                    try:
+                        print(f"[CameraSolver] Falling back to MiDaS...")
+                        self.depth_anything_model = torch.hub.load(
+                            'intel-isl/MiDaS', 
+                            'MiDaS_small',
+                            pretrained=True
+                        )
+                        self.depth_anything_model = self.depth_anything_model.to(self.device).eval()
+                        
+                        midas_transforms = torch.hub.load('intel-isl/MiDaS', 'transforms')
+                        self.depth_anything_transform = midas_transforms.small_transform
+                        self.depth_anything_type = "midas"
+                        print(f"[CameraSolver] MiDaS loaded as depth fallback")
+                        return True
+                    except Exception as e3:
+                        print(f"[CameraSolver] MiDaS also failed: {e3}")
+                        return False
+                        
+        except Exception as e:
+            print(f"[CameraSolver] Failed to load depth model: {e}")
+            return False
+    
+    def load_duster(self):
+        """Load DUSt3R model for 3D reconstruction."""
+        if self.duster_model is not None:
+            return True
+        
+        try:
+            print(f"[CameraSolver] Loading DUSt3R model...")
+            
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # DUSt3R from torch hub
+            try:
+                from dust3r.inference import inference
+                from dust3r.model import AsymmetricCroCo3DStereo
+                from dust3r.utils.device import to_numpy
+                
+                model_path = "naver/DUSt3R_ViTLarge_BaseDecoder_512_dpt"
+                self.duster_model = AsymmetricCroCo3DStereo.from_pretrained(model_path)
+                self.duster_model = self.duster_model.to(self.device).eval()
+                self.duster_type = "native"
+                print(f"[CameraSolver] DUSt3R loaded successfully")
+                return True
+            except ImportError:
+                print(f"[CameraSolver] DUSt3R not installed. Run: pip install dust3r")
+                print(f"[CameraSolver] Or clone from: https://github.com/naver/dust3r")
+                return False
+                
+        except Exception as e:
+            print(f"[CameraSolver] Failed to load DUSt3R: {e}")
+            return False
+    
+    def load_depthcrafter(self):
+        """Load DepthCrafter model for video depth estimation."""
+        if self.depthcrafter_model is not None:
+            return True
+        
+        try:
+            print(f"[CameraSolver] Loading DepthCrafter model...")
+            
+            # DepthCrafter uses diffusers
+            try:
+                from diffusers import DiffusionPipeline
+                
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                
+                self.depthcrafter_model = DiffusionPipeline.from_pretrained(
+                    "tencent/DepthCrafter",
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+                )
+                self.depthcrafter_model = self.depthcrafter_model.to(self.device)
+                print(f"[CameraSolver] DepthCrafter loaded successfully")
+                return True
+            except Exception as e:
+                print(f"[CameraSolver] DepthCrafter not available: {e}")
+                print(f"[CameraSolver] Install with: pip install diffusers")
+                return False
+                
+        except Exception as e:
+            print(f"[CameraSolver] Failed to load DepthCrafter: {e}")
+            return False
+    
+    def estimate_depth(self, frame: np.ndarray) -> np.ndarray:
+        """
+        Estimate depth for a single frame using loaded depth model.
+        
+        Args:
+            frame: RGB image (H, W, C) uint8
+            
+        Returns:
+            depth: Depth map (H, W) float32, higher = further
+        """
+        if self.depth_anything_model is None:
+            return None
+        
+        h, w = frame.shape[:2]
+        
+        try:
+            if self.depth_anything_type == "pipeline":
+                # HuggingFace pipeline
+                from PIL import Image
+                img = Image.fromarray(frame)
+                result = self.depth_anything_model(img)
+                depth = np.array(result["depth"])
+                depth = cv2.resize(depth, (w, h))
+                return depth.astype(np.float32)
+                
+            elif self.depth_anything_type == "midas":
+                # MiDaS
+                input_batch = self.depth_anything_transform(frame).to(self.device)
+                with torch.no_grad():
+                    prediction = self.depth_anything_model(input_batch)
+                    prediction = torch.nn.functional.interpolate(
+                        prediction.unsqueeze(1),
+                        size=(h, w),
+                        mode="bicubic",
+                        align_corners=False,
+                    ).squeeze()
+                depth = prediction.cpu().numpy()
+                return depth.astype(np.float32)
+                
+            else:
+                # torch_hub DepthAnything
+                from PIL import Image
+                img = Image.fromarray(frame)
+                with torch.no_grad():
+                    depth = self.depth_anything_model.infer_image(img)
+                depth = cv2.resize(depth, (w, h))
+                return depth.astype(np.float32)
+                
+        except Exception as e:
+            print(f"[CameraSolver] Depth estimation failed: {e}")
+            return None
     
     def detect_people_yolo(
         self, 
@@ -1409,6 +1605,156 @@ class CameraRotationSolver:
             
             return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
         
+        # ==== DEPTH-BASED TRACKING METHODS ====
+        
+        # DepthAnything + KLT: Use depth to weight background features
+        use_depth_klt = "DepthAnything" in tracking_method
+        if use_depth_klt:
+            print(f"[CameraSolver] Using DepthAnything + KLT (depth-weighted tracking)")
+            rotations, debug_tracking_frames = self.solve_rotation_depth_klt(
+                frames, bg_masks, focal_length_px, ransac_threshold
+            )
+            
+            # Reject outliers and smooth
+            rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
+            if smoothing > 1:
+                rotations = self.smooth_rotations(rotations, smoothing)
+                print(f"[CameraSolver] Applied smoothing (window={smoothing})")
+            
+            # Build output
+            camera_rotation_data = {
+                "num_frames": num_frames,
+                "image_width": img_width,
+                "image_height": img_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "DepthAnything + KLT",
+                "rotations": [
+                    {"frame": i, "pan": rot[0], "tilt": rot[1], "roll": rot[2],
+                     "pan_deg": np.degrees(rot[0]), "tilt_deg": np.degrees(rot[1]), "roll_deg": np.degrees(rot[2])}
+                    for i, rot in enumerate(rotations)
+                ]
+            }
+            
+            final_rot = rotations[-1] if rotations else (0, 0, 0)
+            print(f"[CameraSolver] Solve complete! Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°")
+            
+            debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float() if fg_masks_for_debug is not None else torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+            debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+            
+            return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+        
+        # DUSt3R: AI-based 3D reconstruction
+        use_duster = "DUSt3R" in tracking_method
+        if use_duster:
+            print(f"[CameraSolver] Using DUSt3R (3D reconstruction for camera poses)")
+            rotations, debug_tracking_frames = self.solve_rotation_duster(
+                frames, focal_length_px
+            )
+            
+            # Reject outliers and smooth
+            rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
+            if smoothing > 1:
+                rotations = self.smooth_rotations(rotations, smoothing)
+                print(f"[CameraSolver] Applied smoothing (window={smoothing})")
+            
+            # Build output
+            camera_rotation_data = {
+                "num_frames": num_frames,
+                "image_width": img_width,
+                "image_height": img_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "DUSt3R (3D Reconstruction)",
+                "rotations": [
+                    {"frame": i, "pan": rot[0], "tilt": rot[1], "roll": rot[2],
+                     "pan_deg": np.degrees(rot[0]), "tilt_deg": np.degrees(rot[1]), "roll_deg": np.degrees(rot[2])}
+                    for i, rot in enumerate(rotations)
+                ]
+            }
+            
+            final_rot = rotations[-1] if rotations else (0, 0, 0)
+            print(f"[CameraSolver] Solve complete! Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°")
+            
+            debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float() if fg_masks_for_debug is not None else torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+            debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+            
+            return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+        
+        # COLMAP: Structure from Motion
+        use_colmap = "COLMAP" in tracking_method
+        if use_colmap:
+            print(f"[CameraSolver] Using COLMAP (Structure from Motion)")
+            rotations, debug_tracking_frames = self.solve_rotation_colmap(
+                frames, focal_length_px
+            )
+            
+            # Reject outliers and smooth
+            rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
+            if smoothing > 1:
+                rotations = self.smooth_rotations(rotations, smoothing)
+                print(f"[CameraSolver] Applied smoothing (window={smoothing})")
+            
+            # Build output
+            camera_rotation_data = {
+                "num_frames": num_frames,
+                "image_width": img_width,
+                "image_height": img_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "COLMAP (Structure from Motion)",
+                "rotations": [
+                    {"frame": i, "pan": rot[0], "tilt": rot[1], "roll": rot[2],
+                     "pan_deg": np.degrees(rot[0]), "tilt_deg": np.degrees(rot[1]), "roll_deg": np.degrees(rot[2])}
+                    for i, rot in enumerate(rotations)
+                ]
+            }
+            
+            final_rot = rotations[-1] if rotations else (0, 0, 0)
+            print(f"[CameraSolver] Solve complete! Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°")
+            
+            debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float() if fg_masks_for_debug is not None else torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+            debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+            
+            return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+        
+        # DepthCrafter: Video-native depth
+        use_depthcrafter = "DepthCrafter" in tracking_method
+        if use_depthcrafter:
+            print(f"[CameraSolver] Using DepthCrafter (Video-native depth)")
+            rotations, debug_tracking_frames = self.solve_rotation_depthcrafter(
+                frames, bg_masks, focal_length_px
+            )
+            
+            # Reject outliers and smooth
+            rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
+            if smoothing > 1:
+                rotations = self.smooth_rotations(rotations, smoothing)
+                print(f"[CameraSolver] Applied smoothing (window={smoothing})")
+            
+            # Build output
+            camera_rotation_data = {
+                "num_frames": num_frames,
+                "image_width": img_width,
+                "image_height": img_height,
+                "focal_length_px": focal_length_px,
+                "tracking_method": "DepthCrafter (Video Depth)",
+                "rotations": [
+                    {"frame": i, "pan": rot[0], "tilt": rot[1], "roll": rot[2],
+                     "pan_deg": np.degrees(rot[0]), "tilt_deg": np.degrees(rot[1]), "roll_deg": np.degrees(rot[2])}
+                    for i, rot in enumerate(rotations)
+                ]
+            }
+            
+            final_rot = rotations[-1] if rotations else (0, 0, 0)
+            print(f"[CameraSolver] Solve complete! Total rotation: pan={np.degrees(final_rot[0]):.2f}°, tilt={np.degrees(final_rot[1]):.2f}°")
+            
+            debug_masks_tensor = torch.from_numpy(fg_masks_for_debug).float() if fg_masks_for_debug is not None else torch.zeros((num_frames, img_height, img_width), dtype=torch.float32)
+            debug_tracking_array = np.stack(debug_tracking_frames, axis=0)
+            debug_tracking_tensor = torch.from_numpy(debug_tracking_array).float() / 255.0
+            
+            return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+        
         # ==== ORB / RAFT FRAME-TO-FRAME TRACKING ====
         # Prepare debug outputs
         debug_tracking_frames = []
@@ -1570,6 +1916,477 @@ class CameraRotationSolver:
         print(f"[CameraSolver] Debug tracking tensor: shape={debug_tracking_tensor.shape}, range=[{debug_tracking_tensor.min():.2f}-{debug_tracking_tensor.max():.2f}]")
         
         return (camera_rotation_data, debug_masks_tensor, debug_tracking_tensor)
+    
+    # ==== DEPTH-BASED TRACKING IMPLEMENTATIONS ====
+    
+    def solve_rotation_depth_klt(self, frames, bg_masks, focal_length_px, ransac_threshold):
+        """
+        Use depth estimation to weight KLT features by distance.
+        Prioritizes distant (background) features for more accurate camera rotation.
+        """
+        num_frames = frames.shape[0]
+        img_height, img_width = frames.shape[1:3]
+        
+        # Load depth model
+        if not self.load_depth_anything():
+            print(f"[CameraSolver] DepthAnything failed, falling back to regular KLT")
+            return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)[:2]
+        
+        print(f"[CameraSolver] Estimating depth for {num_frames} frames...")
+        
+        # Estimate depth for all frames
+        depths = []
+        for i in range(num_frames):
+            depth = self.estimate_depth(frames[i])
+            if depth is not None:
+                depths.append(depth)
+            else:
+                depths.append(np.ones((img_height, img_width), dtype=np.float32))
+            if i % 10 == 0:
+                print(f"[CameraSolver] Depth estimated for frame {i}/{num_frames}")
+        
+        # Convert to grayscale
+        gray_frames = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
+        
+        # KLT parameters
+        feature_params = dict(maxCorners=500, qualityLevel=0.01, minDistance=10, blockSize=7)
+        lk_params = dict(winSize=(21, 21), maxLevel=3, 
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+        
+        # Detect features in first frame
+        mask0 = (bg_masks[0] * 255).astype(np.uint8) if bg_masks is not None else None
+        p0 = cv2.goodFeaturesToTrack(gray_frames[0], mask=mask0, **feature_params)
+        
+        if p0 is None or len(p0) < 10:
+            print(f"[CameraSolver] Not enough features, falling back to regular KLT")
+            return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, ransac_threshold)[:2]
+        
+        # Weight features by depth (higher depth = further = more reliable for camera)
+        depth0 = depths[0]
+        feature_weights = []
+        for pt in p0:
+            x, y = int(pt[0][0]), int(pt[0][1])
+            x = min(max(x, 0), img_width - 1)
+            y = min(max(y, 0), img_height - 1)
+            weight = depth0[y, x]
+            feature_weights.append(weight)
+        
+        feature_weights = np.array(feature_weights)
+        # Normalize weights to 0-1 range
+        if feature_weights.max() > feature_weights.min():
+            feature_weights = (feature_weights - feature_weights.min()) / (feature_weights.max() - feature_weights.min())
+        else:
+            feature_weights = np.ones_like(feature_weights)
+        
+        print(f"[CameraSolver] Depth-KLT: {len(p0)} features, depth range: {feature_weights.min():.2f}-{feature_weights.max():.2f}")
+        
+        # Build camera matrix
+        cx, cy = img_width / 2, img_height / 2
+        K = np.array([[focal_length_px, 0, cx], [0, focal_length_px, cy], [0, 0, 1]], dtype=np.float64)
+        
+        rotations = [(0.0, 0.0, 0.0)]  # Frame 0 is reference
+        debug_tracking_frames = [frames[0].copy()]
+        
+        cumulative_pan, cumulative_tilt, cumulative_roll = 0.0, 0.0, 0.0
+        
+        for i in range(1, num_frames):
+            # Track features
+            p1, status, err = cv2.calcOpticalFlowPyrLK(gray_frames[i-1], gray_frames[i], p0, None, **lk_params)
+            
+            if p1 is None or status is None:
+                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+                debug_tracking_frames.append(frames[i].copy())
+                continue
+            
+            # Filter good points
+            good_mask = status.flatten() == 1
+            good_old = p0[good_mask]
+            good_new = p1[good_mask]
+            good_weights = feature_weights[good_mask]
+            
+            if len(good_old) < 8:
+                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+                debug_tracking_frames.append(frames[i].copy())
+                continue
+            
+            # Use weighted RANSAC (approximate by sampling based on weights)
+            # Higher weighted points are more likely to be selected
+            prob = good_weights / good_weights.sum()
+            n_samples = min(len(good_old), 100)
+            indices = np.random.choice(len(good_old), size=n_samples, replace=False, p=prob)
+            
+            sampled_old = good_old[indices]
+            sampled_new = good_new[indices]
+            
+            # Compute essential matrix
+            E, mask_E = cv2.findEssentialMat(sampled_old, sampled_new, K, method=cv2.RANSAC, threshold=ransac_threshold)
+            
+            if E is None or E.shape != (3, 3):
+                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+                debug_tracking_frames.append(frames[i].copy())
+                continue
+            
+            # Recover pose
+            _, R, t, _ = cv2.recoverPose(E, sampled_old, sampled_new, K)
+            
+            # Extract rotation angles
+            rvec, _ = cv2.Rodrigues(R)
+            delta_pan = rvec[1, 0]
+            delta_tilt = rvec[0, 0]
+            delta_roll = rvec[2, 0]
+            
+            cumulative_pan += delta_pan
+            cumulative_tilt += delta_tilt
+            cumulative_roll += delta_roll
+            
+            rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+            
+            # Debug image
+            debug_frame = frames[i].copy()
+            inliers = mask_E.flatten() == 1 if mask_E is not None else np.ones(len(sampled_old), dtype=bool)
+            for j, (old, new) in enumerate(zip(sampled_old, sampled_new)):
+                color = (0, 255, 0) if inliers[j] else (0, 0, 255)
+                cv2.circle(debug_frame, tuple(new.astype(int).flatten()), 4, color, -1)
+                cv2.line(debug_frame, tuple(old.astype(int).flatten()), tuple(new.astype(int).flatten()), color, 1)
+            
+            cv2.putText(debug_frame, f"Depth-KLT Frame {i}: pan={np.degrees(cumulative_pan):.1f}°", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            debug_tracking_frames.append(debug_frame)
+            
+            # Update features
+            p0 = good_new.reshape(-1, 1, 2)
+            feature_weights = good_weights
+            
+            if i % 10 == 0:
+                print(f"[CameraSolver] Depth-KLT Frame {i}: pan={np.degrees(cumulative_pan):.2f}°, tilt={np.degrees(cumulative_tilt):.2f}°")
+        
+        print(f"[CameraSolver] Depth-KLT tracking complete!")
+        return rotations, debug_tracking_frames
+    
+    def solve_rotation_duster(self, frames, focal_length_px):
+        """
+        Use DUSt3R for 3D reconstruction and camera pose estimation.
+        DUSt3R directly predicts relative camera poses between frame pairs.
+        """
+        num_frames = frames.shape[0]
+        
+        if not self.load_duster():
+            print(f"[CameraSolver] DUSt3R not available, falling back to KLT")
+            return self.solve_rotation_klt_persistent(frames, None, focal_length_px, 3.0)[:2]
+        
+        print(f"[CameraSolver] DUSt3R: Processing {num_frames} frames...")
+        
+        try:
+            from dust3r.inference import inference
+            from dust3r.utils.image import load_images
+            from dust3r.image_pairs import make_pairs
+            from dust3r.cloud_opt import global_aligner, GlobalAlignerMode
+            import tempfile
+            import os
+            
+            # Save frames to temp directory for DUSt3R
+            with tempfile.TemporaryDirectory() as tmpdir:
+                image_paths = []
+                for i, frame in enumerate(frames):
+                    path = os.path.join(tmpdir, f"frame_{i:04d}.png")
+                    cv2.imwrite(path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    image_paths.append(path)
+                
+                # Load images for DUSt3R
+                images = load_images(image_paths, size=512)
+                
+                # Create pairs (sequential)
+                pairs = make_pairs(images, scene_graph='swin', prefilter=None, symmetrize=True)
+                
+                # Run inference
+                output = inference(pairs, self.duster_model, self.device, batch_size=1)
+                
+                # Global alignment to get camera poses
+                scene = global_aligner(output, device=self.device, mode=GlobalAlignerMode.PointCloudOptimizer)
+                scene.compute_global_alignment(init='mst', niter=300, schedule='cosine', lr=0.01)
+                
+                # Extract camera poses
+                poses = scene.get_im_poses()  # List of 4x4 matrices
+                
+                # Convert to rotations relative to frame 0
+                rotations = [(0.0, 0.0, 0.0)]
+                pose0_inv = np.linalg.inv(poses[0].cpu().numpy())
+                
+                for i in range(1, len(poses)):
+                    pose_rel = pose0_inv @ poses[i].cpu().numpy()
+                    R = pose_rel[:3, :3]
+                    rvec, _ = cv2.Rodrigues(R)
+                    pan = rvec[1, 0]
+                    tilt = rvec[0, 0]
+                    roll = rvec[2, 0]
+                    rotations.append((pan, tilt, roll))
+                
+                print(f"[CameraSolver] DUSt3R: Extracted {len(rotations)} camera poses")
+                
+                # Debug frames
+                debug_tracking_frames = []
+                for i, frame in enumerate(frames):
+                    debug_frame = frame.copy()
+                    rot = rotations[i] if i < len(rotations) else (0, 0, 0)
+                    cv2.putText(debug_frame, f"DUSt3R Frame {i}: pan={np.degrees(rot[0]):.1f}°, tilt={np.degrees(rot[1]):.1f}°", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    debug_tracking_frames.append(debug_frame)
+                
+                return rotations, debug_tracking_frames
+                
+        except Exception as e:
+            print(f"[CameraSolver] DUSt3R failed: {e}")
+            print(f"[CameraSolver] Falling back to KLT")
+            return self.solve_rotation_klt_persistent(frames, None, focal_length_px, 3.0)[:2]
+    
+    def solve_rotation_colmap(self, frames, focal_length_px):
+        """
+        Use COLMAP for Structure from Motion camera pose estimation.
+        COLMAP is a traditional but robust SfM pipeline.
+        """
+        num_frames = frames.shape[0]
+        img_height, img_width = frames.shape[1:3]
+        
+        try:
+            import subprocess
+            import tempfile
+            import os
+            
+            # Check if COLMAP is installed
+            result = subprocess.run(['colmap', '-h'], capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError("COLMAP not found")
+                
+        except Exception as e:
+            print(f"[CameraSolver] COLMAP not available: {e}")
+            print(f"[CameraSolver] Install COLMAP: https://colmap.github.io/install.html")
+            print(f"[CameraSolver] Falling back to KLT")
+            return self.solve_rotation_klt_persistent(frames, None, focal_length_px, 3.0)[:2]
+        
+        print(f"[CameraSolver] COLMAP: Processing {num_frames} frames...")
+        
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                images_dir = os.path.join(tmpdir, "images")
+                os.makedirs(images_dir)
+                
+                # Save frames
+                for i, frame in enumerate(frames):
+                    path = os.path.join(images_dir, f"frame_{i:04d}.jpg")
+                    cv2.imwrite(path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                
+                database_path = os.path.join(tmpdir, "database.db")
+                sparse_dir = os.path.join(tmpdir, "sparse")
+                os.makedirs(sparse_dir)
+                
+                # Feature extraction
+                print(f"[CameraSolver] COLMAP: Extracting features...")
+                subprocess.run([
+                    'colmap', 'feature_extractor',
+                    '--database_path', database_path,
+                    '--image_path', images_dir,
+                    '--ImageReader.single_camera', '1',
+                    '--ImageReader.camera_model', 'PINHOLE',
+                    '--ImageReader.camera_params', f'{focal_length_px},{focal_length_px},{img_width/2},{img_height/2}'
+                ], capture_output=True, check=True)
+                
+                # Feature matching
+                print(f"[CameraSolver] COLMAP: Matching features...")
+                subprocess.run([
+                    'colmap', 'sequential_matcher',
+                    '--database_path', database_path
+                ], capture_output=True, check=True)
+                
+                # Sparse reconstruction
+                print(f"[CameraSolver] COLMAP: Running sparse reconstruction...")
+                subprocess.run([
+                    'colmap', 'mapper',
+                    '--database_path', database_path,
+                    '--image_path', images_dir,
+                    '--output_path', sparse_dir
+                ], capture_output=True, check=True)
+                
+                # Read camera poses from reconstruction
+                # COLMAP outputs to sparse/0/ directory
+                model_dir = os.path.join(sparse_dir, '0')
+                if not os.path.exists(model_dir):
+                    raise RuntimeError("COLMAP reconstruction failed")
+                
+                # Read images.txt for poses
+                images_txt = os.path.join(model_dir, 'images.txt')
+                poses = {}
+                with open(images_txt, 'r') as f:
+                    lines = f.readlines()
+                    i = 0
+                    while i < len(lines):
+                        line = lines[i].strip()
+                        if line.startswith('#') or not line:
+                            i += 1
+                            continue
+                        parts = line.split()
+                        if len(parts) >= 10:
+                            # IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME
+                            qw, qx, qy, qz = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+                            name = parts[9]
+                            # Extract frame number from name
+                            frame_num = int(name.split('_')[1].split('.')[0])
+                            
+                            # Convert quaternion to rotation matrix
+                            R = self._quat_to_rotation(qw, qx, qy, qz)
+                            poses[frame_num] = R
+                        i += 2  # Skip the points line
+                
+                # Convert to relative rotations
+                rotations = [(0.0, 0.0, 0.0)]
+                R0_inv = np.linalg.inv(poses.get(0, np.eye(3)))
+                
+                for i in range(1, num_frames):
+                    if i in poses:
+                        R_rel = R0_inv @ poses[i]
+                        rvec, _ = cv2.Rodrigues(R_rel)
+                        pan = rvec[1, 0]
+                        tilt = rvec[0, 0]
+                        roll = rvec[2, 0]
+                        rotations.append((pan, tilt, roll))
+                    else:
+                        # Frame not in reconstruction, use previous
+                        rotations.append(rotations[-1])
+                
+                print(f"[CameraSolver] COLMAP: Extracted {len(rotations)} camera poses")
+                
+                # Debug frames
+                debug_tracking_frames = []
+                for i, frame in enumerate(frames):
+                    debug_frame = frame.copy()
+                    rot = rotations[i] if i < len(rotations) else (0, 0, 0)
+                    in_recon = "✓" if i in poses else "✗"
+                    cv2.putText(debug_frame, f"COLMAP Frame {i} {in_recon}: pan={np.degrees(rot[0]):.1f}°", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    debug_tracking_frames.append(debug_frame)
+                
+                return rotations, debug_tracking_frames
+                
+        except Exception as e:
+            print(f"[CameraSolver] COLMAP failed: {e}")
+            print(f"[CameraSolver] Falling back to KLT")
+            return self.solve_rotation_klt_persistent(frames, None, focal_length_px, 3.0)[:2]
+    
+    def _quat_to_rotation(self, qw, qx, qy, qz):
+        """Convert quaternion to rotation matrix."""
+        R = np.array([
+            [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
+            [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
+            [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
+        ])
+        return R
+    
+    def solve_rotation_depthcrafter(self, frames, bg_masks, focal_length_px):
+        """
+        Use DepthCrafter for video-native temporally consistent depth estimation.
+        Track camera motion from depth changes in the background.
+        """
+        num_frames = frames.shape[0]
+        img_height, img_width = frames.shape[1:3]
+        
+        if not self.load_depthcrafter():
+            print(f"[CameraSolver] DepthCrafter not available, trying DepthAnything...")
+            if not self.load_depth_anything():
+                print(f"[CameraSolver] No depth model available, falling back to KLT")
+                return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, 3.0)[:2]
+            # Fall through to use DepthAnything in video mode
+        
+        print(f"[CameraSolver] DepthCrafter: Processing {num_frames} frames...")
+        
+        try:
+            # Estimate depth for all frames
+            depths = []
+            for i in range(num_frames):
+                if self.depthcrafter_model is not None:
+                    # Use DepthCrafter (video-native)
+                    from PIL import Image
+                    img = Image.fromarray(frames[i])
+                    result = self.depthcrafter_model(img)
+                    depth = np.array(result.images[0])
+                    depth = cv2.resize(depth, (img_width, img_height))
+                else:
+                    # Fallback to DepthAnything
+                    depth = self.estimate_depth(frames[i])
+                    if depth is None:
+                        depth = np.ones((img_height, img_width), dtype=np.float32)
+                
+                depths.append(depth.astype(np.float32))
+                
+                if i % 10 == 0:
+                    print(f"[CameraSolver] DepthCrafter: Depth estimated for frame {i}/{num_frames}")
+            
+            # Compute camera motion from depth flow
+            # Idea: Track how depth gradients shift between frames
+            rotations = [(0.0, 0.0, 0.0)]
+            cumulative_pan, cumulative_tilt, cumulative_roll = 0.0, 0.0, 0.0
+            
+            for i in range(1, num_frames):
+                depth1 = depths[i-1]
+                depth2 = depths[i]
+                
+                # Apply background mask
+                if bg_masks is not None:
+                    mask = bg_masks[i] > 0.5
+                else:
+                    mask = np.ones_like(depth1, dtype=bool)
+                
+                # Compute depth gradients
+                grad_x1 = cv2.Sobel(depth1, cv2.CV_32F, 1, 0, ksize=5)
+                grad_y1 = cv2.Sobel(depth1, cv2.CV_32F, 0, 1, ksize=5)
+                grad_x2 = cv2.Sobel(depth2, cv2.CV_32F, 1, 0, ksize=5)
+                grad_y2 = cv2.Sobel(depth2, cv2.CV_32F, 0, 1, ksize=5)
+                
+                # Compute gradient shift (camera motion causes systematic gradient shift)
+                dx = (grad_x2 - grad_x1)[mask].mean() if mask.sum() > 100 else 0
+                dy = (grad_y2 - grad_y1)[mask].mean() if mask.sum() > 100 else 0
+                
+                # Convert to rotation (approximate)
+                # Scale factor depends on focal length and depth
+                avg_depth = depth1[mask].mean() if mask.sum() > 100 else 1.0
+                scale = 0.001 / max(avg_depth, 0.1)  # Empirical scale
+                
+                delta_pan = -dx * scale
+                delta_tilt = -dy * scale
+                
+                cumulative_pan += delta_pan
+                cumulative_tilt += delta_tilt
+                
+                rotations.append((cumulative_pan, cumulative_tilt, cumulative_roll))
+                
+                if i % 10 == 0:
+                    print(f"[CameraSolver] DepthCrafter Frame {i}: pan={np.degrees(cumulative_pan):.2f}°, tilt={np.degrees(cumulative_tilt):.2f}°")
+            
+            print(f"[CameraSolver] DepthCrafter tracking complete!")
+            
+            # Debug frames with depth visualization
+            debug_tracking_frames = []
+            for i, frame in enumerate(frames):
+                debug_frame = frame.copy()
+                
+                # Overlay depth visualization
+                depth_vis = (depths[i] - depths[i].min()) / (depths[i].max() - depths[i].min() + 1e-6)
+                depth_color = cv2.applyColorMap((depth_vis * 255).astype(np.uint8), cv2.COLORMAP_MAGMA)
+                depth_color = cv2.cvtColor(depth_color, cv2.COLOR_BGR2RGB)
+                
+                # Blend with original
+                alpha = 0.3
+                debug_frame = cv2.addWeighted(debug_frame, 1-alpha, depth_color, alpha, 0)
+                
+                rot = rotations[i] if i < len(rotations) else (0, 0, 0)
+                cv2.putText(debug_frame, f"DepthCrafter Frame {i}: pan={np.degrees(rot[0]):.1f}°", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                debug_tracking_frames.append(debug_frame)
+            
+            return rotations, debug_tracking_frames
+            
+        except Exception as e:
+            print(f"[CameraSolver] DepthCrafter failed: {e}")
+            print(f"[CameraSolver] Falling back to KLT")
+            return self.solve_rotation_klt_persistent(frames, bg_masks, focal_length_px, 3.0)[:2]
     
     def _process_sam3_masks(self, sam3_masks, num_frames, img_height, img_width) -> np.ndarray:
         """Convert SAM3 masks to background masks."""

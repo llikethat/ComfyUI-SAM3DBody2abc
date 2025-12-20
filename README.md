@@ -413,6 +413,27 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.15 - Depth-Based Camera Tracking Methods
+Added 4 new depth-based tracking methods for more robust camera rotation estimation:
+
+1. **DepthAnything + KLT**: Uses depth to weight features - prioritizes distant (background) features
+   - Auto-downloads MiDaS as fallback if DepthAnything unavailable
+   - Features weighted by depth for better background tracking
+
+2. **DUSt3R (3D Reconstruction)**: AI-based 3D reconstruction for direct camera poses
+   - Requires: `pip install dust3r` or clone from https://github.com/naver/dust3r
+   - Directly predicts relative camera poses between frames
+
+3. **COLMAP (Structure from Motion)**: Traditional but robust SfM pipeline
+   - Requires: COLMAP installed (https://colmap.github.io/install.html)
+   - Full sparse reconstruction for camera poses
+
+4. **DepthCrafter (Video Depth)**: Video-native temporally consistent depth
+   - Requires: `pip install diffusers`
+   - Tracks camera motion from depth gradient changes
+
+All methods fall back to KLT if dependencies unavailable.
+
 ### v3.5.14 - Revert to Static Body Offset (Stable)
 - **Reverted** animated body offset - compensation formula was incorrect
 - **Static body_offset** from frame 0 restored (this worked perfectly in v3.5.10)

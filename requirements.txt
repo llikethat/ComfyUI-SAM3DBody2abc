@@ -12,3 +12,27 @@ ultralytics
 
 # Math utilities
 scipy
+
+# ============================================
+# DEPTH-BASED CAMERA TRACKING (Optional)
+# ============================================
+# These are optional - methods fall back to KLT if unavailable
+
+# DepthAnything / MiDaS depth estimation
+transformers  # For DepthAnything via HuggingFace
+timm  # Required by depth models
+
+# DepthCrafter (Video Depth)
+diffusers  # For DepthCrafter model
+
+# DUSt3R (3D Reconstruction) - requires manual install:
+# pip install git+https://github.com/naver/dust3r.git
+# OR clone and install: git clone https://github.com/naver/dust3r && cd dust3r && pip install -e .
+
+# COLMAP (Structure from Motion) - requires system install:
+# Ubuntu: sudo apt install colmap
+# Mac: brew install colmap
+# Windows: Download from https://colmap.github.io/install.html
+
+# CoTracker (AI tracking) - auto-downloads via torch.hub
+# No additional install needed
