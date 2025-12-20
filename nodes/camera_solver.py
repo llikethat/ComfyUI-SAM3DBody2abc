@@ -332,6 +332,9 @@ class CameraRotationSolver:
                 # Import required modules
                 from dust3r.model import AsymmetricCroCo3DStereo
                 
+                # Define inf for eval() - used in depth_mode and conf_mode
+                inf = float('inf')
+                
                 # Create model instance
                 net = eval(args)
                 

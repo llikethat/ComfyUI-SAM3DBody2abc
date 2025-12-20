@@ -22,7 +22,7 @@ Fixed settings:
 Version: 3.1.0
 """
 
-__version__ = "3.5.23"
+__version__ = "3.5.24"
 
 import os
 import sys
