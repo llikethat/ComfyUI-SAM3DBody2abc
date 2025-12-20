@@ -1562,22 +1562,13 @@ def main():
     # Create root locator if needed (for "root" mode)
     root_locator = None
     body_offset = Vector((0, 0, 0))
-    use_animated_body_offset = False
-    
-    # Check if we should use animated body offset (when camera rotation is solved)
-    has_solved_rotations = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
-    if world_translation_mode == "root" and has_solved_rotations and camera_use_rotation and not camera_static:
-        use_animated_body_offset = True
-        print(f"[Blender] Will use ANIMATED body offset (compensates for camera rotation)")
-    
     if world_translation_mode == "root":
         root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
         
-        # Get body offset for aligning body relative to camera
-        # This is used for static offset; animated offset is applied later
+        # Get body offset for aligning body relative to camera (STATIC from frame 0)
         first_cam_t = frames[0].get("pred_cam_t")
         body_offset = get_body_offset_from_cam_t(first_cam_t, up_axis)
-        print(f"[Blender] Body offset for camera alignment: {body_offset} (static baseline)")
+        print(f"[Blender] Body offset for camera alignment: {body_offset}")
     
     # Create mesh with shape keys
     mesh_obj = None
@@ -1586,27 +1577,17 @@ def main():
         # Parent mesh to root locator if in "root" mode
         if world_translation_mode == "root" and root_locator and mesh_obj:
             mesh_obj.parent = root_locator
-            if not use_animated_body_offset:
-                # Apply STATIC body offset for correct camera alignment
-                mesh_obj.location = body_offset
-                print(f"[Blender] Mesh offset applied (STATIC): {body_offset}")
+            # Apply STATIC body offset for correct camera alignment
+            mesh_obj.location = body_offset
+            print(f"[Blender] Mesh offset applied: {body_offset}")
     
     # Create skeleton (armature with bones and hierarchy)
     armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset)
     
     # Apply body offset to skeleton as well
     if world_translation_mode == "root" and root_locator and armature_obj:
-        if not use_animated_body_offset:
-            # Apply STATIC body offset
-            armature_obj.location = body_offset
-            print(f"[Blender] Skeleton offset applied (STATIC): {body_offset}")
-    
-    # Apply ANIMATED body offset if using solved camera rotations
-    # This must be done AFTER mesh and skeleton are created but BEFORE camera
-    if use_animated_body_offset:
-        # Use stronger smoothing for body offset to reduce jitter (default 5)
-        body_smoothing = max(camera_smoothing, 5)  # At least 5 for body
-        apply_animated_body_offset(mesh_obj, armature_obj, frames, solved_camera_rotations, up_axis, frame_offset, body_smoothing)
+        armature_obj.location = body_offset
+        print(f"[Blender] Skeleton offset applied: {body_offset}")
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

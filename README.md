@@ -413,6 +413,15 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.14 - Revert to Static Body Offset (Stable)
+- **Reverted** animated body offset - compensation formula was incorrect
+- **Static body_offset** from frame 0 restored (this worked perfectly in v3.5.10)
+- Camera Solver outlier rejection retained from v3.5.13
+- **Recommended workflow for camera pan videos:**
+  1. Export with **Static** camera mode → Perfect frame 1 alignment
+  2. Manually animate camera in Maya based on solver's reported total rotation
+- **Future**: Will implement depth-based camera tracking for automatic pan handling
+
 ### v3.5.13 - Camera Solver Outlier Rejection
 - **Critical Fix**: Added outlier rejection to Camera Solver
   - Detects frames with unreasonable rotation jumps (>10° between frames)
