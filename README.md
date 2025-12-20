@@ -413,6 +413,14 @@ Each frame creates a shape key with value keyframed:
 
 ## Changelog
 
+### v3.5.13 - Camera Solver Outlier Rejection
+- **Critical Fix**: Added outlier rejection to Camera Solver
+  - Detects frames with unreasonable rotation jumps (>10° between frames)
+  - Detects frames with excessive absolute rotation (>45°)
+  - Replaces outliers with linearly interpolated values from valid neighbors
+- Example issue fixed: Frame 2 with tilt=178.99° (flip) now gets interpolated
+- Outlier rejection runs BEFORE smoothing for cleaner results
+
 ### v3.5.12 - Animated Body Offset with Rotation Compensation
 - **Major Fix**: Body offset is now ANIMATED when camera rotation is solved
   - Static offset only correct at frame 0

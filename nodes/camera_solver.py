@@ -1091,6 +1091,97 @@ class CameraRotationSolver:
         # Use shared Euler angle extraction for consistency
         return self.rotation_matrix_to_euler(R_clean)
     
+    def reject_outliers(self, rotations: List[Tuple[float, float, float]], max_delta_degrees: float = 10.0) -> List[Tuple[float, float, float]]:
+        """
+        Reject outlier frames where rotation changes too drastically between consecutive frames.
+        
+        Outliers are detected when:
+        - Pan or tilt changes by more than max_delta_degrees between frames
+        - Values exceed reasonable ranges (e.g., tilt > 45° is suspicious)
+        
+        Outliers are replaced with linearly interpolated values from valid neighbors.
+        """
+        if len(rotations) < 3:
+            return rotations
+        
+        import math
+        max_delta_rad = math.radians(max_delta_degrees)
+        max_absolute_rad = math.radians(45.0)  # Max reasonable camera tilt/pan
+        
+        pans = [r[0] for r in rotations]
+        tilts = [r[1] for r in rotations]
+        rolls = [r[2] for r in rotations]
+        
+        # Identify outlier frames
+        outlier_frames = set()
+        
+        for i in range(1, len(rotations)):
+            # Check for large frame-to-frame jumps
+            pan_delta = abs(pans[i] - pans[i-1])
+            tilt_delta = abs(tilts[i] - tilts[i-1])
+            
+            # Check for unreasonable absolute values
+            is_absolute_outlier = abs(tilts[i]) > max_absolute_rad or abs(pans[i]) > max_absolute_rad
+            
+            # Check for large jumps
+            is_delta_outlier = pan_delta > max_delta_rad or tilt_delta > max_delta_rad
+            
+            if is_absolute_outlier or is_delta_outlier:
+                outlier_frames.add(i)
+                if is_absolute_outlier:
+                    print(f"[CameraSolver] Frame {i}: OUTLIER (absolute value too large: pan={math.degrees(pans[i]):.1f}°, tilt={math.degrees(tilts[i]):.1f}°)")
+                else:
+                    print(f"[CameraSolver] Frame {i}: OUTLIER (delta too large: Δpan={math.degrees(pan_delta):.1f}°, Δtilt={math.degrees(tilt_delta):.1f}°)")
+        
+        if not outlier_frames:
+            print(f"[CameraSolver] No outliers detected (threshold={max_delta_degrees}°)")
+            return rotations
+        
+        print(f"[CameraSolver] Detected {len(outlier_frames)} outlier frames, interpolating...")
+        
+        # Interpolate outliers from valid neighbors
+        def interpolate_outliers(values, outliers):
+            result = values.copy()
+            for i in outliers:
+                # Find nearest valid neighbors
+                left_idx = i - 1
+                while left_idx in outliers and left_idx > 0:
+                    left_idx -= 1
+                
+                right_idx = i + 1
+                while right_idx in outliers and right_idx < len(values) - 1:
+                    right_idx += 1
+                
+                # Check if neighbors are valid
+                left_valid = left_idx >= 0 and left_idx not in outliers
+                right_valid = right_idx < len(values) and right_idx not in outliers
+                
+                if left_valid and right_valid:
+                    # Linear interpolation
+                    t = (i - left_idx) / (right_idx - left_idx)
+                    result[i] = values[left_idx] + t * (values[right_idx] - values[left_idx])
+                elif left_valid:
+                    result[i] = values[left_idx]
+                elif right_valid:
+                    result[i] = values[right_idx]
+                else:
+                    result[i] = 0.0  # Fallback to zero
+            
+            return result
+        
+        fixed_pans = interpolate_outliers(pans, outlier_frames)
+        fixed_tilts = interpolate_outliers(tilts, outlier_frames)
+        fixed_rolls = interpolate_outliers(rolls, outlier_frames)
+        
+        # Ensure frame 0 stays at (0, 0, 0)
+        fixed_pans[0] = 0.0
+        fixed_tilts[0] = 0.0
+        fixed_rolls[0] = 0.0
+        
+        print(f"[CameraSolver] Outlier rejection complete, {len(outlier_frames)} frames interpolated")
+        
+        return list(zip(fixed_pans, fixed_tilts, fixed_rolls))
+    
     def smooth_rotations(self, rotations: List[Tuple[float, float, float]], window: int) -> List[Tuple[float, float, float]]:
         """
         Apply moving average smoothing to rotation values.
@@ -1220,6 +1311,9 @@ class CameraRotationSolver:
                 frames, bg_masks, focal_length_px, ransac_threshold
             )
             
+            # Reject outliers before smoothing
+            rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
+            
             # Apply smoothing
             if smoothing > 1:
                 rotations = self.smooth_rotations(rotations, smoothing)
@@ -1269,6 +1363,9 @@ class CameraRotationSolver:
             rotations, debug_tracking_frames, track_info = self.solve_rotation_cotracker(
                 frames, bg_masks, focal_length_px, ransac_threshold
             )
+            
+            # Reject outliers before smoothing
+            rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
             
             # Apply smoothing
             if smoothing > 1:
@@ -1420,6 +1517,9 @@ class CameraRotationSolver:
             
             if i % 10 == 0:
                 print(f"[CameraSolver] Frame {i}/{num_frames}: pan={np.degrees(cumulative_pan):.2f}°, tilt={np.degrees(cumulative_tilt):.2f}°")
+        
+        # Reject outliers before smoothing
+        rotations = self.reject_outliers(rotations, max_delta_degrees=10.0)
         
         # Apply smoothing
         if smoothing > 1:
