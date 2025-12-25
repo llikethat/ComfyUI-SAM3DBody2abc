@@ -247,6 +247,45 @@ def apply_animated_body_offset(mesh_obj, armature_obj, frames, solved_camera_rot
         return
     
     print(f"[Blender] Computing animated body offset with rotation compensation...")
+
+
+def apply_mesh_rotation_compensation(mesh_obj, frames, solved_camera_rotations, up_axis, frame_offset):
+    """
+    Apply rotation animation to mesh object to compensate for camera rotation.
+    
+    This rotates the mesh object (not vertices) by the inverse of camera rotation
+    so the mesh appears correctly oriented in world space.
+    """
+    if not mesh_obj or not solved_camera_rotations:
+        return
+    
+    print(f"[Blender] Applying mesh rotation compensation for {len(solved_camera_rotations)} frames...")
+    
+    # Set rotation mode
+    mesh_obj.rotation_mode = 'XYZ'
+    
+    for frame_idx, cam_rot in enumerate(solved_camera_rotations):
+        if frame_idx >= len(frames):
+            break
+        
+        pan = cam_rot.get("pan", 0.0)
+        tilt = cam_rot.get("tilt", 0.0)
+        roll = cam_rot.get("roll", 0.0)
+        
+        # Build inverse rotation (compensate for camera motion)
+        # Negative values because we want inverse
+        if up_axis == "Y":
+            # For Y-up: pan around Y, tilt around X
+            mesh_obj.rotation_euler = Euler((-tilt, -pan, -roll), 'YXZ')
+        elif up_axis == "Z":
+            # For Z-up: pan around Z, tilt around X
+            mesh_obj.rotation_euler = Euler((-tilt, -roll, -pan), 'ZXY')
+        else:
+            mesh_obj.rotation_euler = Euler((-tilt, -pan, -roll), 'YXZ')
+        
+        mesh_obj.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
+    
+    print(f"[Blender] Mesh rotation compensation applied")
     
     # Collect per-frame values
     all_tx = []
@@ -423,7 +462,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     return obj
 
 
-def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None, frame_offset=0):
+def create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, joint_parents=None, frame_offset=0, solved_camera_rotations=None):
     """
     Create animated skeleton using armature with ROTATION keyframes.
     
@@ -431,6 +470,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     Produces proper bone rotations for retargeting and animation editing.
     
     joint_parents: Array where joint_parents[i] = parent index of joint i (-1 for root)
+    solved_camera_rotations: If provided, apply inverse to root bone to compensate for camera motion
     """
     first_joints = all_frames[0].get("joint_coords")
     first_rotations = all_frames[0].get("joint_rotations")
@@ -522,6 +562,11 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     # Pre-compute parent indices for faster lookup
     parent_indices = joint_parents if joint_parents is not None else [-1] * num_joints
     
+    # Check if we have camera rotations to compensate
+    has_camera_rots = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
+    if has_camera_rots:
+        print(f"[Blender] Will compensate body orientation for {len(solved_camera_rotations)} camera rotations")
+    
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
         rotations = frame_data.get("joint_rotations")
@@ -537,6 +582,28 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
         if world_translation_mode == "baked":
             frame_cam_t = frame_data.get("pred_cam_t")
             world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+        
+        # Build camera compensation matrix (inverse of camera rotation)
+        # This corrects body orientation for camera motion
+        camera_compensation = Matrix.Identity(3)
+        if has_camera_rots and frame_idx < len(solved_camera_rotations):
+            cam_rot = solved_camera_rotations[frame_idx]
+            pan = cam_rot.get("pan", 0.0)   # Yaw - rotation around up axis
+            tilt = cam_rot.get("tilt", 0.0)  # Pitch - rotation around horizontal axis
+            roll = cam_rot.get("roll", 0.0)  # Roll - rotation around view axis
+            
+            # Build rotation matrix from pan/tilt/roll (YXZ order typical for cameras)
+            # For Y-up: pan=Y, tilt=X, roll=Z
+            if up_axis == "Y":
+                euler = Euler((tilt, pan, roll), 'YXZ')
+            elif up_axis == "Z":
+                euler = Euler((tilt, roll, pan), 'ZXY')
+            else:
+                euler = Euler((tilt, pan, roll), 'YXZ')
+            
+            camera_rot_matrix = euler.to_matrix().to_3x3()
+            # INVERSE to compensate - when camera rotates left, body should appear to rotate right in world space
+            camera_compensation = camera_rot_matrix.inverted()
         
         # First pass: compute all global rotations in Blender space
         global_rots_blender = []
@@ -562,7 +629,8 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
                 local_rot = parent_global_rot.inverted() @ global_rot
             else:
                 # Root bone: local = global
-                local_rot = global_rot
+                # Apply camera compensation for root bone only
+                local_rot = camera_compensation @ global_rot
             
             # Convert to quaternion and apply
             quat = local_rot.to_quaternion()
@@ -704,7 +772,7 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
     return armature
 
 
-def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations", joint_parents=None, frame_offset=0):
+def create_skeleton(all_frames, fps, transform_func, world_translation_mode="none", up_axis="Y", root_locator=None, skeleton_mode="rotations", joint_parents=None, frame_offset=0, solved_camera_rotations=None):
     """
     Create animated skeleton - dispatcher function.
     
@@ -713,9 +781,10 @@ def create_skeleton(all_frames, fps, transform_func, world_translation_mode="non
     - "positions": Use joint positions only (legacy)
     
     joint_parents: Array defining bone hierarchy
+    solved_camera_rotations: Camera rotations from COLMAP to compensate in body orientation
     """
     if skeleton_mode == "rotations":
-        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset)
+        return create_skeleton_with_rotations(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset, solved_camera_rotations)
     else:
         return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset)
 
@@ -1580,9 +1649,14 @@ def main():
             # Apply STATIC body offset for correct camera alignment
             mesh_obj.location = body_offset
             print(f"[Blender] Mesh offset applied: {body_offset}")
+        
+        # Apply mesh rotation compensation if we have solved camera rotations
+        if solved_camera_rotations and mesh_obj:
+            apply_mesh_rotation_compensation(mesh_obj, frames, solved_camera_rotations, up_axis, frame_offset)
     
     # Create skeleton (armature with bones and hierarchy)
-    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset)
+    # Pass solved_camera_rotations so body orientation can compensate for camera motion
+    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, solved_camera_rotations)
     
     # Apply body offset to skeleton as well
     if world_translation_mode == "root" and root_locator and armature_obj:

@@ -2545,6 +2545,12 @@ class CameraRotationSolver:
                 use_masks = bg_masks is not None and len(bg_masks) == num_frames
                 if use_masks:
                     print(f"[CameraSolver] DUSt3R: Applying background masks (masking out people)")
+                    print(f"[CameraSolver] DUSt3R: bg_masks shape={bg_masks.shape}, range=[{bg_masks.min():.2f}, {bg_masks.max():.2f}]")
+                else:
+                    if bg_masks is None:
+                        print(f"[CameraSolver] DUSt3R: No background masks provided")
+                    else:
+                        print(f"[CameraSolver] DUSt3R: Mask count mismatch - masks={len(bg_masks)}, frames={num_frames}")
                 
                 for i, frame in enumerate(frames):
                     # Apply background mask if available (black out people/foreground)
@@ -2557,6 +2563,11 @@ class CameraRotationSolver:
                             mask_3d = mask
                         # Apply mask: keep background (mask=1), black out foreground (mask=0)
                         masked_frame = (frame * mask_3d).astype(np.uint8)
+                        
+                        # Debug: Show mask stats for first frame
+                        if i == 0:
+                            bg_coverage = np.mean(mask > 0.5) * 100
+                            print(f"[CameraSolver] DUSt3R: Frame 0 mask - {bg_coverage:.1f}% background visible")
                     else:
                         masked_frame = frame
                     
@@ -2565,6 +2576,12 @@ class CameraRotationSolver:
                     img.save(path)
                     image_paths.append(path)
                 
+                # Save first masked frame for debugging
+                if use_masks and len(image_paths) > 0:
+                    debug_path = os.path.join(tmpdir, "debug_masked_frame0.png")
+                    img = Image.fromarray((frames[0] * bg_masks[0][:, :, np.newaxis] if bg_masks[0].ndim == 2 else frames[0] * bg_masks[0]).astype(np.uint8))
+                    print(f"[CameraSolver] DUSt3R: Debug masked frame saved to temp")
+                
                 print(f"[CameraSolver] DUSt3R: Loading {len(image_paths)} images...")
                 
                 # Load images for DUSt3R (resizes to 512)
@@ -2572,11 +2589,14 @@ class CameraRotationSolver:
                 
                 print(f"[CameraSolver] DUSt3R: Creating image pairs...")
                 
-                # Create pairs - use 'complete' for small sequences, 'swin' for longer
+                # For sequential video, use 'linear' scene graph (consecutive frames only)
+                # This is more appropriate than 'swin' which can skip frames
+                # 'linear' creates pairs: (0,1), (1,2), (2,3), ...
                 if num_frames <= 10:
                     scene_graph = 'complete'
                 else:
-                    scene_graph = 'swin-5'  # sliding window of 5
+                    # Use linear for video sequences - more stable than swin
+                    scene_graph = 'linear'
                 
                 pairs = make_pairs(images, scene_graph=scene_graph, prefilter=None, symmetrize=True)
                 print(f"[CameraSolver] DUSt3R: Created {len(pairs)} pairs using '{scene_graph}' graph")
@@ -2602,6 +2622,15 @@ class CameraRotationSolver:
                 with torch.cuda.amp.autocast(enabled=False):
                     scene = global_aligner(output, device=self.device, mode=mode)
                 
+                # Debug: Print estimated focal lengths
+                try:
+                    focals = scene.get_focals()
+                    if focals is not None:
+                        focals_np = to_numpy(focals) if hasattr(focals, 'cpu') else focals
+                        print(f"[CameraSolver] DUSt3R: Estimated focals - mean={np.mean(focals_np):.1f}, std={np.std(focals_np):.1f}")
+                except Exception as e:
+                    print(f"[CameraSolver] DUSt3R: Could not get focals: {e}")
+                
                 # For PointCloudOptimizer, use MST initialization only (skip gradient optimization)
                 # dust3r's inference uses @torch.no_grad(), so outputs don't have gradients
                 # MST initialization uses PnP RANSAC which doesn't need gradients
@@ -2618,20 +2647,53 @@ class CameraRotationSolver:
                 
                 print(f"[CameraSolver] DUSt3R: Extracted {len(poses_np)} camera poses")
                 
+                # Debug: Print raw poses for first few frames
+                print(f"[CameraSolver] DUSt3R: Pose 0 (reference):")
+                print(f"  Translation: {poses_np[0][:3, 3]}")
+                if len(poses_np) > 1:
+                    print(f"[CameraSolver] DUSt3R: Pose 1:")
+                    print(f"  Translation: {poses_np[1][:3, 3]}")
+                
                 # Convert to rotations relative to frame 0
+                # DUSt3R returns cam-to-world matrices
                 rotations = [(0.0, 0.0, 0.0)]
                 pose0_inv = np.linalg.inv(poses_np[0])
                 
+                # Debug: Check what coordinate system DUSt3R uses
+                # Typically DUSt3R uses OpenGL convention: X-right, Y-up, Z-backward (out of screen)
+                # But for relative rotations, we need to be careful
+                
                 for i in range(1, len(poses_np)):
                     # Get relative pose from frame 0 to frame i
+                    # This gives us how camera i is positioned relative to camera 0
                     pose_rel = pose0_inv @ poses_np[i]
                     R = pose_rel[:3, :3]
+                    t = pose_rel[:3, 3]
                     
-                    # Convert rotation matrix to Euler angles using our consistent method
-                    pan, tilt, roll = self.rotation_matrix_to_euler(R)
+                    # For camera rotation tracking, we want the rotation of the camera
+                    # DUSt3R's cam-to-world: if camera rotates right, the world appears to rotate left
+                    # So we need to extract the camera's rotation, not the world's
                     
-                    if i % 10 == 0 or i == len(poses_np) - 1:
+                    # Extract Euler angles using OpenCV convention (XYZ = tilt, pan, roll)
+                    # cv2.Rodrigues gives axis-angle
+                    rvec, _ = cv2.Rodrigues(R)
+                    
+                    # For small rotations, rvec components approximate Euler angles
+                    # rvec[0] ≈ tilt (X rotation), rvec[1] ≈ pan (Y rotation), rvec[2] ≈ roll (Z rotation)
+                    
+                    # However, for DUSt3R which uses a Y-up convention:
+                    # We need to extract the pan (rotation around Y) more carefully
+                    
+                    # Method: Use atan2 on the rotation matrix elements
+                    # For Y rotation (pan): R[0,2] and R[2,2] give us the pan angle
+                    # Assuming small roll
+                    pan = np.arctan2(R[0, 2], R[2, 2])  # Y rotation (pan)
+                    tilt = np.arcsin(-R[1, 2])  # X rotation (tilt) 
+                    roll = np.arctan2(R[1, 0], R[1, 1])  # Z rotation (roll)
+                    
+                    if i <= 5 or i % 10 == 0 or i == len(poses_np) - 1:
                         print(f"[CameraSolver] DUSt3R Frame {i}: pan={np.degrees(pan):.2f}°, tilt={np.degrees(tilt):.2f}°, roll={np.degrees(roll):.2f}°")
+                        print(f"  Translation: {t}")
                     
                     rotations.append((pan, tilt, roll))
                 
