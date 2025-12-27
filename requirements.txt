@@ -1,38 +1,50 @@
 # ComfyUI-SAM3DBody2abc Requirements
+# ===================================
+
 # Core dependencies (usually already installed with ComfyUI)
 numpy
 torch
-torchvision>=0.14  # For RAFT optical flow (optional, for Camera Solver)
+torchvision
 
 # Computer Vision
 opencv-python
 
-# YOLO for person detection (Camera Solver)
+# YOLO for person detection (auto-masks people in camera solver)
 ultralytics
 
-# Math utilities
+# Math utilities  
 scipy
 
 # ============================================
-# DEPTH-BASED CAMERA TRACKING (Optional)
+# FEATURE MATCHING (Optional - Recommended)
 # ============================================
-# These are optional - methods fall back to KLT if unavailable
+# Auto-downloads models on first use
 
-# DepthAnything / MiDaS depth estimation
-transformers  # For DepthAnything via HuggingFace
-timm  # Required by depth models
+# LightGlue - AI feature matcher (Apache 2.0)
+# Improves parallax shot solving significantly
+# pip install lightglue
 
-# DepthCrafter (Video Depth)
-diffusers  # For DepthCrafter model
+# LoFTR - Detector-free matcher via kornia (Apache 2.0)  
+# Fallback for difficult/textureless scenes
+# pip install kornia
 
-# DUSt3R (3D Reconstruction) - requires manual install:
-# pip install git+https://github.com/naver/dust3r.git
-# OR clone and install: git clone https://github.com/naver/dust3r && cd dust3r && pip install -e .
+# ============================================
+# PARALLAX/TRANSLATION SOLVING (Optional)
+# ============================================
+# Without COLMAP, uses Essential Matrix fallback (less accurate)
 
-# COLMAP (Structure from Motion) - requires system install:
+# Install ComfyUI-COLMAP for full bundle adjustment:
+# cd ComfyUI/custom_nodes
+# git clone https://github.com/your-repo/ComfyUI-COLMAP
+
+# COLMAP system install:
 # Ubuntu: sudo apt install colmap
-# Mac: brew install colmap
-# Windows: Download from https://colmap.github.io/install.html
+# Mac: brew install colmap  
+# Windows: https://colmap.github.io/install.html
 
-# CoTracker (AI tracking) - auto-downloads via torch.hub
-# No additional install needed
+# ============================================
+# GPU Notes
+# ============================================
+# Fast mode: CPU only (KLT, ORB)
+# Balanced/Best: GPU recommended for LightGlue/LoFTR
+# Falls back to ORB (CPU) if GPU unavailable

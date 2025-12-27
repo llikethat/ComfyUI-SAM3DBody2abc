@@ -22,7 +22,7 @@ Fixed settings:
 Version: 3.1.0
 """
 
-__version__ = "3.5.32"
+__version__ = "4.0.0"
 
 import os
 import sys
@@ -93,10 +93,13 @@ if _verify_overlay:
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VerifyOverlay"] = "🔍 Verify Overlay"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VerifyOverlayBatch"] = "🔍 Verify Overlay (Sequence)"
 
-# Register camera solver node
+# Register camera solver nodes
 if _camera_solver:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraRotationSolver"] = _camera_solver.CameraRotationSolver
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraRotationSolver"] = "📷 Camera Rotation Solver"
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraSolver"] = _camera_solver.CameraSolver
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = _camera_solver.CameraDataFromJSON
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolver"] = "📷 Camera Solver"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = "📷 Camera Data from JSON"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

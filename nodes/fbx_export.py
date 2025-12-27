@@ -120,7 +120,7 @@ class ExportAnimatedFBX:
                 }),
             },
             "optional": {
-                "camera_rotations": ("CAMERA_ROTATION_DATA", {
+                "camera_rotations": ("CAMERA_DATA", {
                     "tooltip": "Camera rotation data from Camera Rotation Solver. Overrides internal camera rotation calculation."
                 }),
                 "fps": ("FLOAT", {
@@ -339,14 +339,25 @@ class ExportAnimatedFBX:
         solved_rotations = None
         if has_solved_rotations:
             solved_rotations = []
+            has_translation = camera_rotations.get("has_translation", False)
             for rot_data in camera_rotations["rotations"]:
-                solved_rotations.append({
+                rot_entry = {
                     "frame": rot_data.get("frame", 0),
                     "pan": rot_data.get("pan", 0.0),
                     "tilt": rot_data.get("tilt", 0.0),
                     "roll": rot_data.get("roll", 0.0),
-                })
-            print(f"[Export] Solved rotations: {len(solved_rotations)} frames, final pan={np.degrees(solved_rotations[-1]['pan']):.2f}°, tilt={np.degrees(solved_rotations[-1]['tilt']):.2f}°")
+                }
+                # Include translation if present
+                if has_translation:
+                    rot_entry["tx"] = rot_data.get("tx", 0.0)
+                    rot_entry["ty"] = rot_data.get("ty", 0.0)
+                    rot_entry["tz"] = rot_data.get("tz", 0.0)
+                solved_rotations.append(rot_entry)
+            
+            final_rot = solved_rotations[-1]
+            print(f"[Export] Solved rotations: {len(solved_rotations)} frames, final pan={np.degrees(final_rot['pan']):.2f}°, tilt={np.degrees(final_rot['tilt']):.2f}°")
+            if has_translation:
+                print(f"[Export] Camera translation data included (will compensate root position)")
         
         export_data = {
             "fps": fps,

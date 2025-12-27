@@ -47,6 +47,83 @@ def smooth_array(values, window):
     return result
 
 
+def smooth_camera_data(camera_rotations, window=9):
+    """
+    Pre-smooth camera rotation/translation data to avoid jerky root compensation.
+    
+    Uses Gaussian-weighted smoothing for better results than simple moving average.
+    
+    Args:
+        camera_rotations: List of dicts with pan, tilt, roll, tx, ty, tz
+        window: Smoothing window size (default 9 for strong smoothing)
+    
+    Returns:
+        Smoothed list of camera rotation dicts
+    """
+    if not camera_rotations or window <= 1:
+        return camera_rotations
+    
+    n = len(camera_rotations)
+    if n < window:
+        window = max(3, n)
+    
+    # Extract channels
+    pans = [r.get("pan", 0.0) for r in camera_rotations]
+    tilts = [r.get("tilt", 0.0) for r in camera_rotations]
+    rolls = [r.get("roll", 0.0) for r in camera_rotations]
+    txs = [r.get("tx", 0.0) for r in camera_rotations]
+    tys = [r.get("ty", 0.0) for r in camera_rotations]
+    tzs = [r.get("tz", 0.0) for r in camera_rotations]
+    
+    # Create Gaussian-like weights for smoother result
+    half = window // 2
+    weights = []
+    for i in range(-half, half + 1):
+        # Gaussian weight: exp(-x^2 / (2*sigma^2))
+        sigma = half / 2.0
+        w = math.exp(-(i * i) / (2 * sigma * sigma))
+        weights.append(w)
+    weight_sum = sum(weights)
+    weights = [w / weight_sum for w in weights]
+    
+    def gaussian_smooth(values):
+        """Apply Gaussian smoothing to an array."""
+        result = []
+        for i in range(len(values)):
+            total = 0.0
+            total_weight = 0.0
+            for j, w in enumerate(weights):
+                idx = i + j - half
+                if 0 <= idx < len(values):
+                    total += values[idx] * w
+                    total_weight += w
+            result.append(total / total_weight if total_weight > 0 else values[i])
+        return result
+    
+    # Smooth all channels
+    smooth_pans = gaussian_smooth(pans)
+    smooth_tilts = gaussian_smooth(tilts)
+    smooth_rolls = gaussian_smooth(rolls)
+    smooth_txs = gaussian_smooth(txs)
+    smooth_tys = gaussian_smooth(tys)
+    smooth_tzs = gaussian_smooth(tzs)
+    
+    # Rebuild camera data
+    result = []
+    for i in range(n):
+        result.append({
+            "frame": camera_rotations[i].get("frame", i),
+            "pan": smooth_pans[i],
+            "tilt": smooth_tilts[i],
+            "roll": smooth_rolls[i],
+            "tx": smooth_txs[i],
+            "ty": smooth_tys[i],
+            "tz": smooth_tzs[i],
+        })
+    
+    return result
+
+
 def clear_scene():
     """Remove all objects."""
     bpy.ops.object.select_all(action='SELECT')
@@ -525,8 +602,13 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     
     # Check if we have camera rotations to compensate
     has_camera_rots = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
+    
+    # Pre-smooth camera data to avoid jerky root motion
+    smoothed_camera_data = None
     if has_camera_rots:
-        print(f"[Blender] Will compensate body orientation for {len(solved_camera_rotations)} camera rotations")
+        print(f"[Blender] Pre-smoothing {len(solved_camera_rotations)} camera rotations for smooth root compensation...")
+        smoothed_camera_data = smooth_camera_data(solved_camera_rotations, window=9)
+        print(f"[Blender] Camera data smoothed (window=9)")
     
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
@@ -545,9 +627,12 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
         
         # Build camera compensation matrix (inverse of camera rotation)
+        # Also get camera translation compensation if available
         camera_compensation = Matrix.Identity(3)
-        if has_camera_rots and frame_idx < len(solved_camera_rotations):
-            cam_rot = solved_camera_rotations[frame_idx]
+        camera_translation_compensation = Vector((0, 0, 0))
+        
+        if has_camera_rots and smoothed_camera_data and frame_idx < len(smoothed_camera_data):
+            cam_rot = smoothed_camera_data[frame_idx]
             pan = cam_rot.get("pan", 0.0)
             tilt = cam_rot.get("tilt", 0.0)
             roll = cam_rot.get("roll", 0.0)
@@ -562,6 +647,18 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             
             camera_rot_matrix = euler.to_matrix().to_3x3()
             camera_compensation = camera_rot_matrix.inverted()
+            
+            # Get translation compensation (inverse of camera translation)
+            # This keeps the body in world space when camera moves
+            tx = cam_rot.get("tx", 0.0)
+            ty = cam_rot.get("ty", 0.0)
+            tz = cam_rot.get("tz", 0.0)
+            if tx != 0.0 or ty != 0.0 or tz != 0.0:
+                # Invert translation to compensate
+                if up_axis == "Y":
+                    camera_translation_compensation = Vector((-tx, -ty, -tz))
+                elif up_axis == "Z":
+                    camera_translation_compensation = Vector((-tx, -tz, -ty))
         
         # First pass: compute all global rotations in Blender space
         global_rots_blender = []
@@ -594,12 +691,21 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
             pose_bone.rotation_quaternion = quat
             pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=actual_frame)
             
-            # Also update location for world translation modes (root bone only typically)
-            if world_translation_mode == "baked" and parent_idx < 0:
+            # Also update location for world translation modes or camera compensation (root bone only)
+            if parent_idx < 0:  # Root bone
                 pos = joints[bone_idx]
-                target = Vector(transform_func(pos)) + world_offset
+                base_pos = Vector(transform_func(pos))
+                
+                # Apply world offset if baked mode
+                if world_translation_mode == "baked":
+                    base_pos += world_offset
+                
+                # Apply camera translation compensation (inverse of camera movement)
+                # This keeps the body in world space when camera translates
+                base_pos += camera_translation_compensation
+                
                 rest_head = Vector(armature.data.bones[bone_idx].head_local)
-                offset = target - rest_head
+                offset = base_pos - rest_head
                 pose_bone.location = offset
                 pose_bone.keyframe_insert(data_path="location", frame=actual_frame)
         
