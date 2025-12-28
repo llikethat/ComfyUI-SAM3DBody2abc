@@ -1394,13 +1394,13 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
             smoothed_extrinsics = smooth_camera_data(camera_extrinsics, window)
         elif smoothing_method == "kalman":
             # Use a lighter Kalman smoothing for root locator
-            smoothed_extrinsics = kalman_smooth_camera_data(
+            smoothed_extrinsics = kalman_filter_camera_data(
                 camera_extrinsics, 
                 process_noise=0.01, 
                 measurement_noise=0.05 + smoothing_strength * 0.3
             )
         elif smoothing_method == "spline":
-            smoothed_extrinsics = spline_smooth_camera_data(camera_extrinsics, smoothing_strength)
+            smoothed_extrinsics = spline_fit_camera_data(camera_extrinsics, smoothing_strength)
     
     # Build a frame-indexed dict for easy lookup
     extrinsics_by_frame = {}

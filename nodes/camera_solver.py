@@ -389,9 +389,29 @@ class CameraSolver:
             kpts1 = feats1['keypoints'][0].cpu().numpy()
             matches = matches01['matches'][0].cpu().numpy()
             
-            valid = matches > -1
-            pts0 = kpts0[valid]
-            pts1 = kpts1[matches[valid]]
+            # Handle different LightGlue output formats
+            if matches.ndim == 2 and matches.shape[1] == 2:
+                # New format: (num_matches, 2) - pairs of (idx0, idx1)
+                pts0 = kpts0[matches[:, 0]]
+                pts1 = kpts1[matches[:, 1]]
+            elif matches.ndim == 1 and len(matches) == len(kpts0):
+                # Old format: (num_kpts0,) - index in kpts1 per keypoint, -1 if no match
+                valid = matches > -1
+                pts0 = kpts0[valid]
+                pts1 = kpts1[matches[valid]]
+            else:
+                # Try to interpret as pairs if shape allows
+                if matches.ndim == 1 and len(matches) % 2 == 0:
+                    # Might be flattened pairs
+                    matches = matches.reshape(-1, 2)
+                    pts0 = kpts0[matches[:, 0]]
+                    pts1 = kpts1[matches[:, 1]]
+                else:
+                    raise ValueError(f"Unknown matches format: shape={matches.shape}, kpts0={len(kpts0)}, kpts1={len(kpts1)}")
+            
+            if len(pts0) < 20:
+                print(f"[CameraSolver] LightGlue: only {len(pts0)} matches, falling back")
+                return self.run_orb(frame0, frame1)
             
             return pts0, pts1
             

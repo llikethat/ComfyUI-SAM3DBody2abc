@@ -42,6 +42,37 @@ def to_list(obj):
     return obj
 
 
+def get_incremental_filename(output_dir: str, filename: str, ext: str) -> str:
+    """
+    Get an incremental filename to avoid overwriting existing files.
+    
+    Args:
+        output_dir: Directory for output
+        filename: Base filename (without extension)
+        ext: File extension (including dot, e.g., ".fbx")
+    
+    Returns:
+        Full path with incremental number if needed
+        e.g., animation.fbx, animation_0001.fbx, animation_0002.fbx
+    """
+    base_path = os.path.join(output_dir, f"{filename}{ext}")
+    
+    # If base file doesn't exist, use it
+    if not os.path.exists(base_path):
+        return base_path
+    
+    # Find next available number
+    counter = 1
+    while True:
+        incremental_path = os.path.join(output_dir, f"{filename}_{counter:04d}{ext}")
+        if not os.path.exists(incremental_path):
+            return incremental_path
+        counter += 1
+        # Safety limit
+        if counter > 9999:
+            return os.path.join(output_dir, f"{filename}_{counter}{ext}")
+
+
 BLENDER_TIMEOUT = 600
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -504,7 +535,8 @@ class ExportAnimatedFBX:
             json.dump(export_data, f)
             json_path = f.name
         
-        output_path = os.path.join(output_dir, f"{filename}{ext}")
+        # Get incremental filename to avoid overwriting
+        output_path = get_incremental_filename(output_dir, filename, ext)
         
         try:
             cmd = [
@@ -550,13 +582,21 @@ class ExportAnimatedFBX:
                 return ("", f"Error: {format_name} not created at {output_path}", 0, fps)
             
             file_size = os.path.getsize(output_path)
+            file_size_mb = file_size / (1024 * 1024)
+            
             status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis}, skeleton={skel_mode_str})"
             if not include_mesh:
                 status += " skeleton only"
             if include_camera:
                 status += " +camera"
             
+            print(f"\n{'='*60}")
+            print(f"[Export] SUCCESS!")
             print(f"[Export] {status}")
+            print(f"[Export] File: {output_path}")
+            print(f"[Export] Size: {file_size_mb:.2f} MB")
+            print(f"{'='*60}\n")
+            
             return (output_path, status, len(sorted_indices), fps)
             
         except subprocess.TimeoutExpired:
@@ -637,7 +677,9 @@ class ExportFBXFromJSON:
         # Determine output extension
         use_alembic = "ABC" in output_format
         ext = ".abc" if use_alembic else ".fbx"
-        output_path = os.path.join(output_dir, f"{filename}{ext}")
+        
+        # Get incremental filename to avoid overwriting
+        output_path = get_incremental_filename(output_dir, filename, ext)
         
         # Map world_translation option to mode
         translation_mode = "none"
