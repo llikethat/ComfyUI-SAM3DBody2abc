@@ -161,6 +161,69 @@ class CameraSolver:
         self.loftr_matcher = None
         self.superpoint = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._availability_logged = False
+    
+    # ==================== Availability Check ====================
+    
+    def check_available_matchers(self):
+        """Check and log which feature matchers are available."""
+        if self._availability_logged:
+            return
+        
+        print("\n" + "="*60)
+        print("[CameraSolver] Feature Matcher Availability Check")
+        print("="*60)
+        
+        available = []
+        unavailable = []
+        
+        # Check LightGlue
+        try:
+            from lightglue import LightGlue, SuperPoint
+            available.append("LightGlue + SuperPoint")
+            print("  ✓ LightGlue + SuperPoint - AVAILABLE (recommended)")
+        except ImportError:
+            unavailable.append(("LightGlue", "git clone https://github.com/cvg/LightGlue.git && cd LightGlue && pip install -e ."))
+            print("  ✗ LightGlue + SuperPoint - NOT INSTALLED")
+        
+        # Check LoFTR (kornia)
+        try:
+            from kornia.feature import LoFTR
+            available.append("LoFTR")
+            print("  ✓ LoFTR (kornia) - AVAILABLE")
+        except ImportError:
+            unavailable.append(("LoFTR", "pip install kornia"))
+            print("  ✗ LoFTR (kornia) - NOT INSTALLED")
+        
+        # Check YOLO (for person detection/masking)
+        try:
+            from ultralytics import YOLO
+            available.append("YOLO")
+            print("  ✓ YOLO (ultralytics) - AVAILABLE (for person masking)")
+        except ImportError:
+            unavailable.append(("YOLO", "pip install ultralytics"))
+            print("  ✗ YOLO (ultralytics) - NOT INSTALLED")
+        
+        # ORB is always available (OpenCV built-in)
+        print("  ✓ ORB (OpenCV) - AVAILABLE (fallback, always works)")
+        available.append("ORB")
+        
+        print("-"*60)
+        
+        if len(available) > 1:  # More than just ORB
+            print(f"[CameraSolver] Using best available: {available[0]}")
+        else:
+            print("[CameraSolver] WARNING: Only ORB fallback available (less accurate)")
+        
+        if unavailable:
+            print("\n[CameraSolver] To install missing matchers:")
+            for name, cmd in unavailable:
+                print(f"  {name}: {cmd}")
+        
+        print("="*60 + "\n")
+        
+        self._availability_logged = True
+        return available
     
     # ==================== Model Loading ====================
     
@@ -300,7 +363,10 @@ class CameraSolver:
     def run_lightglue(self, frame0: np.ndarray, frame1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """LightGlue matching (GPU with CPU fallback)."""
         if not self.load_lightglue():
-            print("[CameraSolver] LightGlue unavailable, falling back to ORB")
+            print("[CameraSolver] LightGlue unavailable, trying LoFTR...")
+            if self.load_loftr():
+                return self.run_loftr(frame0, frame1)
+            print("[CameraSolver] LoFTR also unavailable, falling back to ORB")
             return self.run_orb(frame0, frame1)
         
         try:
@@ -330,7 +396,14 @@ class CameraSolver:
             return pts0, pts1
             
         except Exception as e:
-            print(f"[CameraSolver] LightGlue error: {e}, falling back to ORB")
+            print(f"[CameraSolver] LightGlue error: {e}")
+            print("[CameraSolver] Trying LoFTR as fallback...")
+            if self.load_loftr():
+                try:
+                    return self.run_loftr(frame0, frame1)
+                except:
+                    pass
+            print("[CameraSolver] Falling back to ORB")
             return self.run_orb(frame0, frame1)
     
     def run_loftr(self, frame0: np.ndarray, frame1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -843,6 +916,9 @@ class CameraSolver:
         2. YOLO auto-detection (if auto_mask_people=True) - fallback
         3. No masking - uses all features including people
         """
+        
+        # Check and log available matchers (only once)
+        self.check_available_matchers()
         
         print(f"[CameraSolver] Method: {solving_method}, Quality: {quality_mode}")
         
