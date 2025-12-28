@@ -563,24 +563,34 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     if first_cam_t and len(first_cam_t) >= 3:
         cam_distance = abs(first_cam_t[2])
     
+    # Set rotation mode to XYZ for Maya compatibility
+    camera.rotation_mode = 'XYZ'
+    
     # Position camera based on up axis
+    # Camera looks in -Z direction by default in Blender
+    # For Maya Y-up: camera on +Z axis, looking at origin (0,0,0) = looking in -Z direction
     if up_axis == "Y":
+        # Y-up: Camera on +Z, looking at origin (no rotation needed, default is -Z)
         camera.location = Vector((0, 0, cam_distance))
-        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
+        camera.rotation_euler = Euler((0, 0, 0), 'XYZ')
     elif up_axis == "Z":
-        camera.location = Vector((0, -cam_distance, 0))
-        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
-    elif up_axis == "-Y":
-        camera.location = Vector((0, 0, -cam_distance))
-        camera.rotation_euler = Euler((math.radians(-90), 0, 0), 'XYZ')
-    elif up_axis == "-Z":
+        # Z-up: Camera on +Y, looking at origin
         camera.location = Vector((0, cam_distance, 0))
         camera.rotation_euler = Euler((math.radians(-90), 0, 0), 'XYZ')
+    elif up_axis == "-Y":
+        # -Y up: Camera on -Z, looking at origin
+        camera.location = Vector((0, 0, -cam_distance))
+        camera.rotation_euler = Euler((0, math.radians(180), 0), 'XYZ')
+    elif up_axis == "-Z":
+        # -Z up: Camera on -Y, looking at origin
+        camera.location = Vector((0, -cam_distance, 0))
+        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
     else:
         camera.location = Vector((0, 0, cam_distance))
-        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
+        camera.rotation_euler = Euler((0, 0, 0), 'XYZ')
     
     print(f"[Blender] Static camera at distance {cam_distance:.2f}")
+    print(f"[Blender] Camera rotation mode: {camera.rotation_mode}")
     
     return camera
 
@@ -1333,6 +1343,7 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
+    root.rotation_mode = 'XYZ'  # Maya compatibility
     bpy.context.collection.objects.link(root)
     
     # Animate root position based on pred_cam_t
@@ -1387,10 +1398,12 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
     print("[Blender] Creating root locator with camera compensation...")
     print(f"[Blender]   Mode: Nodal rotation → Translation conversion")
     print(f"[Blender]   Smoothing: {smoothing_method} (strength={smoothing_strength})")
+    print(f"[Blender]   Flip X: {flip_x}")
     
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
+    root.rotation_mode = 'XYZ'  # Maya compatibility
     bpy.context.collection.objects.link(root)
     
     # Pre-smooth camera extrinsics if requested
@@ -1587,6 +1600,9 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
     bpy.context.collection.objects.link(camera)
+    
+    # Set rotation mode to XYZ for Maya compatibility
+    camera.rotation_mode = 'XYZ'
     
     # Set sensor width
     cam_data.sensor_width = sensor_width
