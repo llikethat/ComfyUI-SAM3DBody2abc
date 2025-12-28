@@ -13,7 +13,8 @@ Installation:
     pip install moge
 
 Usage:
-    Connect images -> MoGe2 Intrinsics -> CAMERA_DATA output can be used with other nodes
+    Connect images -> MoGe2 Intrinsics -> CAMERA_INTRINSICS output
+    Then connect to Export Animated FBX for proper camera focal length in export.
 """
 
 import numpy as np
@@ -140,14 +141,20 @@ class MoGe2IntrinsicsEstimator:
         
         with torch.no_grad():
             for idx in frame_indices:
-                # Get frame and convert to (C, H, W) RGB
+                # Get frame and convert to (1, C, H, W) RGB - MoGe expects batch dimension
                 frame = images[idx]  # (H, W, C)
-                frame_tensor = frame.permute(2, 0, 1).to(self.device)  # (C, H, W)
+                frame_tensor = frame.permute(2, 0, 1).unsqueeze(0).to(self.device)  # (1, C, H, W)
                 
                 # Run MoGe inference
                 try:
                     output = self.model.infer(frame_tensor)
-                    intrinsics = output["intrinsics"].cpu().numpy()  # (3, 3)
+                    # Output intrinsics may be (3, 3) or (1, 3, 3)
+                    intrinsics = output["intrinsics"]
+                    if hasattr(intrinsics, 'cpu'):
+                        intrinsics = intrinsics.cpu().numpy()
+                    # Handle batch dimension in output
+                    if intrinsics.ndim == 3:
+                        intrinsics = intrinsics[0]  # (1, 3, 3) -> (3, 3)
                     all_intrinsics.append(intrinsics)
                 except Exception as e:
                     print(f"[MoGeIntrinsics] Frame {idx} inference error: {e}")
@@ -301,74 +308,13 @@ class ApplyIntrinsicsToMeshSequence:
         return (output,)
 
 
-class ApplyIntrinsicsToCameraData:
-    """
-    Apply estimated camera intrinsics to COLMAP camera data.
-    
-    This can improve camera alignment when COLMAP's intrinsics estimation
-    is less accurate than MoGe2's monocular estimation.
-    """
-    
-    @classmethod
-    def INPUT_TYPES(cls) -> Dict[str, Any]:
-        return {
-            "required": {
-                "camera_data": ("CAMERA_DATA",),
-                "intrinsics": ("CAMERA_INTRINSICS",),
-            },
-            "optional": {
-                "override_mode": (["Replace", "Average", "WeightedAverage"], {
-                    "default": "Average",
-                    "tooltip": "How to combine MoGe2 intrinsics with existing. Replace: use MoGe2 only. Average: simple average. WeightedAverage: favor COLMAP for multi-view."
-                }),
-            }
-        }
-    
-    RETURN_TYPES = ("CAMERA_DATA",)
-    RETURN_NAMES = ("camera_data",)
-    FUNCTION = "apply_intrinsics"
-    CATEGORY = "SAM3DBody2abc/Camera"
-    
-    def apply_intrinsics(
-        self,
-        camera_data: Any,
-        intrinsics: Dict,
-        override_mode: str = "Average",
-    ) -> Tuple[Any]:
-        """Apply intrinsics to camera data."""
-        
-        moge_focal = intrinsics.get("focal_length_px", 1000.0)
-        
-        if hasattr(camera_data, 'intrinsics') and camera_data.intrinsics:
-            colmap_focal = camera_data.intrinsics.focal_length_x
-            
-            if override_mode == "Replace":
-                new_focal = moge_focal
-            elif override_mode == "Average":
-                new_focal = (moge_focal + colmap_focal) / 2
-            else:  # WeightedAverage - favor COLMAP for multi-view
-                weight = min(len(camera_data.extrinsics) / 10, 0.8)  # Max 80% weight to COLMAP
-                new_focal = weight * colmap_focal + (1 - weight) * moge_focal
-            
-            camera_data.intrinsics.focal_length_x = new_focal
-            camera_data.intrinsics.focal_length_y = new_focal
-            
-            print(f"[ApplyIntrinsics] COLMAP: {colmap_focal:.1f}px, MoGe2: {moge_focal:.1f}px -> {new_focal:.1f}px ({override_mode})")
-        else:
-            print(f"[ApplyIntrinsics] No existing intrinsics, using MoGe2: {moge_focal:.1f}px")
-        
-        return (camera_data,)
-
-
 # Node registration
 NODE_CLASS_MAPPINGS = {
     "MoGe2IntrinsicsEstimator": MoGe2IntrinsicsEstimator,
     "ApplyIntrinsicsToMeshSequence": ApplyIntrinsicsToMeshSequence,
-    "ApplyIntrinsicsToCameraData": ApplyIntrinsicsToCameraData,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "MoGe2IntrinsicsEstimator": "📷 MoGe2 Intrinsics Estimator",
     "ApplyIntrinsicsToMeshSequence": "📷 Apply Intrinsics to Mesh",
-    "ApplyIntrinsicsToCameraData": "📷 Apply Intrinsics to Camera",
 }

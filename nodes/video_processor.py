@@ -11,16 +11,7 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 from scipy.ndimage import gaussian_filter1d
 
-
-def to_numpy(data):
-    """Convert tensor to numpy."""
-    if data is None:
-        return None
-    if isinstance(data, torch.Tensor):
-        return data.cpu().numpy()
-    if isinstance(data, np.ndarray):
-        return data.copy()
-    return data
+from .utils import to_numpy
 
 
 class VideoBatchProcessor:
@@ -43,8 +34,8 @@ class VideoBatchProcessor:
                 "images": ("IMAGE", {}),
             },
             "optional": {
-                "sam3_masks": ("SAM3_VIDEO_MASKS", {
-                    "tooltip": "Masks from SAM3 Propagation"
+                "masks": ("MASK", {
+                    "tooltip": "Masks from SAM3 Video Output or any mask source. Shape: (N, H, W) or (N, 1, H, W)"
                 }),
                 "fps": ("FLOAT", {
                     "default": 24.0,
@@ -54,10 +45,10 @@ class VideoBatchProcessor:
                     "tooltip": "Source video FPS - passed through to export"
                 }),
                 "object_id": ("INT", {
-                    "default": 1,
+                    "default": 0,
                     "min": 0,
                     "max": 10,
-                    "tooltip": "Which object ID to track (match obj_id in SAM3 Video Output)"
+                    "tooltip": "Which object ID to use if masks have multiple objects (usually 0)"
                 }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
@@ -155,9 +146,9 @@ class VideoBatchProcessor:
         self,
         model: Dict,
         images: torch.Tensor,
-        sam3_masks: Optional[Any] = None,
+        masks: Optional[torch.Tensor] = None,
         fps: float = 24.0,
-        object_id: int = 1,
+        object_id: int = 0,
         bbox_threshold: float = 0.8,
         inference_type: str = "full",
         smoothing_strength: float = 0.5,
@@ -167,8 +158,11 @@ class VideoBatchProcessor:
     ) -> Tuple[Dict, torch.Tensor, int, str, float]:
         """Process video frames.
         
-        Uses per-frame masks from SAM3 Propagation for character tracking.
+        Uses per-frame masks from SAM3 for character tracking.
         Each frame gets its own mask, allowing accurate tracking as the character moves.
+        
+        Args:
+            masks: Standard ComfyUI MASK tensor with shape (N, H, W) where N = number of frames
         """
         
         try:
@@ -176,112 +170,61 @@ class VideoBatchProcessor:
         except ImportError:
             return ({}, images[:1], 0, "Error: SAM3DBody not installed", fps)
         
-        # Handle sam3_masks input - extract masks for tracking
+        # Handle masks input - standard MASK type is (N, H, W) tensor
         active_mask = None
-        if sam3_masks is not None:
-            print(f"[SAM3DBody2abc] Received sam3_masks, type: {type(sam3_masks).__name__}")
+        if masks is not None:
+            print(f"[SAM3DBody2abc] Received masks, type: {type(masks).__name__}")
             
-            # Debug: inspect the structure (limit output)
-            if isinstance(sam3_masks, dict):
-                keys = list(sam3_masks.keys())
-                print(f"[SAM3DBody2abc] sam3_masks is dict with {len(keys)} keys: {keys[:5]}...{keys[-3:] if len(keys) > 5 else ''}")
+            if isinstance(masks, torch.Tensor):
+                print(f"[SAM3DBody2abc] Mask tensor shape: {masks.shape}, ndim: {masks.ndim}")
                 
-                # Check if this is a frame-indexed dict (keys are frame indices 0,1,2,...)
-                # SAM3 Propagate outputs: {0: mask_frame0, 1: mask_frame1, ...}
-                is_frame_indexed = False
-                if len(keys) > 1:
-                    # Check if keys are consecutive integers starting from 0
-                    int_keys = [k for k in keys if isinstance(k, int)]
-                    if len(int_keys) == len(keys):
-                        sorted_keys = sorted(int_keys)
-                        if sorted_keys == list(range(len(sorted_keys))):
-                            is_frame_indexed = True
-                            print(f"[SAM3DBody2abc] Detected frame-indexed dict format ({len(keys)} frames)")
-                
-                if is_frame_indexed:
-                    # Stack all frames into a single tensor
-                    # Each value is shape (1, H, W) or (num_objects, H, W)
-                    frame_masks = []
-                    sorted_keys = sorted([k for k in keys if isinstance(k, int)])
+                if masks.ndim == 3:
+                    # Standard MASK format: (N, H, W) - one mask per frame
+                    active_mask = masks
+                    print(f"[SAM3DBody2abc] Using standard MASK format (N, H, W)")
                     
-                    for frame_key in sorted_keys:
-                        frame_mask = sam3_masks[frame_key]
-                        # Convert to tensor if numpy
-                        if isinstance(frame_mask, np.ndarray):
-                            frame_mask = torch.from_numpy(frame_mask)
-                        elif hasattr(frame_mask, 'cpu'):
-                            frame_mask = frame_mask.cpu()
-                        frame_masks.append(frame_mask)
-                    
-                    # Stack: result shape will be (num_frames, num_objects, H, W) or (num_frames, H, W)
-                    stacked = torch.stack(frame_masks, dim=0)
-                    print(f"[SAM3DBody2abc] Stacked {len(frame_masks)} frames into shape {stacked.shape}")
-                    
-                    # If shape is (frames, 1, H, W), squeeze the object dim
-                    if stacked.ndim == 4 and stacked.shape[1] == 1:
-                        stacked = stacked.squeeze(1)  # (frames, H, W)
-                        print(f"[SAM3DBody2abc] Squeezed to shape {stacked.shape}")
-                    
-                    active_mask = stacked
-                
-                elif 'masks' in sam3_masks:
-                    # Nested structure: {'masks': tensor, 'scores': tensor, ...}
-                    inner_masks = sam3_masks['masks']
-                    if hasattr(inner_masks, 'shape'):
-                        print(f"[SAM3DBody2abc] Found nested 'masks' key with shape {inner_masks.shape}")
-                        if inner_masks.ndim >= 3:
-                            active_mask = inner_masks
-                
-                # Object-indexed format: {obj_id: mask_tensor}
-                elif object_id in sam3_masks:
-                    active_mask = sam3_masks[object_id]
-                    print(f"[SAM3DBody2abc] Extracted mask for object {object_id} from dict")
-                elif str(object_id) in sam3_masks:
-                    active_mask = sam3_masks[str(object_id)]
-                    print(f"[SAM3DBody2abc] Extracted mask for object '{object_id}' from dict (string key)")
-                else:
-                    print(f"[SAM3DBody2abc] Warning: Could not determine mask format. Keys sample: {keys[:5]}")
-            
-            elif isinstance(sam3_masks, (list, tuple)):
-                # List format: [mask_for_obj_0, mask_for_obj_1, ...]
-                if object_id < len(sam3_masks):
-                    active_mask = sam3_masks[object_id]
-                    if hasattr(active_mask, 'shape'):
-                        print(f"[SAM3DBody2abc] Extracted mask[{object_id}] from list -> shape {active_mask.shape}")
-                elif len(sam3_masks) > 0:
-                    active_mask = sam3_masks[0]
-                    print(f"[SAM3DBody2abc] object_id {object_id} >= len, using first mask")
-            elif isinstance(sam3_masks, torch.Tensor):
-                print(f"[SAM3DBody2abc] masks tensor shape: {sam3_masks.shape}, ndim: {sam3_masks.ndim}")
-                # Try to extract the right object
-                if sam3_masks.ndim == 4:
-                    # Could be [frames, objects, H, W] or [objects, frames, H, W]
-                    if sam3_masks.shape[1] < sam3_masks.shape[0]:
-                        # Likely [frames, objects, H, W]
-                        if object_id < sam3_masks.shape[1]:
-                            active_mask = sam3_masks[:, object_id, :, :]
-                            print(f"[SAM3DBody2abc] Extracted mask[:, {object_id}, :, :] -> shape {active_mask.shape}")
+                elif masks.ndim == 4:
+                    # Could be (N, 1, H, W) or (N, num_objects, H, W)
+                    if masks.shape[1] == 1:
+                        # Single object: squeeze to (N, H, W)
+                        active_mask = masks.squeeze(1)
+                        print(f"[SAM3DBody2abc] Squeezed (N, 1, H, W) to (N, H, W)")
+                    elif object_id < masks.shape[1]:
+                        # Multiple objects: select by object_id
+                        active_mask = masks[:, object_id, :, :]
+                        print(f"[SAM3DBody2abc] Selected object {object_id} from (N, {masks.shape[1]}, H, W)")
                     else:
-                        # Likely [objects, frames, H, W]
-                        if object_id < sam3_masks.shape[0]:
-                            active_mask = sam3_masks[object_id, :, :, :]
-                            print(f"[SAM3DBody2abc] Extracted mask[{object_id}, :, :, :] -> shape {active_mask.shape}")
-                elif sam3_masks.ndim == 3:
-                    # [frames, H, W] - single object already
-                    active_mask = sam3_masks
-                    print(f"[SAM3DBody2abc] Using masks directly (single object): shape {active_mask.shape}")
-            elif hasattr(sam3_masks, 'masks'):
-                # Some custom object with .masks attribute
-                actual_masks = sam3_masks.masks
-                print(f"[SAM3DBody2abc] Found .masks attribute, type: {type(actual_masks).__name__}")
-                if isinstance(actual_masks, torch.Tensor) and actual_masks.ndim >= 3:
-                    active_mask = actual_masks
-        
-        if active_mask is not None:
-            if hasattr(active_mask, 'shape'):
-                print(f"[SAM3DBody2abc] Using mask with shape: {active_mask.shape}")
-            else:
-                print(f"[SAM3DBody2abc] Using mask of type: {type(active_mask).__name__}")
+                        # Fallback to first object
+                        active_mask = masks[:, 0, :, :]
+                        print(f"[SAM3DBody2abc] object_id {object_id} out of range, using object 0")
+                        
+                elif masks.ndim == 2:
+                    # Single mask (H, W) - replicate for all frames
+                    num_frames = images.shape[0]
+                    active_mask = masks.unsqueeze(0).repeat(num_frames, 1, 1)
+                    print(f"[SAM3DBody2abc] Replicated single mask to {num_frames} frames")
+                    
+            elif isinstance(masks, dict):
+                # Legacy dict format support
+                print(f"[SAM3DBody2abc] Received dict masks with keys: {list(masks.keys())[:5]}")
+                # Try to extract frame-indexed masks
+                keys = [k for k in masks.keys() if isinstance(k, int)]
+                if keys:
+                    sorted_keys = sorted(keys)
+                    frame_masks = []
+                    for k in sorted_keys:
+                        m = masks[k]
+                        if isinstance(m, np.ndarray):
+                            m = torch.from_numpy(m)
+                        if m.ndim == 3 and m.shape[0] == 1:
+                            m = m.squeeze(0)
+                        frame_masks.append(m)
+                    if frame_masks:
+                        active_mask = torch.stack(frame_masks, dim=0)
+                        print(f"[SAM3DBody2abc] Built mask tensor from dict: {active_mask.shape}")
+            
+            if active_mask is not None:
+                print(f"[SAM3DBody2abc] Final active_mask shape: {active_mask.shape}")
         else:
             print(f"[SAM3DBody2abc] No mask provided - will use auto-detection")
         

@@ -22,6 +22,8 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
 
+from .utils import to_list
+
 BLENDER_TIMEOUT = 600
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -69,25 +71,6 @@ def find_blender() -> Optional[str]:
             return loc
     
     return None
-
-
-def to_list(obj):
-    """Convert to JSON-serializable list."""
-    if obj is None:
-        return None
-    if isinstance(obj, torch.Tensor):
-        return obj.cpu().numpy().tolist()
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, (np.float32, np.float64)):
-        return float(obj)
-    if isinstance(obj, (np.int32, np.int64)):
-        return int(obj)
-    if isinstance(obj, dict):
-        return {k: to_list(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_list(v) for v in obj]
-    return obj
 
 
 class ExportAnimatedFBX:
@@ -559,6 +542,9 @@ class ExportAnimatedFBX:
 class ExportFBXFromJSON:
     """
     Export animated FBX or Alembic from saved JSON file.
+    
+    Note: This is a simplified export without camera_extrinsics/intrinsics inputs.
+    For full camera support, use Export Animated FBX with MESH_SEQUENCE input.
     """
     
     @classmethod
@@ -571,8 +557,14 @@ class ExportFBXFromJSON:
                 "skeleton_mode": (["Rotations (Recommended)", "Positions (Legacy)"], {
                     "default": "Rotations (Recommended)",
                 }),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Baked into Geometry (Static Camera)", "Root Locator", "Separate Track"], {
+                "world_translation": ([
+                    "None (Body at Origin)",
+                    "Baked into Mesh/Joints",
+                    "Root Locator",
+                    "Separate Track"
+                ], {
                     "default": "None (Body at Origin)",
+                    "tooltip": "How to handle world translation. For camera modes, use Export Animated FBX with camera inputs."
                 }),
             },
             "optional": {
@@ -620,12 +612,8 @@ class ExportFBXFromJSON:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Baked into Geometry" in world_translation:
-            translation_mode = "bake_to_geometry"
-        elif "Baked into Mesh" in world_translation:
+        if "Baked into Mesh" in world_translation:
             translation_mode = "baked"
-        elif "Baked into Camera" in world_translation:
-            translation_mode = "camera"
         elif "Root" in world_translation:
             translation_mode = "root"
         elif "Separate" in world_translation:
