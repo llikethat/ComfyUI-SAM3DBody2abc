@@ -22,7 +22,25 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
 
-from .utils import to_list
+
+def to_list(obj):
+    """Convert to JSON-serializable list."""
+    if obj is None:
+        return None
+    if isinstance(obj, torch.Tensor):
+        return obj.cpu().numpy().tolist()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.float32, np.float64)):
+        return float(obj)
+    if isinstance(obj, (np.int32, np.int64)):
+        return int(obj)
+    if isinstance(obj, dict):
+        return {k: to_list(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_list(v) for v in obj]
+    return obj
+
 
 BLENDER_TIMEOUT = 600
 

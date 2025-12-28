@@ -13,7 +13,16 @@ import torch
 import cv2
 from typing import Dict, Tuple, Any, Optional, List
 
-from .utils import to_numpy
+
+def to_numpy(data):
+    """Convert tensor to numpy."""
+    if data is None:
+        return None
+    if isinstance(data, torch.Tensor):
+        return data.cpu().numpy()
+    if isinstance(data, np.ndarray):
+        return data.copy()
+    return np.array(data)
 
 
 def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_height):

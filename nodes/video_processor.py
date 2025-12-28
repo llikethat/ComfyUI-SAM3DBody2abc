@@ -11,7 +11,16 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 from scipy.ndimage import gaussian_filter1d
 
-from .utils import to_numpy
+
+def to_numpy(data):
+    """Convert tensor to numpy."""
+    if data is None:
+        return None
+    if isinstance(data, torch.Tensor):
+        return data.cpu().numpy()
+    if isinstance(data, np.ndarray):
+        return data.copy()
+    return data
 
 
 class VideoBatchProcessor:
