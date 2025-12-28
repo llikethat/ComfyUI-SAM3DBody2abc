@@ -1355,18 +1355,24 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
     """
     Create a root locator with inverse camera extrinsics baked in.
     
+    IMPORTANT: For nodal cameras (tripod rotation), pan/tilt should be converted
+    to TRANSLATION, not rotation. This is because:
+    - A nodal camera rotates around its nodal point
+    - When camera pans right, subject appears to move left in frame
+    - But subject isn't actually rotating - it's appearing to translate
+    - The compensation must be translation, not rotation
+    
+    The math:
+    - Pan angle θ at distance d → horizontal translation = d * tan(θ)
+    - Tilt angle φ at distance d → vertical translation = d * tan(φ)
+    
     This allows:
     - Camera to be exported as static
-    - Body animation to include the inverse of camera motion
+    - Body animation to include the inverse of camera motion as translation
     - Clean result in Maya/Unity/etc. with stable camera
     
-    The inverse transform is:
-    - If camera pans left (negative pan), root moves right (positive X)
-    - If camera tilts up (positive tilt), root moves up (positive Y)
-    - If camera translates left (negative tx), root translates right (positive X)
-    
     Args:
-        all_frames: Frame data with pred_cam_t
+        all_frames: Frame data with pred_cam_t (contains distance in tz)
         camera_extrinsics: List of dicts with pan, tilt, roll, tx, ty, tz
         fps: Frame rate
         up_axis: Up axis for coordinate system
@@ -1379,6 +1385,7 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
         Root locator Blender object with animated transform
     """
     print("[Blender] Creating root locator with camera compensation...")
+    print(f"[Blender]   Mode: Nodal rotation → Translation conversion")
     print(f"[Blender]   Smoothing: {smoothing_method} (strength={smoothing_strength})")
     
     root = bpy.data.objects.new("root_locator", None)
@@ -1416,12 +1423,27 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
     initial_ty = initial_ext.get("ty", 0)
     initial_tz = initial_ext.get("tz", 0)
     
+    # Get initial distance from first frame's pred_cam_t
+    first_frame_cam_t = all_frames[0].get("pred_cam_t") if all_frames else None
+    if first_frame_cam_t and len(first_frame_cam_t) >= 3:
+        initial_distance = first_frame_cam_t[2]  # tz = depth/distance
+    else:
+        initial_distance = 5.0  # Default fallback
+    
     print(f"[Blender]   Initial camera: pan={math.degrees(initial_pan):.2f}°, tilt={math.degrees(initial_tilt):.2f}°")
+    print(f"[Blender]   Initial distance: {initial_distance:.2f}m (from pred_cam_t.z)")
+    
+    # Track total compensation for logging
+    max_pan_trans = 0
+    max_tilt_trans = 0
     
     for frame_idx, frame_data in enumerate(all_frames):
-        # Get world offset from pred_cam_t (body's position relative to camera)
+        # Get distance from this frame's pred_cam_t
         frame_cam_t = frame_data.get("pred_cam_t")
-        world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+        if frame_cam_t and len(frame_cam_t) >= 3:
+            distance = frame_cam_t[2]  # tz = depth/distance
+        else:
+            distance = initial_distance
         
         # Get camera extrinsics for this frame
         ext = extrinsics_by_frame.get(frame_idx, {})
@@ -1434,38 +1456,57 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
         delta_ty = ext.get("ty", 0) - initial_ty
         delta_tz = ext.get("tz", 0) - initial_tz
         
-        # Build inverse rotation matrix for camera compensation
-        # The inverse of camera rotation is applied to the root
-        # so that in screen space, the character stays stable
+        # ============================================================
+        # NODAL CAMERA ROTATION → TRANSLATION CONVERSION
+        # ============================================================
+        # When a nodal camera (tripod) pans/tilts, the subject appears
+        # to translate in screen space, not rotate.
+        # 
+        # Formula: translation = distance * tan(angle)
+        #
+        # - Pan (horizontal rotation) → Horizontal translation
+        #   If camera pans RIGHT (positive pan), subject moves LEFT in frame
+        #   Compensation: translate character RIGHT (positive X)
+        #
+        # - Tilt (vertical rotation) → Vertical translation
+        #   If camera tilts UP (positive tilt), subject moves DOWN in frame
+        #   Compensation: translate character UP (positive Y)
+        # ============================================================
         
-        # For Y-up coordinate system:
-        # - Pan (rotation around Y) -> inverse moves root in world X
-        # - Tilt (rotation around X) -> inverse moves root in world Y
-        # - Roll (rotation around Z) -> inverse rotates root
+        # Convert nodal rotation to translation (inverse for compensation)
+        # Negative because we want to compensate (inverse transform)
+        pan_translation = distance * math.tan(delta_pan)   # Horizontal
+        tilt_translation = distance * math.tan(delta_tilt) # Vertical
         
-        # Create rotation compensation (inverse)
-        # Using negative angles = inverse rotation
-        inv_pan = -delta_pan
-        inv_tilt = -delta_tilt
-        inv_roll = -delta_roll
+        # Track max values for logging
+        max_pan_trans = max(max_pan_trans, abs(pan_translation))
+        max_tilt_trans = max(max_tilt_trans, abs(tilt_translation))
         
-        # Translation compensation (inverse)
+        # Camera translation compensation (inverse)
         inv_tx = -delta_tx
         inv_ty = -delta_ty
         inv_tz = -delta_tz
         
+        # Roll stays as rotation (it doesn't translate the subject)
+        inv_roll = -delta_roll
+        
         # Apply coordinate system conversion
         if up_axis.upper() in ["Y", "-Y"]:
-            # Y-up: standard
-            rot_euler = Euler((inv_tilt, inv_pan, inv_roll), 'XYZ')
-            trans_offset = Vector((inv_tx, inv_ty, inv_tz))
+            # Y-up: X=horizontal, Y=up, Z=depth
+            # Pan → X translation, Tilt → Y translation
+            nodal_trans = Vector((pan_translation, tilt_translation, 0))
+            camera_trans = Vector((inv_tx, inv_ty, inv_tz))
+            rot_euler = Euler((0, 0, inv_roll), 'XYZ')  # Only roll stays as rotation
         else:
-            # Z-up: swap Y and Z
-            rot_euler = Euler((inv_tilt, inv_roll, inv_pan), 'XYZ')
-            trans_offset = Vector((inv_tx, inv_tz, inv_ty))
+            # Z-up: X=horizontal, Z=up, Y=depth
+            nodal_trans = Vector((pan_translation, 0, tilt_translation))
+            camera_trans = Vector((inv_tx, inv_tz, inv_ty))
+            rot_euler = Euler((0, inv_roll, 0), 'XYZ')
         
-        # Combine world offset + inverse camera translation
-        final_location = world_offset + trans_offset
+        # Combine all translations:
+        # 1. Nodal rotation converted to translation
+        # 2. Camera translation (inverse)
+        final_location = nodal_trans + camera_trans
         
         # Apply flip_x
         if flip_x:
@@ -1483,9 +1524,13 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
         final_ext = extrinsics_by_frame.get(len(all_frames) - 1, smoothed_extrinsics[-1])
         final_pan = final_ext.get("pan", 0) - initial_pan
         final_tilt = final_ext.get("tilt", 0) - initial_tilt
-        print(f"[Blender] Root locator with camera compensation:")
-        print(f"[Blender]   Total pan compensation: {math.degrees(-final_pan):.2f}°")
-        print(f"[Blender]   Total tilt compensation: {math.degrees(-final_tilt):.2f}°")
+        final_pan_trans = initial_distance * math.tan(final_pan)
+        final_tilt_trans = initial_distance * math.tan(final_tilt)
+        
+        print(f"[Blender] Root locator with camera compensation (nodal → translation):")
+        print(f"[Blender]   Camera pan range: {math.degrees(final_pan):.2f}° → {final_pan_trans:.3f}m translation")
+        print(f"[Blender]   Camera tilt range: {math.degrees(final_tilt):.2f}° → {final_tilt_trans:.3f}m translation")
+        print(f"[Blender]   Max translation: X={max_pan_trans:.3f}m, Y={max_tilt_trans:.3f}m")
         print(f"[Blender]   Animated over {len(all_frames)} frames")
     
     return root
