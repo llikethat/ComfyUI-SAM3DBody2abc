@@ -43,6 +43,16 @@ scipy
 # Windows: https://colmap.github.io/install.html
 
 # ============================================
+# CAMERA INTRINSICS (Optional - Recommended)
+# ============================================
+# MoGe2 provides accurate monocular intrinsics estimation
+# Much better than heuristics when camera metadata is unknown
+
+# pip install moge
+# Models auto-download from HuggingFace on first use
+# Requires ~60ms per frame (A100/RTX3090, FP16)
+
+# ============================================
 # GPU Notes
 # ============================================
 # Fast mode: CPU only (KLT, ORB)

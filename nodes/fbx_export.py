@@ -147,9 +147,9 @@ class ExportAnimatedFBX:
                     "default": "Rotations (Recommended)",
                     "tooltip": "Rotations: proper bone rotations for retargeting. Positions: exact joint locations."
                 }),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Root Locator + Animated Camera", "Separate Track"], {
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Baked into Geometry (Static Camera)", "Root Locator", "Root Locator + Animated Camera", "Separate Track"], {
                     "default": "None (Body at Origin)",
-                    "tooltip": "How to handle world translation. 'Root Locator + Animated Camera' is best for matchmoving workflows."
+                    "tooltip": "How to handle world translation. 'Baked into Geometry (Static Camera)' bakes camera motion into mesh/skeleton for stable exports."
                 }),
                 "flip_x": ("BOOLEAN", {
                     "default": False,
@@ -173,6 +173,17 @@ class ExportAnimatedFBX:
                     "max": 15,
                     "step": 1,
                     "tooltip": "Smoothing window for camera animation to reduce jitter (0=none, 3=light, 5=medium, 9=heavy)"
+                }),
+                "bake_smoothing_method": (["Kalman Filter", "Spline Fitting", "Gaussian", "None"], {
+                    "default": "Kalman Filter",
+                    "tooltip": "Smoothing method when baking camera into geometry. Kalman: optimal for sequential data. Spline: smooth curves. Gaussian: simple averaging."
+                }),
+                "bake_smoothing_strength": ("FLOAT", {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.1,
+                    "tooltip": "Smoothing strength for geometry baking (0=minimal, 1=maximum). For Kalman: affects measurement noise. For Spline: affects curve smoothness."
                 }),
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
@@ -209,6 +220,8 @@ class ExportAnimatedFBX:
         include_camera: bool = True,
         camera_motion: str = "Translation (Default)",
         camera_smoothing: int = 0,
+        bake_smoothing_method: str = "Kalman Filter",
+        bake_smoothing_strength: float = 0.5,
         sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int, float]:
@@ -284,7 +297,9 @@ class ExportAnimatedFBX:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Baked into Mesh" in world_translation:
+        if "Baked into Geometry" in world_translation:
+            translation_mode = "bake_to_geometry"
+        elif "Baked into Mesh" in world_translation:
             translation_mode = "baked"
         elif "Baked into Camera" in world_translation:
             translation_mode = "camera"
@@ -359,6 +374,15 @@ class ExportAnimatedFBX:
             if has_translation:
                 print(f"[Export] Camera translation data included (will compensate root position)")
         
+        # Map bake smoothing method to internal name
+        bake_method_map = {
+            "Kalman Filter": "kalman",
+            "Spline Fitting": "spline",
+            "Gaussian": "gaussian",
+            "None": "none",
+        }
+        bake_method = bake_method_map.get(bake_smoothing_method, "kalman")
+        
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
@@ -375,6 +399,8 @@ class ExportAnimatedFBX:
             "camera_static": camera_static,  # New: disable all camera animation
             "camera_smoothing": camera_smoothing,
             "solved_camera_rotations": solved_rotations,  # From Camera Rotation Solver
+            "bake_smoothing_method": bake_method,  # For geometry baking
+            "bake_smoothing_strength": bake_smoothing_strength,
             "frames": [],
         }
         
@@ -508,7 +534,7 @@ class ExportFBXFromJSON:
                 "skeleton_mode": (["Rotations (Recommended)", "Positions (Legacy)"], {
                     "default": "Rotations (Recommended)",
                 }),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Root Locator", "Separate Track"], {
+                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Baked into Geometry (Static Camera)", "Root Locator", "Separate Track"], {
                     "default": "None (Body at Origin)",
                 }),
             },
@@ -557,7 +583,9 @@ class ExportFBXFromJSON:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Baked into Mesh" in world_translation:
+        if "Baked into Geometry" in world_translation:
+            translation_mode = "bake_to_geometry"
+        elif "Baked into Mesh" in world_translation:
             translation_mode = "baked"
         elif "Baked into Camera" in world_translation:
             translation_mode = "camera"

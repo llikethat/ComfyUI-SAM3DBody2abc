@@ -124,6 +124,457 @@ def smooth_camera_data(camera_rotations, window=9):
     return result
 
 
+def kalman_filter_camera_data(camera_rotations, process_noise=0.01, measurement_noise=0.1):
+    """
+    Apply Kalman filter to camera rotation/translation data for smooth trajectories.
+    
+    Kalman filter is optimal for:
+    - Real-time or sequential data
+    - Known motion model (constant velocity assumption)
+    - Balancing between measurement trust and prediction
+    
+    Args:
+        camera_rotations: List of dicts with pan, tilt, roll, tx, ty, tz
+        process_noise: How much we expect the state to change (lower = smoother)
+        measurement_noise: How noisy we think measurements are (higher = trust prediction more)
+    
+    Returns:
+        Filtered camera rotation list
+    """
+    if not camera_rotations or len(camera_rotations) < 2:
+        return camera_rotations
+    
+    import numpy as np
+    
+    n = len(camera_rotations)
+    print(f"[Blender] Applying Kalman filter to {n} camera frames (Q={process_noise}, R={measurement_noise})...")
+    
+    # State: [pan, tilt, roll, tx, ty, tz, d_pan, d_tilt, d_roll, d_tx, d_ty, d_tz]
+    # We track both position and velocity for smoother predictions
+    state_dim = 12
+    meas_dim = 6
+    
+    # Initialize state
+    x = np.zeros(state_dim)
+    x[0] = camera_rotations[0].get("pan", 0.0)
+    x[1] = camera_rotations[0].get("tilt", 0.0)
+    x[2] = camera_rotations[0].get("roll", 0.0)
+    x[3] = camera_rotations[0].get("tx", 0.0)
+    x[4] = camera_rotations[0].get("ty", 0.0)
+    x[5] = camera_rotations[0].get("tz", 0.0)
+    
+    # State transition matrix (constant velocity model)
+    dt = 1.0  # Frame time step
+    F = np.eye(state_dim)
+    for i in range(6):
+        F[i, i + 6] = dt  # Position += velocity * dt
+    
+    # Measurement matrix (we only observe position, not velocity)
+    H = np.zeros((meas_dim, state_dim))
+    for i in range(meas_dim):
+        H[i, i] = 1.0
+    
+    # Process noise covariance
+    Q = np.eye(state_dim) * process_noise
+    # Higher noise for velocity components (less certain about acceleration)
+    for i in range(6, 12):
+        Q[i, i] = process_noise * 10
+    
+    # Measurement noise covariance
+    R = np.eye(meas_dim) * measurement_noise
+    
+    # Initial state covariance
+    P = np.eye(state_dim) * 1.0
+    
+    # Store filtered results
+    filtered = []
+    
+    for frame_idx, cam_rot in enumerate(camera_rotations):
+        # Measurement
+        z = np.array([
+            cam_rot.get("pan", 0.0),
+            cam_rot.get("tilt", 0.0),
+            cam_rot.get("roll", 0.0),
+            cam_rot.get("tx", 0.0),
+            cam_rot.get("ty", 0.0),
+            cam_rot.get("tz", 0.0),
+        ])
+        
+        # Predict
+        x_pred = F @ x
+        P_pred = F @ P @ F.T + Q
+        
+        # Update
+        y = z - H @ x_pred  # Innovation
+        S = H @ P_pred @ H.T + R  # Innovation covariance
+        K = P_pred @ H.T @ np.linalg.inv(S)  # Kalman gain
+        
+        x = x_pred + K @ y
+        P = (np.eye(state_dim) - K @ H) @ P_pred
+        
+        # Store filtered result
+        filtered.append({
+            "frame": cam_rot.get("frame", frame_idx),
+            "pan": float(x[0]),
+            "tilt": float(x[1]),
+            "roll": float(x[2]),
+            "tx": float(x[3]),
+            "ty": float(x[4]),
+            "tz": float(x[5]),
+        })
+    
+    print(f"[Blender] Kalman filter complete")
+    return filtered
+
+
+def spline_fit_camera_data(camera_rotations, smoothing_factor=0.5):
+    """
+    Apply cubic spline fitting to camera rotation/translation data.
+    
+    Spline fitting is optimal for:
+    - Batch processing (all data available)
+    - Creating smooth continuous curves
+    - Preserving overall motion character while removing high-frequency noise
+    
+    Args:
+        camera_rotations: List of dicts with pan, tilt, roll, tx, ty, tz
+        smoothing_factor: 0.0 = interpolation (passes through all points)
+                         1.0 = heavy smoothing (may deviate from points)
+    
+    Returns:
+        Spline-fitted camera rotation list
+    """
+    if not camera_rotations or len(camera_rotations) < 4:
+        return camera_rotations
+    
+    try:
+        from scipy.interpolate import UnivariateSpline
+    except ImportError:
+        print("[Blender] scipy not available for spline fitting, using Gaussian smoothing fallback")
+        return smooth_camera_data(camera_rotations, window=9)
+    
+    import numpy as np
+    
+    n = len(camera_rotations)
+    print(f"[Blender] Applying spline fitting to {n} camera frames (smoothing={smoothing_factor})...")
+    
+    # Extract channels
+    frames = np.array([r.get("frame", i) for i, r in enumerate(camera_rotations)])
+    pans = np.array([r.get("pan", 0.0) for r in camera_rotations])
+    tilts = np.array([r.get("tilt", 0.0) for r in camera_rotations])
+    rolls = np.array([r.get("roll", 0.0) for r in camera_rotations])
+    txs = np.array([r.get("tx", 0.0) for r in camera_rotations])
+    tys = np.array([r.get("ty", 0.0) for r in camera_rotations])
+    tzs = np.array([r.get("tz", 0.0) for r in camera_rotations])
+    
+    # Compute smoothing parameter based on data variance
+    # scipy's s parameter is total squared error allowed
+    def fit_channel(y):
+        variance = np.var(y)
+        s = smoothing_factor * variance * len(y)
+        try:
+            spline = UnivariateSpline(frames, y, s=s, k=3)
+            return spline(frames)
+        except Exception as e:
+            print(f"[Blender] Spline fit failed: {e}, using original")
+            return y
+    
+    smooth_pans = fit_channel(pans)
+    smooth_tilts = fit_channel(tilts)
+    smooth_rolls = fit_channel(rolls)
+    smooth_txs = fit_channel(txs)
+    smooth_tys = fit_channel(tys)
+    smooth_tzs = fit_channel(tzs)
+    
+    # Build result
+    filtered = []
+    for i in range(n):
+        filtered.append({
+            "frame": camera_rotations[i].get("frame", i),
+            "pan": float(smooth_pans[i]),
+            "tilt": float(smooth_tilts[i]),
+            "roll": float(smooth_rolls[i]),
+            "tx": float(smooth_txs[i]),
+            "ty": float(smooth_tys[i]),
+            "tz": float(smooth_tzs[i]),
+        })
+    
+    print(f"[Blender] Spline fitting complete")
+    return filtered
+
+
+def smooth_camera_data_combined(camera_rotations, method="kalman", **kwargs):
+    """
+    Combined camera data smoothing dispatcher.
+    
+    Args:
+        camera_rotations: List of camera rotation dicts
+        method: "kalman", "spline", "gaussian", or "none"
+        **kwargs: Method-specific parameters
+    
+    Returns:
+        Smoothed camera rotation list
+    """
+    if not camera_rotations or method == "none":
+        return camera_rotations
+    
+    if method == "kalman":
+        process_noise = kwargs.get("process_noise", 0.01)
+        measurement_noise = kwargs.get("measurement_noise", 0.1)
+        return kalman_filter_camera_data(camera_rotations, process_noise, measurement_noise)
+    
+    elif method == "spline":
+        smoothing_factor = kwargs.get("smoothing_factor", 0.5)
+        return spline_fit_camera_data(camera_rotations, smoothing_factor)
+    
+    elif method == "gaussian":
+        window = kwargs.get("window", 9)
+        return smooth_camera_data(camera_rotations, window)
+    
+    else:
+        print(f"[Blender] Unknown smoothing method: {method}, using Kalman")
+        return kalman_filter_camera_data(camera_rotations)
+
+
+def bake_camera_to_geometry(frames, solved_camera_rotations, up_axis="Y", 
+                            smoothing_method="kalman", smoothing_params=None):
+    """
+    Bake camera motion into geometry by applying inverse camera transform to all vertices/joints.
+    
+    This approach:
+    1. FIRST applies smoothing (Kalman filter or spline fitting) to camera data
+    2. Takes smoothed camera rotation/translation
+    3. Computes inverse transform for each frame
+    4. Applies inverse transform to vertices and joint positions
+    5. Result: geometry moves as if camera was static, camera can be exported as static
+    
+    Args:
+        frames: List of frame data dicts with vertices, joint_coords, joint_rotations
+        solved_camera_rotations: List of camera rotation dicts with pan, tilt, roll, tx, ty, tz
+        up_axis: Coordinate system up axis
+        smoothing_method: "kalman", "spline", "gaussian", or "none"
+        smoothing_params: Dict of method-specific parameters
+    
+    Returns:
+        Modified frames list with baked transforms
+    """
+    import numpy as np
+    import copy
+    
+    if not solved_camera_rotations or len(solved_camera_rotations) == 0:
+        print("[Blender] No camera rotations to bake - returning original frames")
+        return frames
+    
+    # Apply smoothing FIRST before baking
+    if smoothing_params is None:
+        smoothing_params = {}
+    
+    smoothed_camera = smooth_camera_data_combined(
+        solved_camera_rotations, 
+        method=smoothing_method,
+        **smoothing_params
+    )
+    
+    print(f"[Blender] Baking camera motion into geometry ({len(frames)} frames, smoothing={smoothing_method})...")
+    
+    baked_frames = []
+    
+    for frame_idx, frame_data in enumerate(frames):
+        # Deep copy frame to avoid modifying original
+        baked_frame = copy.deepcopy(frame_data)
+        
+        # Get SMOOTHED camera rotation for this frame
+        if frame_idx < len(smoothed_camera):
+            cam_rot = smoothed_camera[frame_idx]
+        else:
+            # Use last available rotation
+            cam_rot = smoothed_camera[-1]
+        
+        pan = cam_rot.get("pan", 0.0)
+        tilt = cam_rot.get("tilt", 0.0)
+        roll = cam_rot.get("roll", 0.0)
+        tx = cam_rot.get("tx", 0.0)
+        ty = cam_rot.get("ty", 0.0)
+        tz = cam_rot.get("tz", 0.0)
+        
+        # Build rotation matrix from Euler angles
+        # For Y-up: pan around Y, tilt around X, roll around Z
+        # Using rotation order YXZ (common for cameras)
+        
+        # Individual rotation matrices
+        cos_pan, sin_pan = math.cos(pan), math.sin(pan)
+        cos_tilt, sin_tilt = math.cos(tilt), math.sin(tilt)
+        cos_roll, sin_roll = math.cos(roll), math.sin(roll)
+        
+        # Rotation around Y (pan)
+        Ry = np.array([
+            [cos_pan, 0, sin_pan],
+            [0, 1, 0],
+            [-sin_pan, 0, cos_pan]
+        ])
+        
+        # Rotation around X (tilt)
+        Rx = np.array([
+            [1, 0, 0],
+            [0, cos_tilt, -sin_tilt],
+            [0, sin_tilt, cos_tilt]
+        ])
+        
+        # Rotation around Z (roll)
+        Rz = np.array([
+            [cos_roll, -sin_roll, 0],
+            [sin_roll, cos_roll, 0],
+            [0, 0, 1]
+        ])
+        
+        # Combined rotation: R = Ry * Rx * Rz (YXZ order)
+        if up_axis == "Y":
+            R_cam = Ry @ Rx @ Rz
+        elif up_axis == "Z":
+            # For Z-up, pan around Z, tilt around X
+            Rz_pan = np.array([
+                [cos_pan, -sin_pan, 0],
+                [sin_pan, cos_pan, 0],
+                [0, 0, 1]
+            ])
+            R_cam = Rz_pan @ Rx @ Rz
+        else:
+            R_cam = Ry @ Rx @ Rz
+        
+        # Inverse rotation: R^T
+        R_inv = R_cam.T
+        
+        # Camera translation vector
+        t_cam = np.array([tx, ty, tz])
+        
+        # Inverse translation: -R^T * t
+        t_inv = -R_inv @ t_cam
+        
+        # Apply inverse transform to vertices
+        vertices = baked_frame.get("vertices")
+        if vertices is not None:
+            new_vertices = []
+            for v in vertices:
+                v_arr = np.array(v)
+                v_transformed = R_inv @ v_arr + t_inv
+                new_vertices.append(v_transformed.tolist())
+            baked_frame["vertices"] = new_vertices
+        
+        # Apply inverse transform to joint coordinates
+        joint_coords = baked_frame.get("joint_coords")
+        if joint_coords is not None:
+            new_joints = []
+            for j in joint_coords:
+                j_arr = np.array(j)
+                j_transformed = R_inv @ j_arr + t_inv
+                new_joints.append(j_transformed.tolist())
+            baked_frame["joint_coords"] = new_joints
+        
+        # Apply inverse rotation to joint rotation matrices
+        joint_rotations = baked_frame.get("joint_rotations")
+        if joint_rotations is not None:
+            new_rotations = []
+            for rot_3x3 in joint_rotations:
+                if rot_3x3 is not None:
+                    rot_arr = np.array(rot_3x3)
+                    # New rotation = R_inv * original_rotation
+                    rot_transformed = R_inv @ rot_arr
+                    new_rotations.append(rot_transformed.tolist())
+                else:
+                    new_rotations.append(None)
+            baked_frame["joint_rotations"] = new_rotations
+        
+        baked_frames.append(baked_frame)
+        
+        if (frame_idx + 1) % 50 == 0:
+            print(f"[Blender] Baked {frame_idx + 1}/{len(frames)} frames")
+    
+    print(f"[Blender] Camera motion baked into geometry complete")
+    return baked_frames
+
+
+def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset=0):
+    """
+    Create a static camera with correct intrinsics from frame data.
+    
+    This is used when camera motion is baked into geometry - the camera
+    stays fixed at a reasonable position with correct focal length.
+    
+    Args:
+        frames: Frame data (for focal length and image size)
+        sensor_width: Camera sensor width in mm
+        up_axis: Which axis points up
+        frame_offset: Frame offset for keyframes
+    
+    Returns:
+        Camera object
+    """
+    print("[Blender] Creating static camera with intrinsics...")
+    
+    cam_data = bpy.data.cameras.new("Camera")
+    camera = bpy.data.objects.new("Camera", cam_data)
+    bpy.context.collection.objects.link(camera)
+    
+    # Set sensor width
+    cam_data.sensor_width = sensor_width
+    
+    # Get image dimensions and focal length from first frame
+    first_frame = frames[0]
+    image_size = first_frame.get("image_size")
+    
+    image_width = 1920
+    image_height = 1080
+    if image_size and len(image_size) >= 2:
+        image_width, image_height = image_size[0], image_size[1]
+    
+    # Set sensor height to match aspect ratio
+    aspect_ratio = image_width / image_height
+    cam_data.sensor_height = sensor_width / aspect_ratio
+    cam_data.sensor_fit = 'HORIZONTAL'
+    
+    # Get focal length
+    first_focal = first_frame.get("focal_length")
+    focal_px = 1000
+    if first_focal:
+        if isinstance(first_focal, (list, tuple)):
+            focal_px = first_focal[0]
+        else:
+            focal_px = first_focal
+    
+    # Convert focal length: focal_mm = focal_px * sensor_width / image_width
+    focal_mm = focal_px * (sensor_width / image_width)
+    cam_data.lens = focal_mm
+    print(f"[Blender] Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length")
+    print(f"[Blender] Image: {image_width}x{image_height}, sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    
+    # Get camera distance from pred_cam_t
+    first_cam_t = first_frame.get("pred_cam_t")
+    cam_distance = 3.0
+    if first_cam_t and len(first_cam_t) >= 3:
+        cam_distance = abs(first_cam_t[2])
+    
+    # Position camera based on up axis
+    if up_axis == "Y":
+        camera.location = Vector((0, 0, cam_distance))
+        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
+    elif up_axis == "Z":
+        camera.location = Vector((0, -cam_distance, 0))
+        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
+    elif up_axis == "-Y":
+        camera.location = Vector((0, 0, -cam_distance))
+        camera.rotation_euler = Euler((math.radians(-90), 0, 0), 'XYZ')
+    elif up_axis == "-Z":
+        camera.location = Vector((0, cam_distance, 0))
+        camera.rotation_euler = Euler((math.radians(-90), 0, 0), 'XYZ')
+    else:
+        camera.location = Vector((0, 0, cam_distance))
+        camera.rotation_euler = Euler((math.radians(90), 0, 0), 'XYZ')
+    
+    print(f"[Blender] Static camera at distance {cam_distance:.2f}")
+    
+    return camera
+
+
 def clear_scene():
     """Remove all objects."""
     bpy.ops.object.select_all(action='SELECT')
@@ -1643,6 +2094,8 @@ def main():
     camera_static = data.get("camera_static", False)  # Disable all camera animation
     camera_smoothing = data.get("camera_smoothing", 0)  # Smoothing window for camera animation
     solved_camera_rotations = data.get("solved_camera_rotations", None)  # From Camera Rotation Solver
+    bake_smoothing_method = data.get("bake_smoothing_method", "kalman")  # Smoothing for geometry baking
+    bake_smoothing_strength = data.get("bake_smoothing_strength", 0.5)  # Smoothing strength
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
@@ -1669,6 +2122,43 @@ def main():
     if skeleton_mode == "rotations" and not has_rotations:
         print("[Blender] Warning: Rotation mode requested but no data available. Falling back to positions.")
         skeleton_mode = "positions"
+    
+    # Handle bake_to_geometry mode: apply inverse camera transforms to geometry
+    bake_to_geometry_mode = False
+    if world_translation_mode == "bake_to_geometry":
+        if solved_camera_rotations:
+            print("[Blender] MODE: Baking camera motion into geometry (static camera export)")
+            print(f"[Blender] Smoothing: {bake_smoothing_method} (strength={bake_smoothing_strength})")
+            
+            # Build smoothing params based on method
+            smoothing_params = {}
+            if bake_smoothing_method == "kalman":
+                # For Kalman: strength affects measurement noise (higher = trust measurements less)
+                smoothing_params["process_noise"] = 0.01
+                smoothing_params["measurement_noise"] = 0.05 + bake_smoothing_strength * 0.45  # 0.05 to 0.5
+            elif bake_smoothing_method == "spline":
+                smoothing_params["smoothing_factor"] = bake_smoothing_strength
+            elif bake_smoothing_method == "gaussian":
+                # Map strength to window size: 0=3, 0.5=9, 1.0=15
+                smoothing_params["window"] = int(3 + bake_smoothing_strength * 12)
+            
+            frames = bake_camera_to_geometry(
+                frames, 
+                solved_camera_rotations, 
+                up_axis,
+                smoothing_method=bake_smoothing_method,
+                smoothing_params=smoothing_params
+            )
+            # Force static camera when geometry is baked
+            camera_static = True
+            animate_camera = False
+            camera_use_rotation = False
+            bake_to_geometry_mode = True
+            # Set mode to "none" so mesh/skeleton don't apply additional transforms
+            world_translation_mode = "none"
+        else:
+            print("[Blender] Warning: bake_to_geometry mode requires solved_camera_rotations. Falling back to 'none'.")
+            world_translation_mode = "none"
     
     # Get transformation
     global FLIP_X
@@ -1715,7 +2205,9 @@ def main():
     
     # Create skeleton (armature with bones and hierarchy)
     # Pass solved_camera_rotations to compensate body orientation for camera motion
-    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, solved_camera_rotations)
+    # BUT NOT when in bake_to_geometry mode (transforms already applied to geometry)
+    skeleton_camera_rots = None if bake_to_geometry_mode else solved_camera_rotations
+    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
     
     # Apply body offset to skeleton as well
     if world_translation_mode == "root" and root_locator and armature_obj:
@@ -1729,19 +2221,24 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_static, camera_smoothing, flip_x, solved_camera_rotations)
-        
-        # Parent camera to root locator if requested
-        # This makes camera follow character movement while preserving screen-space relationship
-        if camera_follow_root and root_locator and camera_obj:
-            camera_obj.parent = root_locator
-            print(f"[Blender] Camera parented to root_locator - follows character movement")
-            if camera_static:
-                print(f"[Blender] Camera is STATIC - body_offset positions character correctly")
-            elif camera_use_rotation:
-                print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
-            else:
-                print(f"[Blender] Camera uses local TRANSLATION to frame character")
+        if bake_to_geometry_mode:
+            # Use dedicated static camera for baked geometry mode
+            camera_obj = create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset)
+            print("[Blender] Static camera created for baked geometry mode")
+        else:
+            camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_static, camera_smoothing, flip_x, solved_camera_rotations)
+            
+            # Parent camera to root locator if requested
+            # This makes camera follow character movement while preserving screen-space relationship
+            if camera_follow_root and root_locator and camera_obj:
+                camera_obj.parent = root_locator
+                print(f"[Blender] Camera parented to root_locator - follows character movement")
+                if camera_static:
+                    print(f"[Blender] Camera is STATIC - body_offset positions character correctly")
+                elif camera_use_rotation:
+                    print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
+                else:
+                    print(f"[Blender] Camera uses local TRANSLATION to frame character")
     
     # Export
     if output_format == "abc":

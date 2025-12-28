@@ -56,6 +56,13 @@ git clone https://github.com/your-repo/ComfyUI-COLMAP
 
 Without COLMAP, parallax shots use Essential Matrix fallback (less accurate).
 
+### For Better Camera Intrinsics (Optional)
+Install MoGe2 for accurate monocular intrinsics estimation:
+```bash
+pip install moge
+```
+Models auto-download from HuggingFace on first use (~60ms per frame on RTX3090).
+
 ### Model Downloads
 LightGlue and LoFTR models are downloaded automatically on first use:
 - LightGlue SuperPoint: ~25MB
@@ -126,6 +133,23 @@ Load Video → SAM3 Segmentation → SAM3DBody Processor
 - COLMAP: BSD-3
 
 ## Version History
+
+### v4.1.0
+- **Bake Camera into Geometry**: New export mode that applies inverse camera transforms to mesh/skeleton
+  - Eliminates jitter by baking camera motion directly into vertex positions
+  - Exports static camera with correct intrinsics
+  - Three smoothing options before baking:
+    - **Kalman Filter**: Optimal for sequential data, physics-based smoothing
+    - **Spline Fitting**: Cubic splines for smooth continuous curves
+    - **Gaussian**: Simple weighted averaging
+- **MoGe2 Intrinsics Estimation**: Accurate focal length estimation from single images
+  - Uses Microsoft's MoGe2 model for monocular geometry estimation
+  - Much better than heuristics when camera metadata is unavailable
+  - Can improve COLMAP's intrinsics for better accuracy
+- New nodes:
+  - `📷 MoGe2 Intrinsics Estimator`
+  - `📷 Apply Intrinsics to Mesh`
+  - `📷 Apply Intrinsics to Camera`
 
 ### v4.0.0
 - Complete camera solver rewrite
