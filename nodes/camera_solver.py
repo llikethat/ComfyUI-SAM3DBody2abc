@@ -53,35 +53,55 @@ except Exception as e:
 class CameraSolver:
     """
     Comprehensive camera solver with automatic shot detection and quality modes.
+    
+    Masking Priority:
+    1. SAM3 masks via foreground_masks input (best quality, recommended)
+    2. YOLO auto-detection fallback if auto_mask_people=True
+    3. No masking if neither provided
+    
+    Solving Methods:
+    - Rotation Only: Homography decomposition (tripod/nodal shots)
+    - Full 6-DOF: COLMAP or Essential Matrix fallback (handheld/dolly)
     """
     
-    SHOT_TYPES = ["Auto", "Static", "Nodal", "Parallax", "Hybrid"]
+    SOLVING_METHODS = ["Auto (Recommended)", "Rotation Only (Tripod)", "Full 6-DOF (Handheld)"]
     QUALITY_MODES = ["Fast", "Balanced", "Best"]
+    TRANSLATION_SOLVERS = ["COLMAP", "Essential Matrix"]
+    COLMAP_QUALITY = ["Low", "Medium", "High"]
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
                 "images": ("IMAGE",),
-                "shot_type": (cls.SHOT_TYPES, {
-                    "default": "Auto",
-                    "tooltip": "Auto: detect automatically, Static: no motion, Nodal: rotation only, Parallax: with translation, Hybrid: multiple transitions"
-                }),
-                "quality_mode": (cls.QUALITY_MODES, {
-                    "default": "Balanced",
-                    "tooltip": "Fast: KLT/LightGlue only, Balanced: with LoFTR fallback, Best: LoFTR always"
+                "solving_method": (cls.SOLVING_METHODS, {
+                    "default": "Auto (Recommended)",
+                    "tooltip": "Auto: detect shot type automatically. Rotation Only: tripod pan/tilt. Full 6-DOF: handheld with translation."
                 }),
             },
             "optional": {
+                # === Masking (SAM3 preferred, YOLO fallback) ===
                 "foreground_masks": ("MASK", {
-                    "tooltip": "Masks for foreground (people) to exclude from tracking"
+                    "tooltip": "Masks from SAM3 segmentation (recommended). Excludes foreground from tracking."
                 }),
-                "smoothing": ("INT", {
-                    "default": 5,
-                    "min": 0,
-                    "max": 21,
-                    "step": 2,
-                    "tooltip": "Smoothing window (0=none, 5=light, 9=medium, 15=heavy)"
+                "auto_mask_people": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "YOLO fallback: auto-detect people if no SAM3 masks provided"
+                }),
+                
+                # === Quality ===
+                "quality_mode": (cls.QUALITY_MODES, {
+                    "default": "Balanced",
+                    "tooltip": "Fast: KLT/LightGlue. Balanced: with LoFTR fallback. Best: LoFTR always."
+                }),
+                
+                # === Intrinsics (for internal solve, can be overridden by MoGe2 in export) ===
+                "focal_length_mm": ("FLOAT", {
+                    "default": 35.0,
+                    "min": 1.0,
+                    "max": 500.0,
+                    "step": 0.1,
+                    "tooltip": "Focal length in mm (for solving). Can be overridden by MoGe2 intrinsics in export."
                 }),
                 "sensor_width_mm": ("FLOAT", {
                     "default": 36.0,
@@ -90,38 +110,48 @@ class CameraSolver:
                     "step": 0.1,
                     "tooltip": "Camera sensor width in mm (36mm = full frame)"
                 }),
-                "focal_length_mm": ("FLOAT", {
-                    "default": 35.0,
-                    "min": 1.0,
-                    "max": 500.0,
-                    "step": 0.1,
-                    "tooltip": "Focal length in mm"
+                
+                # === Smoothing ===
+                "smoothing": ("INT", {
+                    "default": 5,
+                    "min": 0,
+                    "max": 21,
+                    "step": 2,
+                    "tooltip": "Gaussian smoothing window (0=none, 5=light, 9=medium, 15=heavy)"
+                }),
+                
+                # === Translation Solver Options (for Full 6-DOF) ===
+                "translation_solver": (cls.TRANSLATION_SOLVERS, {
+                    "default": "COLMAP",
+                    "tooltip": "COLMAP: full bundle adjustment (accurate). Essential Matrix: pairwise (faster, may drift)."
+                }),
+                "colmap_quality": (cls.COLMAP_QUALITY, {
+                    "default": "Medium",
+                    "tooltip": "COLMAP reconstruction quality. Low: fast. Medium: balanced. High: best accuracy."
+                }),
+                
+                # === Advanced ===
+                "match_threshold": ("INT", {
+                    "default": 500,
+                    "min": 100,
+                    "max": 2000,
+                    "tooltip": "Minimum feature matches before quality fallback"
                 }),
                 "stitch_overlap": ("INT", {
                     "default": 10,
                     "min": 5,
                     "max": 50,
-                    "tooltip": "Frame overlap for hybrid stitching"
+                    "tooltip": "Frame overlap for hybrid shot stitching"
                 }),
                 "transition_frames": ("STRING", {
                     "default": "",
-                    "tooltip": "Manual transition frames (e.g., '50,120') or empty for auto-detect"
-                }),
-                "match_threshold": ("INT", {
-                    "default": 500,
-                    "min": 100,
-                    "max": 2000,
-                    "tooltip": "Minimum matches before fallback (resolution-adaptive)"
-                }),
-                "auto_mask_people": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Auto-detect and mask people using YOLO"
+                    "tooltip": "Manual shot transitions (e.g., '50,120') or empty for auto-detect"
                 }),
             }
         }
     
-    RETURN_TYPES = ("CAMERA_DATA", "IMAGE", "STRING")
-    RETURN_NAMES = ("camera_data", "debug_vis", "shot_info")
+    RETURN_TYPES = ("CAMERA_EXTRINSICS", "IMAGE", "STRING")
+    RETURN_NAMES = ("camera_extrinsics", "debug_vis", "status")
     FUNCTION = "solve"
     CATEGORY = "SAM3DBody2abc/Camera"
     
@@ -792,20 +822,29 @@ class CameraSolver:
     def solve(
         self,
         images: torch.Tensor,
-        shot_type: str = "Auto",
-        quality_mode: str = "Balanced",
+        solving_method: str = "Auto (Recommended)",
         foreground_masks: Optional[torch.Tensor] = None,
-        smoothing: int = 5,
-        sensor_width_mm: float = 36.0,
+        auto_mask_people: bool = True,
+        quality_mode: str = "Balanced",
         focal_length_mm: float = 35.0,
+        sensor_width_mm: float = 36.0,
+        smoothing: int = 5,
+        translation_solver: str = "COLMAP",
+        colmap_quality: str = "Medium",
+        match_threshold: int = 500,
         stitch_overlap: int = 10,
         transition_frames: str = "",
-        match_threshold: int = 500,
-        auto_mask_people: bool = True,
     ) -> Tuple[Dict, torch.Tensor, str]:
-        """Main camera solving entry point."""
+        """
+        Main camera solving entry point.
         
-        print(f"[CameraSolver] Shot: {shot_type}, Quality: {quality_mode}")
+        Masking priority:
+        1. SAM3 masks (foreground_masks input) - best quality
+        2. YOLO auto-detection (if auto_mask_people=True) - fallback
+        3. No masking - uses all features including people
+        """
+        
+        print(f"[CameraSolver] Method: {solving_method}, Quality: {quality_mode}")
         
         frames = (images.cpu().numpy() * 255).astype(np.uint8)
         num_frames, H, W = frames.shape[:3]
@@ -817,88 +856,136 @@ class CameraSolver:
         pixels = W * H
         adaptive_threshold = int(match_threshold * (pixels / 2_073_600) ** 0.5)
         
-        # Process masks
+        # Process masks - SAM3 preferred, YOLO fallback
         masks = None
+        mask_source = "none"
         if foreground_masks is not None:
             masks = foreground_masks.cpu().numpy()
+            mask_source = "SAM3"
+            print("[CameraSolver] Using SAM3 masks (recommended)")
         elif auto_mask_people:
             masks = self.detect_people(frames)
+            if masks is not None:
+                mask_source = "YOLO"
+                print("[CameraSolver] Using YOLO auto-detection (SAM3 masks preferred)")
+            else:
+                print("[CameraSolver] YOLO failed, no masking")
+        else:
+            print("[CameraSolver] No masking - features may include foreground")
+        
+        # Map solving method to internal shot types
+        shot_type = "Auto"
+        if "Rotation Only" in solving_method:
+            shot_type = "Nodal"
+        elif "Full 6-DOF" in solving_method:
+            shot_type = "Parallax"
         
         # Detect shot type if Auto
         transitions = []
         if shot_type == "Auto":
             shot_type, transitions = self.detect_shot_type(frames, masks)
-        elif shot_type == "Hybrid" and transition_frames:
+        elif transition_frames:
             try:
                 transitions = [int(x.strip()) for x in transition_frames.split(",") if x.strip()]
+                if transitions:
+                    shot_type = "Hybrid"
             except:
                 transitions = []
         
-        # Solve
+        # Store translation solver preference for parallax solving
+        self._translation_solver = translation_solver
+        self._colmap_quality = colmap_quality
+        
+        # Solve based on detected/selected shot type
         if shot_type == "Static":
             rotations = [{"frame": i, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0} 
                         for i in range(num_frames)]
-            shot_info = "Static: No camera motion"
+            status = "Static: No camera motion"
+            solving_method_used = "none"
             
         elif shot_type == "Nodal":
             rotations = self.solve_rotation_only(frames, masks, quality_mode, focal_px, adaptive_threshold)
-            shot_info = f"Nodal: Rotation-only ({quality_mode})"
+            status = f"Rotation Only: Homography ({quality_mode})"
+            solving_method_used = "rotation_only"
             
         elif shot_type == "Parallax":
             rotations = self.solve_with_translation(frames, masks, quality_mode, focal_px, adaptive_threshold)
-            shot_info = f"Parallax: {'COLMAP' if COLMAP_AVAILABLE else 'Essential Matrix'} ({quality_mode})"
+            solver_used = "COLMAP" if (COLMAP_AVAILABLE and translation_solver == "COLMAP") else "Essential Matrix"
+            status = f"Full 6-DOF: {solver_used} ({quality_mode})"
+            solving_method_used = "full_6dof"
             
         elif shot_type == "Hybrid":
             if not transitions:
                 _, transitions = self.detect_shot_type(frames, masks)
             rotations = self.solve_hybrid(frames, masks, quality_mode, focal_px, adaptive_threshold, transitions, stitch_overlap)
-            shot_info = f"Hybrid: Transitions at {transitions}"
+            status = f"Hybrid: Transitions at {transitions}"
+            solving_method_used = "hybrid"
         else:
             rotations = [{"frame": i, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0}
                         for i in range(num_frames)]
-            shot_info = "Unknown"
+            status = "Unknown"
+            solving_method_used = "none"
         
         # Smoothing
         if smoothing > 1:
             rotations = self.smooth_rotations(rotations, smoothing)
+            print(f"[CameraSolver] Applied Gaussian smoothing (window={smoothing})")
         
-        # Add degree values
+        # Add degree values for convenience
         for rot in rotations:
             rot["pan_deg"] = np.degrees(rot["pan"])
             rot["tilt_deg"] = np.degrees(rot["tilt"])
             rot["roll_deg"] = np.degrees(rot["roll"])
         
+        # Check if translation data is present
         has_translation = any(
             abs(r.get("tx", 0)) > 0.001 or abs(r.get("ty", 0)) > 0.001 or abs(r.get("tz", 0)) > 0.001
             for r in rotations
         )
         
-        camera_data = {
+        # Build CAMERA_EXTRINSICS output
+        camera_extrinsics = {
             "num_frames": num_frames,
             "image_width": W,
             "image_height": H,
-            "focal_length_px": focal_px,
-            "focal_length_mm": focal_length_mm,
-            "sensor_width_mm": sensor_width_mm,
-            "shot_type": shot_type,
-            "quality_mode": quality_mode,
+            "source": "CameraSolver",
+            "solving_method": solving_method_used,
+            "coordinate_system": "Y-up",
+            "units": "radians",
             "has_translation": has_translation,
+            "mask_source": mask_source,
+            "quality_mode": quality_mode,
+            "smoothing_applied": smoothing if smoothing > 1 else 0,
             "rotations": rotations
         }
         
+        # Debug visualization
         debug_vis = self.create_debug_vis(frames, rotations, shot_type)
         debug_tensor = torch.from_numpy(debug_vis).float() / 255.0
         
+        # Final status
         final = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0}
         print(f"[CameraSolver] Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
-        shot_info += f" | {num_frames} frames"
+        status += f" | {num_frames} frames | Masks: {mask_source}"
         
-        return (camera_data, debug_tensor, shot_info)
+        return (camera_extrinsics, debug_tensor, status)
 
 
 class CameraDataFromJSON:
     """
-    Load camera data from external tracking applications (PFTrack, 3DEqualizer, Maya, etc.)
+    Load camera extrinsics from external tracking applications.
+    
+    Supports exports from:
+    - PFTrack
+    - 3DEqualizer
+    - SynthEyes
+    - Maya
+    - Nuke
+    - After Effects
+    
+    Accepts both naming conventions:
+    - Cinema terms: pan, tilt, roll (preferred internal format)
+    - Axis terms: rx, ry, rz (converted based on coordinate system)
     
     JSON Format:
     {
@@ -906,16 +993,18 @@ class CameraDataFromJSON:
         "image_width": 1920,
         "image_height": 1080,
         "sensor_width_mm": 36.0,
-        "units": "degrees",
-        "coordinate_system": "maya",
+        "units": "degrees",  // or "radians"
+        "coordinate_system": "maya",  // Y-up: ry=pan, rx=tilt. Z-up: rz=pan, rx=tilt
         "frames": [
-            {"frame": 0, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0, "focal_length_mm": 35.0},
+            {"frame": 0, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0},
+            // OR using axis notation:
+            {"frame": 0, "rx": 0, "ry": 0, "rz": 0, "tx": 0, "ty": 0, "tz": 0},
             ...
         ]
     }
     """
     
-    COORD_SYSTEMS = ["maya", "nuke", "blender", "3dequalizer", "pftrack"]
+    COORD_SYSTEMS = ["maya", "blender", "nuke", "3dequalizer", "pftrack", "houdini", "Y-up", "Z-up"]
     
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -924,8 +1013,11 @@ class CameraDataFromJSON:
                 "json_input": ("STRING", {"default": "", "multiline": True}),
             },
             "optional": {
-                "coordinate_system": (cls.COORD_SYSTEMS, {"default": "maya"}),
-                "smoothing": ("INT", {"default": 5, "min": 0, "max": 21, "step": 2}),
+                "coordinate_system": (cls.COORD_SYSTEMS, {
+                    "default": "maya",
+                    "tooltip": "Source coordinate system. Y-up: ry=pan. Z-up: rz=pan."
+                }),
+                "smoothing": ("INT", {"default": 0, "min": 0, "max": 21, "step": 2}),
                 "frame_offset": ("INT", {"default": 0, "min": -1000, "max": 1000}),
                 "image_width": ("INT", {"default": 1920, "min": 1, "max": 8192}),
                 "image_height": ("INT", {"default": 1080, "min": 1, "max": 8192}),
@@ -934,16 +1026,47 @@ class CameraDataFromJSON:
             }
         }
     
-    RETURN_TYPES = ("CAMERA_DATA",)
-    RETURN_NAMES = ("camera_data",)
+    RETURN_TYPES = ("CAMERA_EXTRINSICS",)
+    RETURN_NAMES = ("camera_extrinsics",)
     FUNCTION = "load_camera_data"
     CATEGORY = "SAM3DBody2abc/Camera"
+    
+    def _is_y_up(self, coord_sys: str) -> bool:
+        """Check if coordinate system is Y-up."""
+        y_up_systems = ["maya", "blender", "Y-up", "3dequalizer"]
+        return coord_sys.lower() in [s.lower() for s in y_up_systems]
+    
+    def _convert_axis_to_cinema(self, rx: float, ry: float, rz: float, coord_sys: str) -> Tuple[float, float, float]:
+        """
+        Convert axis notation (rx, ry, rz) to cinema terms (pan, tilt, roll).
+        
+        For Y-up systems (Maya, Blender):
+            pan (horizontal) = ry (rotation around Y)
+            tilt (vertical) = rx (rotation around X)
+            roll (dutch) = rz (rotation around Z)
+        
+        For Z-up systems (Houdini, some engines):
+            pan (horizontal) = rz (rotation around Z)
+            tilt (vertical) = rx (rotation around X)
+            roll (dutch) = ry (rotation around Y)
+        """
+        if self._is_y_up(coord_sys):
+            pan = ry    # Horizontal rotation around Y
+            tilt = rx   # Vertical rotation around X
+            roll = rz   # Roll around Z (view axis)
+        else:
+            # Z-up
+            pan = rz    # Horizontal rotation around Z
+            tilt = rx   # Vertical rotation around X
+            roll = ry   # Roll around Y
+        
+        return pan, tilt, roll
     
     def load_camera_data(
         self,
         json_input: str,
         coordinate_system: str = "maya",
-        smoothing: int = 5,
+        smoothing: int = 0,
         frame_offset: int = 0,
         image_width: int = 1920,
         image_height: int = 1080,
@@ -951,19 +1074,21 @@ class CameraDataFromJSON:
         scale_translation: float = 1.0,
     ) -> Tuple[Dict]:
         
-        print(f"[CameraJSON] Loading...")
+        print(f"[CameraJSON] Loading camera extrinsics (coord system: {coordinate_system})...")
         
         data = None
         json_input = json_input.strip()
         
+        # Try loading from file path
         if os.path.exists(json_input):
             try:
                 with open(json_input, 'r') as f:
                     data = json.load(f)
-                print(f"[CameraJSON] Loaded: {json_input}")
+                print(f"[CameraJSON] Loaded from file: {json_input}")
             except Exception as e:
-                print(f"[CameraJSON] Error: {e}")
+                print(f"[CameraJSON] File read error: {e}")
         
+        # Try parsing as JSON string
         if data is None:
             try:
                 data = json.loads(json_input)
@@ -973,10 +1098,12 @@ class CameraDataFromJSON:
         if not data:
             return self._empty_result(image_width, image_height, sensor_width_mm)
         
+        # Get metadata from JSON or use defaults
         units = data.get("units", "degrees")
         img_w = data.get("image_width", image_width)
         img_h = data.get("image_height", image_height)
         sensor_w = data.get("sensor_width_mm", sensor_width_mm)
+        json_coord_sys = data.get("coordinate_system", coordinate_system)
         
         frames_data = data.get("frames", [])
         if not frames_data:
@@ -986,52 +1113,82 @@ class CameraDataFromJSON:
         for fd in frames_data:
             frame_idx = fd.get("frame", len(rotations)) + frame_offset
             
-            pan = fd.get("pan", fd.get("ry", 0.0))
-            tilt = fd.get("tilt", fd.get("rx", 0.0))
-            roll = fd.get("roll", fd.get("rz", 0.0))
+            # Check which notation is used and convert to cinema terms
+            if "pan" in fd:
+                # Already in cinema terms
+                pan = fd.get("pan", 0.0)
+                tilt = fd.get("tilt", 0.0)
+                roll = fd.get("roll", 0.0)
+            elif "rx" in fd or "ry" in fd or "rz" in fd:
+                # Axis notation - convert based on coordinate system
+                rx = fd.get("rx", 0.0)
+                ry = fd.get("ry", 0.0)
+                rz = fd.get("rz", 0.0)
+                pan, tilt, roll = self._convert_axis_to_cinema(rx, ry, rz, json_coord_sys)
+            else:
+                # No rotation data
+                pan, tilt, roll = 0.0, 0.0, 0.0
             
+            # Convert to radians if needed
             if units == "degrees":
-                pan_rad, tilt_rad, roll_rad = np.radians(pan), np.radians(tilt), np.radians(roll)
+                pan_rad = np.radians(pan)
+                tilt_rad = np.radians(tilt)
+                roll_rad = np.radians(roll)
             else:
                 pan_rad, tilt_rad, roll_rad = pan, tilt, roll
             
+            # Translation with scaling
             tx = fd.get("tx", 0.0) * scale_translation
             ty = fd.get("ty", 0.0) * scale_translation
             tz = fd.get("tz", 0.0) * scale_translation
             
-            focal_mm = fd.get("focal_length_mm", 35.0)
-            focal_px = focal_mm * img_w / sensor_w
-            
             rotations.append({
                 "frame": frame_idx,
-                "pan": pan_rad, "tilt": tilt_rad, "roll": roll_rad,
-                "pan_deg": np.degrees(pan_rad), "tilt_deg": np.degrees(tilt_rad), "roll_deg": np.degrees(roll_rad),
-                "tx": tx, "ty": ty, "tz": tz,
-                "focal_length_mm": focal_mm, "focal_length_px": focal_px,
+                "pan": pan_rad,
+                "tilt": tilt_rad,
+                "roll": roll_rad,
+                "pan_deg": np.degrees(pan_rad),
+                "tilt_deg": np.degrees(tilt_rad),
+                "roll_deg": np.degrees(roll_rad),
+                "tx": tx,
+                "ty": ty,
+                "tz": tz,
             })
         
+        # Sort by frame
         rotations.sort(key=lambda x: x["frame"])
         
+        # Apply smoothing if requested
         if smoothing > 1 and len(rotations) > smoothing:
             rotations = self._smooth(rotations, smoothing)
+            print(f"[CameraJSON] Applied Gaussian smoothing (window={smoothing})")
         
-        has_trans = any(abs(r.get("tx", 0)) > 0.001 or abs(r.get("ty", 0)) > 0.001 or abs(r.get("tz", 0)) > 0.001 for r in rotations)
+        # Check for translation
+        has_trans = any(
+            abs(r.get("tx", 0)) > 0.001 or 
+            abs(r.get("ty", 0)) > 0.001 or 
+            abs(r.get("tz", 0)) > 0.001 
+            for r in rotations
+        )
         
-        camera_data = {
+        # Build CAMERA_EXTRINSICS output
+        camera_extrinsics = {
             "num_frames": len(rotations),
-            "image_width": img_w, "image_height": img_h,
-            "focal_length_mm": rotations[0].get("focal_length_mm", 35.0),
-            "focal_length_px": rotations[0].get("focal_length_px", 1000.0),
-            "sensor_width_mm": sensor_w,
-            "shot_type": "JSON Import",
+            "image_width": img_w,
+            "image_height": img_h,
+            "source": "JSON",
+            "solving_method": "external",
+            "coordinate_system": "Y-up" if self._is_y_up(json_coord_sys) else "Z-up",
+            "original_coordinate_system": json_coord_sys,
+            "units": "radians",
             "has_translation": has_trans,
             "rotations": rotations
         }
         
         final = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0}
-        print(f"[CameraJSON] {len(rotations)} frames, final: pan={final['pan_deg']:.2f}°")
+        print(f"[CameraJSON] Loaded {len(rotations)} frames, final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
         
-        return (camera_data,)
+        return (camera_extrinsics,)
     
     def _smooth(self, rotations, window):
         n = len(rotations)
@@ -1064,21 +1221,34 @@ class CameraDataFromJSON:
         for i in range(n):
             result.append({
                 "frame": rotations[i]["frame"],
-                "pan": pans[i], "tilt": tilts[i], "roll": rolls[i],
-                "pan_deg": np.degrees(pans[i]), "tilt_deg": np.degrees(tilts[i]), "roll_deg": np.degrees(rolls[i]),
-                "tx": txs[i], "ty": tys[i], "tz": tzs[i],
-                "focal_length_mm": rotations[i].get("focal_length_mm", 35.0),
-                "focal_length_px": rotations[i].get("focal_length_px", 1000.0),
+                "pan": pans[i],
+                "tilt": tilts[i],
+                "roll": rolls[i],
+                "pan_deg": np.degrees(pans[i]),
+                "tilt_deg": np.degrees(tilts[i]),
+                "roll_deg": np.degrees(rolls[i]),
+                "tx": txs[i],
+                "ty": tys[i],
+                "tz": tzs[i],
             })
         return result
     
     def _empty_result(self, w, h, sensor):
         return ({
-            "num_frames": 1, "image_width": w, "image_height": h,
-            "focal_length_mm": 35.0, "focal_length_px": 35.0 * w / sensor,
-            "sensor_width_mm": sensor, "shot_type": "JSON Import (Empty)",
+            "num_frames": 1,
+            "image_width": w,
+            "image_height": h,
+            "source": "JSON",
+            "solving_method": "external",
+            "coordinate_system": "Y-up",
+            "units": "radians",
             "has_translation": False,
-            "rotations": [{"frame": 0, "pan": 0, "tilt": 0, "roll": 0, "pan_deg": 0, "tilt_deg": 0, "roll_deg": 0, "tx": 0, "ty": 0, "tz": 0}]
+            "rotations": [{
+                "frame": 0,
+                "pan": 0, "tilt": 0, "roll": 0,
+                "pan_deg": 0, "tilt_deg": 0, "roll_deg": 0,
+                "tx": 0, "ty": 0, "tz": 0
+            }]
         },)
 
 
@@ -1089,6 +1259,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "CameraSolver": "Camera Solver",
-    "CameraDataFromJSON": "Camera Data from JSON",
+    "CameraSolver": "📷 Camera Solver",
+    "CameraDataFromJSON": "📷 Camera Extrinsics from JSON",
 }

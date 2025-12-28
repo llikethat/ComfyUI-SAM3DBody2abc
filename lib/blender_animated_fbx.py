@@ -493,7 +493,7 @@ def bake_camera_to_geometry(frames, solved_camera_rotations, up_axis="Y",
     return baked_frames
 
 
-def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset=0):
+def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset=0, focal_length_px=None):
     """
     Create a static camera with correct intrinsics from frame data.
     
@@ -505,6 +505,7 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
         sensor_width: Camera sensor width in mm
         up_axis: Which axis points up
         frame_offset: Frame offset for keyframes
+        focal_length_px: Optional focal length in pixels from MoGe2 (takes precedence)
     
     Returns:
         Camera object
@@ -532,19 +533,28 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     cam_data.sensor_height = sensor_width / aspect_ratio
     cam_data.sensor_fit = 'HORIZONTAL'
     
-    # Get focal length
-    first_focal = first_frame.get("focal_length")
-    focal_px = 1000
-    if first_focal:
-        if isinstance(first_focal, (list, tuple)):
-            focal_px = first_focal[0]
-        else:
-            focal_px = first_focal
+    # Get focal length - MoGe2 intrinsics take precedence
+    focal_px = 1000  # Default
+    focal_source = "default"
+    
+    if focal_length_px is not None:
+        # Use MoGe2 intrinsics
+        focal_px = focal_length_px
+        focal_source = "MoGe2"
+    else:
+        # Fall back to frame data
+        first_focal = first_frame.get("focal_length")
+        if first_focal:
+            if isinstance(first_focal, (list, tuple)):
+                focal_px = first_focal[0]
+            else:
+                focal_px = first_focal
+            focal_source = "frame_data"
     
     # Convert focal length: focal_mm = focal_px * sensor_width / image_width
     focal_mm = focal_px * (sensor_width / image_width)
     cam_data.lens = focal_mm
-    print(f"[Blender] Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length")
+    print(f"[Blender] Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length (source: {focal_source})")
     print(f"[Blender] Image: {image_width}x{image_height}, sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
     
     # Get camera distance from pred_cam_t
@@ -1341,6 +1351,146 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     return root
 
 
+def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, fps, up_axis, flip_x=False, frame_offset=0, smoothing_method="kalman", smoothing_strength=0.5):
+    """
+    Create a root locator with inverse camera extrinsics baked in.
+    
+    This allows:
+    - Camera to be exported as static
+    - Body animation to include the inverse of camera motion
+    - Clean result in Maya/Unity/etc. with stable camera
+    
+    The inverse transform is:
+    - If camera pans left (negative pan), root moves right (positive X)
+    - If camera tilts up (positive tilt), root moves up (positive Y)
+    - If camera translates left (negative tx), root translates right (positive X)
+    
+    Args:
+        all_frames: Frame data with pred_cam_t
+        camera_extrinsics: List of dicts with pan, tilt, roll, tx, ty, tz
+        fps: Frame rate
+        up_axis: Up axis for coordinate system
+        flip_x: Mirror on X axis
+        frame_offset: Start frame offset
+        smoothing_method: "kalman", "spline", "gaussian", or "none"
+        smoothing_strength: Smoothing intensity (0.0-1.0)
+    
+    Returns:
+        Root locator Blender object with animated transform
+    """
+    print("[Blender] Creating root locator with camera compensation...")
+    print(f"[Blender]   Smoothing: {smoothing_method} (strength={smoothing_strength})")
+    
+    root = bpy.data.objects.new("root_locator", None)
+    root.empty_display_type = 'ARROWS'
+    root.empty_display_size = 0.1
+    bpy.context.collection.objects.link(root)
+    
+    # Pre-smooth camera extrinsics if requested
+    smoothed_extrinsics = camera_extrinsics
+    if smoothing_method != "none" and len(camera_extrinsics) > 3:
+        if smoothing_method == "gaussian":
+            window = int(3 + smoothing_strength * 12)  # 3-15 frames
+            smoothed_extrinsics = smooth_camera_data(camera_extrinsics, window)
+        elif smoothing_method == "kalman":
+            # Use a lighter Kalman smoothing for root locator
+            smoothed_extrinsics = kalman_smooth_camera_data(
+                camera_extrinsics, 
+                process_noise=0.01, 
+                measurement_noise=0.05 + smoothing_strength * 0.3
+            )
+        elif smoothing_method == "spline":
+            smoothed_extrinsics = spline_smooth_camera_data(camera_extrinsics, smoothing_strength)
+    
+    # Build a frame-indexed dict for easy lookup
+    extrinsics_by_frame = {}
+    for ext in smoothed_extrinsics:
+        extrinsics_by_frame[ext.get("frame", 0)] = ext
+    
+    # Get initial camera extrinsics as reference (frame 0)
+    initial_ext = extrinsics_by_frame.get(0, smoothed_extrinsics[0] if smoothed_extrinsics else {})
+    initial_pan = initial_ext.get("pan", 0)
+    initial_tilt = initial_ext.get("tilt", 0)
+    initial_roll = initial_ext.get("roll", 0)
+    initial_tx = initial_ext.get("tx", 0)
+    initial_ty = initial_ext.get("ty", 0)
+    initial_tz = initial_ext.get("tz", 0)
+    
+    print(f"[Blender]   Initial camera: pan={math.degrees(initial_pan):.2f}°, tilt={math.degrees(initial_tilt):.2f}°")
+    
+    for frame_idx, frame_data in enumerate(all_frames):
+        # Get world offset from pred_cam_t (body's position relative to camera)
+        frame_cam_t = frame_data.get("pred_cam_t")
+        world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
+        
+        # Get camera extrinsics for this frame
+        ext = extrinsics_by_frame.get(frame_idx, {})
+        
+        # Calculate delta from initial pose (relative camera motion)
+        delta_pan = ext.get("pan", 0) - initial_pan
+        delta_tilt = ext.get("tilt", 0) - initial_tilt
+        delta_roll = ext.get("roll", 0) - initial_roll
+        delta_tx = ext.get("tx", 0) - initial_tx
+        delta_ty = ext.get("ty", 0) - initial_ty
+        delta_tz = ext.get("tz", 0) - initial_tz
+        
+        # Build inverse rotation matrix for camera compensation
+        # The inverse of camera rotation is applied to the root
+        # so that in screen space, the character stays stable
+        
+        # For Y-up coordinate system:
+        # - Pan (rotation around Y) -> inverse moves root in world X
+        # - Tilt (rotation around X) -> inverse moves root in world Y
+        # - Roll (rotation around Z) -> inverse rotates root
+        
+        # Create rotation compensation (inverse)
+        # Using negative angles = inverse rotation
+        inv_pan = -delta_pan
+        inv_tilt = -delta_tilt
+        inv_roll = -delta_roll
+        
+        # Translation compensation (inverse)
+        inv_tx = -delta_tx
+        inv_ty = -delta_ty
+        inv_tz = -delta_tz
+        
+        # Apply coordinate system conversion
+        if up_axis.upper() in ["Y", "-Y"]:
+            # Y-up: standard
+            rot_euler = Euler((inv_tilt, inv_pan, inv_roll), 'XYZ')
+            trans_offset = Vector((inv_tx, inv_ty, inv_tz))
+        else:
+            # Z-up: swap Y and Z
+            rot_euler = Euler((inv_tilt, inv_roll, inv_pan), 'XYZ')
+            trans_offset = Vector((inv_tx, inv_tz, inv_ty))
+        
+        # Combine world offset + inverse camera translation
+        final_location = world_offset + trans_offset
+        
+        # Apply flip_x
+        if flip_x:
+            final_location = Vector((-final_location.x, final_location.y, final_location.z))
+            rot_euler = Euler((-rot_euler.x, rot_euler.y, -rot_euler.z), 'XYZ')
+        
+        # Set keyframes
+        root.location = final_location
+        root.rotation_euler = rot_euler
+        root.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
+        root.keyframe_insert(data_path="rotation_euler", frame=frame_idx + frame_offset)
+    
+    # Report final compensation
+    if len(smoothed_extrinsics) > 0:
+        final_ext = extrinsics_by_frame.get(len(all_frames) - 1, smoothed_extrinsics[-1])
+        final_pan = final_ext.get("pan", 0) - initial_pan
+        final_tilt = final_ext.get("tilt", 0) - initial_tilt
+        print(f"[Blender] Root locator with camera compensation:")
+        print(f"[Blender]   Total pan compensation: {math.degrees(-final_pan):.2f}°")
+        print(f"[Blender]   Total tilt compensation: {math.degrees(-final_tilt):.2f}°")
+        print(f"[Blender]   Animated over {len(all_frames)} frames")
+    
+    return root
+
+
 def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     """
     Create a separate locator that shows the world path.
@@ -2092,10 +2242,15 @@ def main():
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
     camera_static = data.get("camera_static", False)  # Disable all camera animation
-    camera_smoothing = data.get("camera_smoothing", 0)  # Smoothing window for camera animation
-    solved_camera_rotations = data.get("solved_camera_rotations", None)  # From Camera Rotation Solver
-    bake_smoothing_method = data.get("bake_smoothing_method", "kalman")  # Smoothing for geometry baking
-    bake_smoothing_strength = data.get("bake_smoothing_strength", 0.5)  # Smoothing strength
+    camera_compensation = data.get("camera_compensation", False)  # Bake inverse extrinsics to root
+    
+    # Camera data - support both old and new field names for backwards compatibility
+    camera_extrinsics = data.get("camera_extrinsics") or data.get("solved_camera_rotations")
+    camera_intrinsics = data.get("camera_intrinsics")  # From MoGe2
+    
+    # Smoothing settings
+    extrinsics_smoothing_method = data.get("extrinsics_smoothing_method") or data.get("bake_smoothing_method", "kalman")
+    extrinsics_smoothing_strength = data.get("extrinsics_smoothing_strength") or data.get("bake_smoothing_strength", 0.5)
     
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
@@ -2107,8 +2262,9 @@ def main():
     print(f"[Blender] Camera follow root: {camera_follow_root}")
     print(f"[Blender] Camera use rotation: {camera_use_rotation}")
     print(f"[Blender] Camera static: {camera_static}")
-    print(f"[Blender] Camera smoothing: {camera_smoothing}")
-    print(f"[Blender] Solved camera rotations: {len(solved_camera_rotations) if solved_camera_rotations else 0} frames")
+    print(f"[Blender] Camera compensation: {camera_compensation}")
+    print(f"[Blender] Camera extrinsics: {len(camera_extrinsics) if camera_extrinsics else 0} frames")
+    print(f"[Blender] Camera intrinsics: {'Yes (MoGe2)' if camera_intrinsics else 'No (using manual sensor_width)'}")
     print(f"[Blender] Joint parents available: {joint_parents is not None}")
     
     if not frames:
@@ -2123,30 +2279,49 @@ def main():
         print("[Blender] Warning: Rotation mode requested but no data available. Falling back to positions.")
         skeleton_mode = "positions"
     
+    # Handle root_camera_compensation mode: bake inverse camera extrinsics to root locator
+    # This keeps the camera static while the root absorbs the camera motion
+    root_camera_compensation_mode = False
+    if world_translation_mode == "root_camera_compensation":
+        if camera_extrinsics:
+            print("[Blender] MODE: Root Locator + Camera Compensation")
+            print("[Blender]   Inverse camera extrinsics will be baked into root locator")
+            print("[Blender]   Camera will be exported as static")
+            root_camera_compensation_mode = True
+            # Force static camera
+            camera_static = True
+            animate_camera = False
+            camera_use_rotation = False
+            # Set translation mode to "root" so mesh/skeleton are parented to root
+            world_translation_mode = "root"
+        else:
+            print("[Blender] Warning: root_camera_compensation mode requires camera_extrinsics. Falling back to 'root'.")
+            world_translation_mode = "root"
+    
     # Handle bake_to_geometry mode: apply inverse camera transforms to geometry
     bake_to_geometry_mode = False
     if world_translation_mode == "bake_to_geometry":
-        if solved_camera_rotations:
+        if camera_extrinsics:
             print("[Blender] MODE: Baking camera motion into geometry (static camera export)")
-            print(f"[Blender] Smoothing: {bake_smoothing_method} (strength={bake_smoothing_strength})")
+            print(f"[Blender] Smoothing: {extrinsics_smoothing_method} (strength={extrinsics_smoothing_strength})")
             
             # Build smoothing params based on method
             smoothing_params = {}
-            if bake_smoothing_method == "kalman":
+            if extrinsics_smoothing_method == "kalman":
                 # For Kalman: strength affects measurement noise (higher = trust measurements less)
                 smoothing_params["process_noise"] = 0.01
-                smoothing_params["measurement_noise"] = 0.05 + bake_smoothing_strength * 0.45  # 0.05 to 0.5
-            elif bake_smoothing_method == "spline":
-                smoothing_params["smoothing_factor"] = bake_smoothing_strength
-            elif bake_smoothing_method == "gaussian":
+                smoothing_params["measurement_noise"] = 0.05 + extrinsics_smoothing_strength * 0.45  # 0.05 to 0.5
+            elif extrinsics_smoothing_method == "spline":
+                smoothing_params["smoothing_factor"] = extrinsics_smoothing_strength
+            elif extrinsics_smoothing_method == "gaussian":
                 # Map strength to window size: 0=3, 0.5=9, 1.0=15
-                smoothing_params["window"] = int(3 + bake_smoothing_strength * 12)
+                smoothing_params["window"] = int(3 + extrinsics_smoothing_strength * 12)
             
             frames = bake_camera_to_geometry(
                 frames, 
-                solved_camera_rotations, 
+                camera_extrinsics, 
                 up_axis,
-                smoothing_method=bake_smoothing_method,
+                smoothing_method=extrinsics_smoothing_method,
                 smoothing_params=smoothing_params
             )
             # Force static camera when geometry is baked
@@ -2157,7 +2332,7 @@ def main():
             # Set mode to "none" so mesh/skeleton don't apply additional transforms
             world_translation_mode = "none"
         else:
-            print("[Blender] Warning: bake_to_geometry mode requires solved_camera_rotations. Falling back to 'none'.")
+            print("[Blender] Warning: bake_to_geometry mode requires camera_extrinsics. Falling back to 'none'.")
             world_translation_mode = "none"
     
     # Get transformation
@@ -2185,7 +2360,17 @@ def main():
     root_locator = None
     body_offset = Vector((0, 0, 0))
     if world_translation_mode == "root":
-        root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
+        if root_camera_compensation_mode and camera_extrinsics:
+            # Create root locator with inverse camera extrinsics baked in
+            root_locator = create_root_locator_with_camera_compensation(
+                frames, camera_extrinsics, fps, up_axis, flip_x, frame_offset,
+                smoothing_method=extrinsics_smoothing_method,
+                smoothing_strength=extrinsics_smoothing_strength
+            )
+            print("[Blender] Root locator created with inverse camera extrinsics")
+        else:
+            # Standard root locator (world translation from pred_cam_t)
+            root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
         
         # Get body offset for aligning body relative to camera (STATIC from frame 0)
         first_cam_t = frames[0].get("pred_cam_t")
@@ -2204,9 +2389,11 @@ def main():
             print(f"[Blender] Mesh offset applied: {body_offset}")
     
     # Create skeleton (armature with bones and hierarchy)
-    # Pass solved_camera_rotations to compensate body orientation for camera motion
-    # BUT NOT when in bake_to_geometry mode (transforms already applied to geometry)
-    skeleton_camera_rots = None if bake_to_geometry_mode else solved_camera_rotations
+    # Pass camera_extrinsics to compensate body orientation for camera motion
+    # BUT NOT when in bake_to_geometry mode or camera_compensation mode (transforms already applied)
+    skeleton_camera_rots = None
+    if not bake_to_geometry_mode and not root_camera_compensation_mode:
+        skeleton_camera_rots = camera_extrinsics
     armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
     
     # Apply body offset to skeleton as well
@@ -2221,12 +2408,31 @@ def main():
     # Create camera
     camera_obj = None
     if include_camera:
-        if bake_to_geometry_mode:
-            # Use dedicated static camera for baked geometry mode
-            camera_obj = create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset)
-            print("[Blender] Static camera created for baked geometry mode")
+        # Determine effective sensor width (MoGe2 intrinsics take precedence)
+        effective_sensor_width = sensor_width
+        effective_focal_px = None
+        if camera_intrinsics:
+            if camera_intrinsics.get("focal_length_px"):
+                effective_focal_px = camera_intrinsics["focal_length_px"]
+            if camera_intrinsics.get("sensor_width_mm"):
+                effective_sensor_width = camera_intrinsics["sensor_width_mm"]
+            print(f"[Blender] Using MoGe2 intrinsics: focal={effective_focal_px}px, sensor={effective_sensor_width}mm")
+        
+        if bake_to_geometry_mode or root_camera_compensation_mode:
+            # Use dedicated static camera with intrinsics
+            camera_obj = create_static_camera_with_intrinsics(
+                frames, effective_sensor_width, up_axis, frame_offset,
+                focal_length_px=effective_focal_px
+            )
+            print("[Blender] Static camera created with intrinsics")
         else:
-            camera_obj = create_camera(frames, fps, transform_func, up_axis, sensor_width, world_translation_mode, animate_camera, frame_offset, camera_follow_root, camera_use_rotation, camera_static, camera_smoothing, flip_x, solved_camera_rotations)
+            camera_obj = create_camera(
+                frames, fps, transform_func, up_axis, effective_sensor_width, 
+                world_translation_mode, animate_camera, frame_offset, 
+                camera_follow_root, camera_use_rotation, camera_static, 
+                0,  # camera_smoothing - now handled in extrinsics smoothing
+                flip_x, camera_extrinsics
+            )
             
             # Parent camera to root locator if requested
             # This makes camera follow character movement while preserving screen-space relationship

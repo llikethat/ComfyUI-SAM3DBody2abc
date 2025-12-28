@@ -120,9 +120,15 @@ class ExportAnimatedFBX:
                 }),
             },
             "optional": {
-                "camera_rotations": ("CAMERA_DATA", {
-                    "tooltip": "Camera rotation data from Camera Rotation Solver. Overrides internal camera rotation calculation."
+                # Camera data - separate intrinsics and extrinsics
+                "camera_extrinsics": ("CAMERA_EXTRINSICS", {
+                    "tooltip": "Camera extrinsics (rotation + translation per frame) from Camera Solver or COLMAP Bridge."
                 }),
+                "camera_intrinsics": ("CAMERA_INTRINSICS", {
+                    "tooltip": "Camera intrinsics (focal length) from MoGe2 Intrinsics. Takes precedence over manual sensor_width."
+                }),
+                
+                # Timing
                 "fps": ("FLOAT", {
                     "default": 0.0,
                     "min": 0.0,
@@ -135,6 +141,8 @@ class ExportAnimatedFBX:
                     "max": 1000,
                     "tooltip": "Start frame in output (1 = start from frame 1 for Maya, 0 = start from frame 0)"
                 }),
+                
+                # Format
                 "output_format": (["FBX", "ABC (Alembic)"], {
                     "default": "FBX",
                     "tooltip": "FBX: blend shapes, ABC: vertex cache (better for Maya)"
@@ -143,17 +151,31 @@ class ExportAnimatedFBX:
                     "default": "Y",
                     "tooltip": "Which axis points up in the output"
                 }),
+                
+                # Skeleton
                 "skeleton_mode": (["Rotations (Recommended)", "Positions (Legacy)"], {
                     "default": "Rotations (Recommended)",
                     "tooltip": "Rotations: proper bone rotations for retargeting. Positions: exact joint locations."
                 }),
-                "world_translation": (["None (Body at Origin)", "Baked into Mesh/Joints", "Baked into Camera", "Baked into Geometry (Static Camera)", "Root Locator", "Root Locator + Animated Camera", "Separate Track"], {
+                
+                # World translation / camera compensation
+                "world_translation": ([
+                    "None (Body at Origin)",
+                    "Baked into Mesh/Joints",
+                    "Baked into Camera",
+                    "Root Locator + Camera Compensation",
+                    "Root Locator",
+                    "Root Locator + Animated Camera",
+                    "Separate Track"
+                ], {
                     "default": "None (Body at Origin)",
-                    "tooltip": "How to handle world translation. 'Baked into Geometry (Static Camera)' bakes camera motion into mesh/skeleton for stable exports."
+                    "tooltip": "How to handle world translation. 'Root Locator + Camera Compensation' bakes inverse camera extrinsics into root for stable exports."
                 }),
+                
+                # Mesh/camera options
                 "flip_x": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Mirror/flip the animation on X axis (applies to mesh, skeleton, and root locator)"
+                    "tooltip": "Mirror/flip the animation on X axis"
                 }),
                 "include_mesh": ("BOOLEAN", {
                     "default": True,
@@ -161,37 +183,37 @@ class ExportAnimatedFBX:
                 }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Include camera. Static for most modes, animated for 'Baked into Camera', follows root for 'Root Locator + Animated Camera'"
+                    "tooltip": "Include camera in export"
                 }),
+                
+                # Camera motion style (for animated camera modes)
                 "camera_motion": (["Translation (Default)", "Rotation (Pan/Tilt)", "Static"], {
                     "default": "Translation (Default)",
-                    "tooltip": "How camera follows character. Translation: camera moves laterally. Rotation: camera pans/tilts (tripod-like). Static: camera stays fixed, body offset handles alignment. Only applies when world_translation is 'Root Locator + Animated Camera'."
+                    "tooltip": "How camera follows character when using animated camera modes."
                 }),
-                "camera_smoothing": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 15,
-                    "step": 1,
-                    "tooltip": "Smoothing window for camera animation to reduce jitter (0=none, 3=light, 5=medium, 9=heavy)"
-                }),
-                "bake_smoothing_method": (["Kalman Filter", "Spline Fitting", "Gaussian", "None"], {
+                
+                # Smoothing (extrinsics only)
+                "extrinsics_smoothing": (["Kalman Filter", "Spline Fitting", "Gaussian", "None"], {
                     "default": "Kalman Filter",
-                    "tooltip": "Smoothing method when baking camera into geometry. Kalman: optimal for sequential data. Spline: smooth curves. Gaussian: simple averaging."
+                    "tooltip": "Smoothing method for camera extrinsics. Kalman: optimal for sequential data. Spline: smooth curves."
                 }),
-                "bake_smoothing_strength": ("FLOAT", {
+                "smoothing_strength": ("FLOAT", {
                     "default": 0.5,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.1,
-                    "tooltip": "Smoothing strength for geometry baking (0=minimal, 1=maximum). For Kalman: affects measurement noise. For Spline: affects curve smoothness."
+                    "tooltip": "Smoothing strength (0=minimal, 1=maximum). Only applies to extrinsics, not intrinsics."
                 }),
+                
+                # Fallback sensor width (used if no camera_intrinsics provided)
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
                     "min": 1.0,
                     "max": 100.0,
                     "step": 0.1,
-                    "tooltip": "Camera sensor width in mm (Full Frame=36, APS-C=23.6, MFT=17.3)"
+                    "tooltip": "Camera sensor width in mm. Only used if camera_intrinsics not provided."
                 }),
+                
                 "output_dir": ("STRING", {
                     "default": "",
                 }),
@@ -208,7 +230,8 @@ class ExportAnimatedFBX:
         self,
         mesh_sequence: Dict,
         filename: str = "animation",
-        camera_rotations: Optional[Dict] = None,
+        camera_extrinsics: Optional[Dict] = None,
+        camera_intrinsics: Optional[Dict] = None,
         fps: float = 0.0,
         frame_offset: int = 1,
         output_format: str = "FBX",
@@ -219,9 +242,8 @@ class ExportAnimatedFBX:
         include_mesh: bool = True,
         include_camera: bool = True,
         camera_motion: str = "Translation (Default)",
-        camera_smoothing: int = 0,
-        bake_smoothing_method: str = "Kalman Filter",
-        bake_smoothing_strength: float = 0.5,
+        extrinsics_smoothing: str = "Kalman Filter",
+        smoothing_strength: float = 0.5,
         sensor_width: float = 36.0,
         output_dir: str = "",
     ) -> Tuple[str, str, int, float]:
@@ -232,47 +254,48 @@ class ExportAnimatedFBX:
             fps = mesh_sequence.get("fps", 24.0)
             print(f"[Export] Using fps from source: {fps}")
         
-        # Check if we have solved camera rotations from Camera Rotation Solver
-        has_solved_rotations = camera_rotations is not None and "rotations" in camera_rotations
-        if has_solved_rotations:
-            print(f"[Export] Using solved camera rotations from Camera Rotation Solver ({len(camera_rotations['rotations'])} frames)")
-            # Force rotation mode when using solved rotations
-            use_camera_rotation = True
-            camera_static = False
-        elif camera_motion == "Static":
-            use_camera_rotation = False
-            camera_static = True
+        # Get intrinsics from camera_intrinsics if provided (MoGe2 takes precedence)
+        if camera_intrinsics is not None:
+            intrinsics_focal_px = camera_intrinsics.get("focal_length_px", None)
+            intrinsics_sensor_mm = camera_intrinsics.get("sensor_width_mm", sensor_width)
+            intrinsics_source = camera_intrinsics.get("source", "unknown")
+            if intrinsics_focal_px:
+                print(f"[Export] Using intrinsics from {intrinsics_source}: focal={intrinsics_focal_px:.1f}px")
         else:
-            use_camera_rotation = ("Rotation" in camera_motion)
-            camera_static = False
+            intrinsics_focal_px = None
+            intrinsics_sensor_mm = sensor_width
+            intrinsics_source = "manual"
+        
+        # Check if we have camera extrinsics
+        has_extrinsics = camera_extrinsics is not None and "rotations" in camera_extrinsics
+        if has_extrinsics:
+            extrinsics_source = camera_extrinsics.get("source", "unknown")
+            print(f"[Export] Using camera extrinsics from {extrinsics_source} ({len(camera_extrinsics['rotations'])} frames)")
         
         # Determine camera behavior based on world_translation mode
-        # - "Baked into Camera": camera animated with inverse world offset
-        # - "Root Locator + Animated Camera": camera parented to root, follows character
-        # - "None" + rotation: camera rotates to frame body at origin
+        use_camera_rotation = ("Rotation" in camera_motion)
+        camera_static = (camera_motion == "Static")
         animate_camera = (world_translation == "Baked into Camera")
         camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
+        camera_compensation = ("Camera Compensation" in world_translation)
         
-        # Camera rotation works with: None, Baked into Camera, Root Locator + Animated Camera
-        # It does NOT work with: Baked into Mesh/Joints, Root Locator (no animation), Separate Track
-        rotation_incompatible = any(x in world_translation for x in ["Baked into Mesh", "Separate"])
-        rotation_incompatible = rotation_incompatible or (world_translation == "Root Locator")
-        
-        if use_camera_rotation and rotation_incompatible:
-            print(f"[Export] Warning: Camera rotation mode not supported with '{world_translation}' - camera will be static.")
+        # Camera compensation mode: bake inverse extrinsics into root locator
+        if camera_compensation and not has_extrinsics:
+            print("[Export] Warning: 'Root Locator + Camera Compensation' requires camera_extrinsics input. Falling back to 'Root Locator'.")
+            world_translation = "Root Locator"
+            camera_compensation = False
         
         if include_camera:
-            if animate_camera:
-                mode_str = "SOLVED rotation" if has_solved_rotations else ("rotation (pan/tilt)" if use_camera_rotation else "translation")
-                print(f"[Export] Camera animated with {mode_str} (world_translation={world_translation})")
+            if camera_compensation:
+                print(f"[Export] Camera Compensation mode: inverse extrinsics baked into root, static camera exported")
+            elif animate_camera:
+                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
+                print(f"[Export] Camera animated with {mode_str}")
             elif camera_follow_root:
-                mode_str = "SOLVED rotation" if has_solved_rotations else ("rotation (pan/tilt)" if use_camera_rotation else "translation")
-                print(f"[Export] Camera follows root with {mode_str} (world_translation={world_translation})")
-            elif use_camera_rotation and not rotation_incompatible:
-                mode_str = "SOLVED rotation" if has_solved_rotations else "rotation (pan/tilt)"
-                print(f"[Export] Camera {mode_str} to frame body at origin (world_translation={world_translation})")
-            else:
-                print(f"[Export] Camera will be static (world_translation={world_translation})")
+                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
+                print(f"[Export] Camera follows root with {mode_str}")
+            elif not camera_compensation:
+                print(f"[Export] Camera will be static")
         
         frames = mesh_sequence.get("frames", {})
         if not frames:
@@ -297,7 +320,9 @@ class ExportAnimatedFBX:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Baked into Geometry" in world_translation:
+        if "Camera Compensation" in world_translation:
+            translation_mode = "root_camera_compensation"
+        elif "Baked into Geometry" in world_translation:
             translation_mode = "bake_to_geometry"
         elif "Baked into Mesh" in world_translation:
             translation_mode = "baked"
@@ -347,41 +372,52 @@ class ExportAnimatedFBX:
                 print(f"[Export] joint_parents length: {len(joint_parents)}")
         
         print(f"[Export] Camera motion mode: {'Static' if camera_static else ('Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation')}")
-        if camera_smoothing > 0:
-            print(f"[Export] Camera smoothing: {camera_smoothing} frames")
         
-        # Prepare solved camera rotations if available
+        # Prepare camera extrinsics for Blender
         solved_rotations = None
-        if has_solved_rotations:
+        if has_extrinsics:
             solved_rotations = []
-            has_translation = camera_rotations.get("has_translation", False)
-            for rot_data in camera_rotations["rotations"]:
+            has_translation = camera_extrinsics.get("has_translation", False)
+            for rot_data in camera_extrinsics["rotations"]:
                 rot_entry = {
                     "frame": rot_data.get("frame", 0),
                     "pan": rot_data.get("pan", 0.0),
                     "tilt": rot_data.get("tilt", 0.0),
                     "roll": rot_data.get("roll", 0.0),
+                    "tx": rot_data.get("tx", 0.0),
+                    "ty": rot_data.get("ty", 0.0),
+                    "tz": rot_data.get("tz", 0.0),
                 }
-                # Include translation if present
-                if has_translation:
-                    rot_entry["tx"] = rot_data.get("tx", 0.0)
-                    rot_entry["ty"] = rot_data.get("ty", 0.0)
-                    rot_entry["tz"] = rot_data.get("tz", 0.0)
                 solved_rotations.append(rot_entry)
             
             final_rot = solved_rotations[-1]
-            print(f"[Export] Solved rotations: {len(solved_rotations)} frames, final pan={np.degrees(final_rot['pan']):.2f}°, tilt={np.degrees(final_rot['tilt']):.2f}°")
+            print(f"[Export] Camera extrinsics: {len(solved_rotations)} frames")
+            print(f"[Export]   Final: pan={np.degrees(final_rot['pan']):.2f}°, tilt={np.degrees(final_rot['tilt']):.2f}°")
             if has_translation:
-                print(f"[Export] Camera translation data included (will compensate root position)")
+                print(f"[Export]   Translation present: tx={final_rot['tx']:.4f}, ty={final_rot['ty']:.4f}, tz={final_rot['tz']:.4f}")
         
-        # Map bake smoothing method to internal name
-        bake_method_map = {
+        # Map smoothing method to internal name
+        smoothing_method_map = {
             "Kalman Filter": "kalman",
             "Spline Fitting": "spline",
             "Gaussian": "gaussian",
             "None": "none",
         }
-        bake_method = bake_method_map.get(bake_smoothing_method, "kalman")
+        smoothing_method = smoothing_method_map.get(extrinsics_smoothing, "kalman")
+        
+        # Prepare intrinsics data for export
+        intrinsics_export = None
+        if camera_intrinsics is not None:
+            intrinsics_export = {
+                "focal_length_px": camera_intrinsics.get("focal_length_px"),
+                "focal_length_mm": camera_intrinsics.get("focal_length_mm"),
+                "sensor_width_mm": camera_intrinsics.get("sensor_width_mm", sensor_width),
+                "principal_point_x": camera_intrinsics.get("principal_point_x"),
+                "principal_point_y": camera_intrinsics.get("principal_point_y"),
+                "image_width": camera_intrinsics.get("image_width"),
+                "image_height": camera_intrinsics.get("image_height"),
+                "source": camera_intrinsics.get("source", "MoGe2"),
+            }
         
         export_data = {
             "fps": fps,
@@ -396,11 +432,12 @@ class ExportAnimatedFBX:
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
             "camera_use_rotation": use_camera_rotation,
-            "camera_static": camera_static,  # New: disable all camera animation
-            "camera_smoothing": camera_smoothing,
-            "solved_camera_rotations": solved_rotations,  # From Camera Rotation Solver
-            "bake_smoothing_method": bake_method,  # For geometry baking
-            "bake_smoothing_strength": bake_smoothing_strength,
+            "camera_static": camera_static,
+            "camera_compensation": camera_compensation,  # NEW: bake inverse extrinsics to root
+            "camera_extrinsics": solved_rotations,  # From Camera Solver / COLMAP Bridge / JSON
+            "camera_intrinsics": intrinsics_export,  # From MoGe2 Intrinsics
+            "extrinsics_smoothing_method": smoothing_method,
+            "extrinsics_smoothing_strength": smoothing_strength,
             "frames": [],
         }
         
