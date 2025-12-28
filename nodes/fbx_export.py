@@ -523,6 +523,7 @@ class ExportAnimatedFBX:
             skel_mode_str = "rotations" if use_rotations else "positions"
             print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name}")
             print(f"[Export] Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
+            print(f"[Export] Output path: {output_path}")
             
             result = subprocess.run(
                 cmd,
@@ -531,14 +532,24 @@ class ExportAnimatedFBX:
                 timeout=BLENDER_TIMEOUT,
             )
             
+            # Log Blender output
+            if result.stdout:
+                for line in result.stdout.split('\n')[-20:]:  # Last 20 lines
+                    if line.strip():
+                        print(f"[Blender] {line}")
+            
             if result.returncode != 0:
                 error = result.stderr[:500] if result.stderr else "Unknown error"
                 print(f"[Export] Blender error: {error}")
                 return ("", f"Blender error: {error}", 0, fps)
             
             if not os.path.exists(output_path):
-                return ("", f"Error: {format_name} not created", 0, fps)
+                print(f"[Export] ERROR: File not created at {output_path}")
+                if result.stderr:
+                    print(f"[Export] Blender stderr: {result.stderr[:500]}")
+                return ("", f"Error: {format_name} not created at {output_path}", 0, fps)
             
+            file_size = os.path.getsize(output_path)
             status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis}, skeleton={skel_mode_str})"
             if not include_mesh:
                 status += " skeleton only"

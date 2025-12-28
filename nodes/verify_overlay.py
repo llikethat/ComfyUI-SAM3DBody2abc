@@ -160,7 +160,11 @@ class VerifyOverlay:
                 }),
                 "show_mesh": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Draw mesh wireframe (slow for dense mesh)"
+                    "tooltip": "Draw mesh"
+                }),
+                "mesh_render_mode": (["Wireframe", "Solid"], {
+                    "default": "Wireframe",
+                    "tooltip": "Wireframe: edge lines only. Solid: filled triangles."
                 }),
                 "joint_radius": ("INT", {
                     "default": 5,
@@ -184,7 +188,7 @@ class VerifyOverlay:
                 }),
                 "mesh_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {
                     "default": "yellow",
-                    "tooltip": "Color for mesh wireframe"
+                    "tooltip": "Color for mesh"
                 }),
                 "opacity": ("FLOAT", {
                     "default": 0.7,
@@ -221,6 +225,7 @@ class VerifyOverlay:
         show_joints: bool = True,
         show_skeleton: bool = True,
         show_mesh: bool = False,
+        mesh_render_mode: str = "Wireframe",
         joint_radius: int = 5,
         line_thickness: int = 2,
         joint_color: str = "green",
@@ -328,26 +333,49 @@ class VerifyOverlay:
                             0 <= pt2[0] < w and 0 <= pt2[1] < h):
                             cv2.line(overlay, pt1, pt2, skeleton_bgr, line_thickness)
         
-        # Project and draw mesh wireframe (optional, can be slow)
+        # Project and draw mesh (optional)
         if show_mesh:
             vertices = to_numpy(mesh_data.get("vertices"))
             faces = to_numpy(mesh_data.get("faces"))
             
             if vertices is not None and faces is not None and focal_length is not None and cam_t is not None:
                 verts_2d = project_points_to_2d(vertices, focal_length, cam_t, w, h)
-                info_parts.append(f"Vertices: {len(vertices)}, Faces: {len(faces)}")
+                info_parts.append(f"Mesh: {len(vertices)} verts, {len(faces)} faces ({mesh_render_mode})")
                 
-                # Draw subset of edges (every Nth face to avoid too dense)
-                step = max(1, len(faces) // 500)  # Limit to ~500 edges
-                for face_idx in range(0, len(faces), step):
-                    face = faces[face_idx]
-                    for k in range(3):
-                        i, j = face[k], face[(k + 1) % 3]
-                        pt1 = (int(verts_2d[i][0]), int(verts_2d[i][1]))
-                        pt2 = (int(verts_2d[j][0]), int(verts_2d[j][1]))
-                        if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
-                            0 <= pt2[0] < w and 0 <= pt2[1] < h):
-                            cv2.line(overlay, pt1, pt2, mesh_bgr, 1)
+                if mesh_render_mode == "Solid":
+                    # Solid rendering: fill triangles
+                    # Sort faces by depth (average Z) for proper occlusion
+                    face_depths = []
+                    for face_idx, face in enumerate(faces):
+                        avg_z = np.mean([vertices[face[k]][2] for k in range(3)])
+                        face_depths.append((avg_z, face_idx))
+                    face_depths.sort(reverse=True)  # Back to front
+                    
+                    # Draw filled triangles
+                    for _, face_idx in face_depths:
+                        face = faces[face_idx]
+                        pts = np.array([
+                            [int(verts_2d[face[0]][0]), int(verts_2d[face[0]][1])],
+                            [int(verts_2d[face[1]][0]), int(verts_2d[face[1]][1])],
+                            [int(verts_2d[face[2]][0]), int(verts_2d[face[2]][1])],
+                        ], dtype=np.int32)
+                        
+                        # Check if triangle is within image bounds
+                        if np.all(pts[:, 0] >= 0) and np.all(pts[:, 0] < w) and \
+                           np.all(pts[:, 1] >= 0) and np.all(pts[:, 1] < h):
+                            cv2.fillPoly(overlay, [pts], mesh_bgr)
+                else:
+                    # Wireframe rendering: draw edges
+                    step = max(1, len(faces) // 500)  # Limit to ~500 edges for performance
+                    for face_idx in range(0, len(faces), step):
+                        face = faces[face_idx]
+                        for k in range(3):
+                            i, j = face[k], face[(k + 1) % 3]
+                            pt1 = (int(verts_2d[i][0]), int(verts_2d[i][1]))
+                            pt2 = (int(verts_2d[j][0]), int(verts_2d[j][1]))
+                            if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
+                                0 <= pt2[0] < w and 0 <= pt2[1] < h):
+                                cv2.line(overlay, pt1, pt2, mesh_bgr, 1)
         
         # Blend overlay with original
         result = cv2.addWeighted(overlay, opacity, img_bgr, 1 - opacity, 0)
@@ -386,10 +414,16 @@ class VerifyOverlayBatch:
                 "show_joints": ("BOOLEAN", {"default": True}),
                 "show_skeleton": ("BOOLEAN", {"default": True}),
                 "show_mesh": ("BOOLEAN", {"default": False}),
+                "mesh_render_mode": (["Wireframe", "Solid"], {
+                    "default": "Wireframe",
+                    "tooltip": "Wireframe: edge lines only. Solid: filled triangles."
+                }),
                 "joint_radius": ("INT", {"default": 5, "min": 1, "max": 20}),
                 "line_thickness": ("INT", {"default": 2, "min": 1, "max": 10}),
                 "joint_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "green"}),
                 "skeleton_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "cyan"}),
+                "mesh_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "yellow"}),
+                "opacity": ("FLOAT", {"default": 0.7, "min": 0.1, "max": 1.0, "step": 0.1}),
             }
         }
     
@@ -418,10 +452,13 @@ class VerifyOverlayBatch:
         show_joints: bool = True,
         show_skeleton: bool = True,
         show_mesh: bool = False,
+        mesh_render_mode: str = "Wireframe",
         joint_radius: int = 5,
         line_thickness: int = 2,
         joint_color: str = "green",
         skeleton_color: str = "cyan",
+        mesh_color: str = "yellow",
+        opacity: float = 0.7,
     ) -> Tuple[Any, str]:
         """Create overlay for all frames."""
         
@@ -442,6 +479,7 @@ class VerifyOverlayBatch:
         # Get colors
         joint_bgr = self._get_color(joint_color)
         skeleton_bgr = self._get_color(skeleton_color)
+        mesh_bgr = self._get_color(mesh_color)
         
         # Convert images to numpy
         if isinstance(images, torch.Tensor):
@@ -666,22 +704,46 @@ class VerifyOverlayBatch:
                         verts_2d[:, 0] += offset_x
                         verts_2d[:, 1] += offset_y
                         
-                        # Draw subset of edges (every Nth face to avoid too dense)
-                        mesh_bgr = (0, 255, 255)  # Yellow mesh
-                        step = max(1, len(faces) // 300)  # Limit edges for performance
-                        for face_idx in range(0, len(faces), step):
-                            face = faces[face_idx]
-                            for k in range(3):
-                                vi, vj = int(face[k]), int(face[(k + 1) % 3])
-                                if vi < len(verts_2d) and vj < len(verts_2d):
-                                    pt1 = (int(verts_2d[vi][0]), int(verts_2d[vi][1]))
-                                    pt2 = (int(verts_2d[vj][0]), int(verts_2d[vj][1]))
-                                    if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
-                                        0 <= pt2[0] < w and 0 <= pt2[1] < h):
-                                        cv2.line(overlay, pt1, pt2, mesh_bgr, 1)
+                        if mesh_render_mode == "Solid":
+                            # Solid rendering: fill triangles with depth sorting
+                            face_depths = []
+                            for face_idx, face in enumerate(faces):
+                                avg_z = np.mean([vertices[int(face[k])][2] for k in range(3)])
+                                face_depths.append((avg_z, face_idx))
+                            face_depths.sort(reverse=True)  # Back to front
+                            
+                            for _, face_idx in face_depths:
+                                face = faces[face_idx]
+                                vi0, vi1, vi2 = int(face[0]), int(face[1]), int(face[2])
+                                if vi0 < len(verts_2d) and vi1 < len(verts_2d) and vi2 < len(verts_2d):
+                                    pts = np.array([
+                                        [int(verts_2d[vi0][0]), int(verts_2d[vi0][1])],
+                                        [int(verts_2d[vi1][0]), int(verts_2d[vi1][1])],
+                                        [int(verts_2d[vi2][0]), int(verts_2d[vi2][1])],
+                                    ], dtype=np.int32)
+                                    
+                                    if np.all(pts[:, 0] >= 0) and np.all(pts[:, 0] < w) and \
+                                       np.all(pts[:, 1] >= 0) and np.all(pts[:, 1] < h):
+                                        cv2.fillPoly(overlay, [pts], mesh_bgr)
+                        else:
+                            # Wireframe rendering
+                            step = max(1, len(faces) // 300)  # Limit edges for performance
+                            for face_idx in range(0, len(faces), step):
+                                face = faces[face_idx]
+                                for k in range(3):
+                                    vi, vj = int(face[k]), int(face[(k + 1) % 3])
+                                    if vi < len(verts_2d) and vj < len(verts_2d):
+                                        pt1 = (int(verts_2d[vi][0]), int(verts_2d[vi][1]))
+                                        pt2 = (int(verts_2d[vj][0]), int(verts_2d[vj][1]))
+                                        if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
+                                            0 <= pt2[0] < w and 0 <= pt2[1] < h):
+                                            cv2.line(overlay, pt1, pt2, mesh_bgr, 1)
+            
+            # Blend with opacity
+            blended = cv2.addWeighted(overlay, opacity, img_bgr, 1 - opacity, 0)
             
             # Convert back to RGB
-            result_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+            result_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
             result_float = result_rgb.astype(np.float32) / 255.0
             result_frames.append(result_float)
         
