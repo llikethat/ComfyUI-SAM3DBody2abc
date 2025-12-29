@@ -493,7 +493,7 @@ def bake_camera_to_geometry(frames, solved_camera_rotations, up_axis="Y",
     return baked_frames
 
 
-def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset=0, focal_length_px=None):
+def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_offset=0, focal_length_px=None, principal_point_x=None, principal_point_y=None):
     """
     Create a static camera with correct intrinsics from frame data.
     
@@ -506,6 +506,8 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
         up_axis: Which axis points up
         frame_offset: Frame offset for keyframes
         focal_length_px: Optional focal length in pixels from MoGe2 (takes precedence)
+        principal_point_x: Optional principal point X (cx) in pixels
+        principal_point_y: Optional principal point Y (cy) in pixels
     
     Returns:
         Camera object
@@ -556,6 +558,61 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     cam_data.lens = focal_mm
     print(f"[Blender] Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length (source: {focal_source})")
     print(f"[Blender] Image: {image_width}x{image_height}, sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    
+    # ============================================================
+    # FILM OFFSET (from principal point cx, cy)
+    # ============================================================
+    # Principal point is where the optical axis intersects the image plane.
+    # If cx/cy != image center, we need to apply film offset.
+    #
+    # Blender's shift_x/shift_y:
+    # - shift_x > 0: shifts rendered image RIGHT (principal point LEFT of center)
+    # - shift_y > 0: shifts rendered image UP (principal point BELOW center)
+    #
+    # Maya's Film Offset:
+    # - Film Offset X > 0: shifts film gate RIGHT
+    # - Film Offset Y > 0: shifts film gate UP
+    #
+    # The relationship for cx > image_center_x (principal point RIGHT of center):
+    # - We need shift_x < 0 (or equivalently, negative film offset X)
+    # ============================================================
+    
+    center_x = image_width / 2.0
+    center_y = image_height / 2.0
+    
+    if principal_point_x is not None and principal_point_y is not None:
+        cx = principal_point_x
+        cy = principal_point_y
+        
+        # Calculate offset from image center (in pixels)
+        offset_x_px = cx - center_x
+        offset_y_px = cy - center_y
+        
+        # Convert to Blender shift (normalized by image dimension)
+        # Note: Blender shift is opposite sign of principal point offset
+        # because shift moves the image, not the principal point
+        shift_x = -offset_x_px / image_width
+        shift_y = offset_y_px / image_height  # Y is NOT negated (different convention)
+        
+        # Apply to camera
+        cam_data.shift_x = shift_x
+        cam_data.shift_y = shift_y
+        
+        print(f"[Blender] Principal point: cx={cx:.2f}px, cy={cy:.2f}px")
+        print(f"[Blender] Image center: ({center_x:.1f}, {center_y:.1f})")
+        print(f"[Blender] Principal point offset: dx={offset_x_px:.2f}px, dy={offset_y_px:.2f}px")
+        print(f"[Blender] Film offset (Blender shift): X={shift_x:.4f}, Y={shift_y:.4f}")
+        
+        # Also calculate Maya-style film offset for reference
+        # Maya Film Offset = shift * sensor_size
+        maya_film_offset_x = shift_x * sensor_width
+        maya_film_offset_y = shift_y * cam_data.sensor_height
+        print(f"[Blender] Film offset (Maya style): X={maya_film_offset_x:.4f}mm, Y={maya_film_offset_y:.4f}mm")
+    else:
+        # No principal point data - assume centered
+        print(f"[Blender] Principal point: not specified (assuming centered at {center_x:.1f}, {center_y:.1f})")
+        cam_data.shift_x = 0
+        cam_data.shift_y = 0
     
     # Get camera distance from pred_cam_t
     first_cam_t = first_frame.get("pred_cam_t")
@@ -2472,18 +2529,28 @@ def main():
         # Determine effective sensor width (MoGe2 intrinsics take precedence)
         effective_sensor_width = sensor_width
         effective_focal_px = None
+        effective_cx = None
+        effective_cy = None
         if camera_intrinsics:
             if camera_intrinsics.get("focal_length_px"):
                 effective_focal_px = camera_intrinsics["focal_length_px"]
             if camera_intrinsics.get("sensor_width_mm"):
                 effective_sensor_width = camera_intrinsics["sensor_width_mm"]
+            if camera_intrinsics.get("principal_point_x") is not None:
+                effective_cx = camera_intrinsics["principal_point_x"]
+            if camera_intrinsics.get("principal_point_y") is not None:
+                effective_cy = camera_intrinsics["principal_point_y"]
             print(f"[Blender] Using MoGe2 intrinsics: focal={effective_focal_px}px, sensor={effective_sensor_width}mm")
+            if effective_cx is not None and effective_cy is not None:
+                print(f"[Blender] Principal point from intrinsics: cx={effective_cx:.2f}, cy={effective_cy:.2f}")
         
         if bake_to_geometry_mode or root_camera_compensation_mode:
             # Use dedicated static camera with intrinsics
             camera_obj = create_static_camera_with_intrinsics(
                 frames, effective_sensor_width, up_axis, frame_offset,
-                focal_length_px=effective_focal_px
+                focal_length_px=effective_focal_px,
+                principal_point_x=effective_cx,
+                principal_point_y=effective_cy
             )
             print("[Blender] Static camera created with intrinsics")
         else:

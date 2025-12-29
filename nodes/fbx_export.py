@@ -291,8 +291,31 @@ class ExportAnimatedFBX:
             intrinsics_focal_px = camera_intrinsics.get("focal_length_px", None)
             intrinsics_sensor_mm = camera_intrinsics.get("sensor_width_mm", sensor_width)
             intrinsics_source = camera_intrinsics.get("source", "unknown")
+            intrinsics_cx = camera_intrinsics.get("principal_point_x", None)
+            intrinsics_cy = camera_intrinsics.get("principal_point_y", None)
+            intrinsics_w = camera_intrinsics.get("image_width", None)
+            intrinsics_h = camera_intrinsics.get("image_height", None)
+            
             if intrinsics_focal_px:
                 print(f"[Export] Using intrinsics from {intrinsics_source}: focal={intrinsics_focal_px:.1f}px")
+            
+            # Log principal point (cx, cy)
+            if intrinsics_cx is not None and intrinsics_cy is not None:
+                print(f"[Export] Principal point: cx={intrinsics_cx:.2f}px, cy={intrinsics_cy:.2f}px")
+                if intrinsics_w and intrinsics_h:
+                    # Calculate offset from image center
+                    center_x = intrinsics_w / 2.0
+                    center_y = intrinsics_h / 2.0
+                    offset_x = intrinsics_cx - center_x
+                    offset_y = intrinsics_cy - center_y
+                    print(f"[Export] Image center: ({center_x:.1f}, {center_y:.1f})")
+                    print(f"[Export] Principal point offset: dx={offset_x:.2f}px, dy={offset_y:.2f}px")
+                    
+                    # Calculate film offset (normalized)
+                    # Film offset = offset from center / image dimension
+                    film_offset_x = offset_x / intrinsics_w
+                    film_offset_y = offset_y / intrinsics_h
+                    print(f"[Export] Film offset (normalized): X={film_offset_x:.4f}, Y={film_offset_y:.4f}")
         else:
             intrinsics_focal_px = None
             intrinsics_sensor_mm = sensor_width
@@ -523,6 +546,8 @@ class ExportAnimatedFBX:
                 "focal_length": frame.get("focal_length"),
                 "bbox": to_list(frame.get("bbox")),  # For camera alignment
                 "image_size": frame.get("image_size"),  # (width, height)
+                "keypoints_2d": to_list(frame.get("keypoints_2d")),  # For apparent height
+                "keypoints_3d": to_list(frame.get("keypoints_3d")),  # 18-joint 3D keypoints
             }
             if include_mesh:
                 frame_data["vertices"] = to_list(frame.get("vertices"))

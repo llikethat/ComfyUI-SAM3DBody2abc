@@ -129,7 +129,8 @@ class MeshDataAccumulator:
             print(f"[Accumulator] mesh_data keys: {list(mesh_data.keys())}")
             
             # Check each relevant field
-            for key in ["joint_rotations", "joint_coords", "vertices", "camera", "focal_length"]:
+            for key in ["joint_rotations", "joint_coords", "vertices", "camera", "focal_length", 
+                        "pred_keypoints_2d", "pred_keypoints_3d", "keypoints_2d", "keypoints_3d"]:
                 val = mesh_data.get(key)
                 if val is None:
                     print(f"[Accumulator]   {key}: None")
@@ -145,7 +146,7 @@ class MeshDataAccumulator:
             if pose_params:
                 print(f"[Accumulator]   pose_params keys: {list(pose_params.keys())}")
             
-            # Check raw_output which might have the rotations
+            # Check raw_output which might have the rotations and keypoints
             raw_output = mesh_data.get("raw_output")
             if raw_output:
                 print(f"[Accumulator]   raw_output keys: {list(raw_output.keys())}")
@@ -153,6 +154,14 @@ class MeshDataAccumulator:
                     rots = raw_output["pred_global_rots"]
                     if hasattr(rots, 'shape'):
                         print(f"[Accumulator]   raw_output['pred_global_rots']: shape {rots.shape}")
+                if "pred_keypoints_2d" in raw_output:
+                    kp2d = raw_output["pred_keypoints_2d"]
+                    if hasattr(kp2d, 'shape'):
+                        print(f"[Accumulator]   raw_output['pred_keypoints_2d']: shape {kp2d.shape}")
+                if "pred_keypoints_3d" in raw_output:
+                    kp3d = raw_output["pred_keypoints_3d"]
+                    if hasattr(kp3d, 'shape'):
+                        print(f"[Accumulator]   raw_output['pred_keypoints_3d']: shape {kp3d.shape}")
             
             if skeleton is not None:
                 print(f"[Accumulator] skeleton keys: {list(skeleton.keys())}")
@@ -181,7 +190,34 @@ class MeshDataAccumulator:
                 if joint_rots is not None and frame_index == 0:
                     print(f"[Accumulator] Got joint_rotations from raw_output['pred_global_rots']")
         
-        # Store per-frame data - including joint_rotations
+        # Get keypoints_2d - try multiple sources (critical for apparent height!)
+        keypoints_2d = mesh_data.get("pred_keypoints_2d") or mesh_data.get("keypoints_2d")
+        if keypoints_2d is None:
+            raw_output = mesh_data.get("raw_output")
+            if raw_output:
+                keypoints_2d = raw_output.get("pred_keypoints_2d")
+        if keypoints_2d is not None and frame_index == 0:
+            kp2d_shape = keypoints_2d.shape if hasattr(keypoints_2d, 'shape') else 'N/A'
+            print(f"[Accumulator] Got keypoints_2d: shape {kp2d_shape}")
+        
+        # Get keypoints_3d - try multiple sources
+        keypoints_3d = mesh_data.get("pred_keypoints_3d") or mesh_data.get("keypoints_3d")
+        if keypoints_3d is None:
+            raw_output = mesh_data.get("raw_output")
+            if raw_output:
+                keypoints_3d = raw_output.get("pred_keypoints_3d")
+        if keypoints_3d is not None and frame_index == 0:
+            kp3d_shape = keypoints_3d.shape if hasattr(keypoints_3d, 'shape') else 'N/A'
+            print(f"[Accumulator] Got keypoints_3d: shape {kp3d_shape}")
+        
+        # Get image_size - try multiple sources
+        image_size = mesh_data.get("image_size")
+        if image_size is None:
+            raw_output = mesh_data.get("raw_output")
+            if raw_output:
+                image_size = raw_output.get("image_size")
+        
+        # Store per-frame data - including keypoints_2d/3d for motion analysis
         frame = {
             "vertices": to_numpy(mesh_data.get("vertices")),
             "joint_coords": to_numpy(mesh_data.get("joint_coords")),
@@ -189,6 +225,9 @@ class MeshDataAccumulator:
             "camera": to_numpy(mesh_data.get("camera")),
             "pred_cam_t": to_numpy(mesh_data.get("camera")),  # Alias for compatibility
             "focal_length": mesh_data.get("focal_length"),
+            "keypoints_2d": to_numpy(keypoints_2d),  # For apparent height calculation
+            "keypoints_3d": to_numpy(keypoints_3d),  # 18-joint 3D keypoints
+            "image_size": image_size,  # For projection calculations
         }
         
         if frame_index == 0:
@@ -198,6 +237,11 @@ class MeshDataAccumulator:
                 print(f"[Accumulator] Stored joint_rotations: shape {jr_stored.shape if hasattr(jr_stored, 'shape') else 'N/A'}")
             else:
                 print(f"[Accumulator] WARNING: joint_rotations is None after all fallbacks!")
+            
+            kp2d_stored = frame.get("keypoints_2d")
+            kp3d_stored = frame.get("keypoints_3d")
+            print(f"[Accumulator] Stored keypoints_2d: {kp2d_stored.shape if kp2d_stored is not None and hasattr(kp2d_stored, 'shape') else 'None'}")
+            print(f"[Accumulator] Stored keypoints_3d: {kp3d_stored.shape if kp3d_stored is not None and hasattr(kp3d_stored, 'shape') else 'None'}")
         seq["frames"][frame_index] = frame
         
         # Store shared data (first frame)

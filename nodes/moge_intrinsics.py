@@ -190,7 +190,9 @@ class MoGe2IntrinsicsEstimator:
         
         print(f"[MoGeIntrinsics] Results:")
         print(f"  Focal length: {fx_px:.1f}px = {focal_mm:.1f}mm")
-        print(f"  Principal point: ({cx_px:.1f}, {cy_px:.1f})")
+        print(f"  Principal point: cx={cx_px:.2f}px, cy={cy_px:.2f}px")
+        print(f"  Image center: ({W/2:.1f}, {H/2:.1f})")
+        print(f"  Principal point offset: dx={cx_px - W/2:.2f}px, dy={cy_px - H/2:.2f}px")
         print(f"  FOV: {fov_x_deg:.1f}° x {fov_y_deg:.1f}°")
         
         # Build output
