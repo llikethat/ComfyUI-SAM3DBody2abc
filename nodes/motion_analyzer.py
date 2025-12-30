@@ -72,52 +72,80 @@ class SAM3DJoints:
 
 
 # ============================================================================
-# SMPL-H 127-Joint Skeleton (Full Mode) - For future MHR integration
+# MHR 127-Joint Skeleton (Full Mode) - Based on actual SAM3DBody output
 # This is what pred_joint_coords uses
 # ============================================================================
-class SMPLHJoints:
-    """SMPL-H 127-joint skeleton indices (pred_joint_coords)."""
-    # Main body joints (first 22)
-    PELVIS = 0
-    LEFT_HIP = 1
-    RIGHT_HIP = 2
-    SPINE1 = 3
-    LEFT_KNEE = 4
-    RIGHT_KNEE = 5
-    SPINE2 = 6
-    LEFT_ANKLE = 7
-    RIGHT_ANKLE = 8
-    SPINE3 = 9
-    LEFT_FOOT = 10
-    RIGHT_FOOT = 11
-    NECK = 12
-    LEFT_COLLAR = 13
-    RIGHT_COLLAR = 14
-    HEAD = 15
-    LEFT_SHOULDER = 16
-    RIGHT_SHOULDER = 17
-    LEFT_ELBOW = 18
-    RIGHT_ELBOW = 19
+class MHRJoints:
+    """MHR 127-joint skeleton indices (pred_joint_coords from SAM3DBody).
+    
+    Based on visual inspection of joint labels in verify_overlay output.
+    Note: This is an approximation based on observed joint positions.
+    The exact mapping may need refinement based on further testing.
+    """
+    # Head/Face joints (0-4)
+    HEAD_TOP = 0
+    HEAD_1 = 1
+    HEAD_2 = 2
+    HEAD_3 = 3
+    NECK = 4
+    
+    # Upper body (5-8)
+    LEFT_SHOULDER = 5
+    RIGHT_SHOULDER = 6
+    LEFT_ELBOW = 7
+    RIGHT_ELBOW = 8
+    
+    # Hips (9-10)
+    LEFT_HIP = 9
+    RIGHT_HIP = 10
+    
+    # Left leg (11-14)
+    LEFT_KNEE = 11
+    LEFT_ANKLE = 12
+    LEFT_HEEL = 13
+    LEFT_TOE = 14  # Ground contact point
+    
+    # Right leg (15-19)
+    RIGHT_KNEE = 15
+    RIGHT_ANKLE = 16
+    RIGHT_HEEL = 17
+    RIGHT_TOE_1 = 18  # Ground contact point
+    RIGHT_TOE_2 = 19  # Ground contact point
+    
+    # Wrists (estimated - may need adjustment)
+    # These are likely in the 20+ range with hand joints
     LEFT_WRIST = 20
     RIGHT_WRIST = 21
-    # Joints 22-126 are hand joints
+    
+    # Aliases for compatibility
+    PELVIS = 9  # Use LEFT_HIP as pelvis approximation (center would be between 9 and 10)
+    HEAD = 0
+    LEFT_FOOT = 14   # LEFT_TOE for ground contact
+    RIGHT_FOOT = 18  # RIGHT_TOE_1 for ground contact
     
     NUM_BODY_JOINTS = 22
     NUM_TOTAL_JOINTS = 127
     
     # Skeleton connections for body visualization
     CONNECTIONS = [
-        # Spine
-        (PELVIS, SPINE1), (SPINE1, SPINE2), (SPINE2, SPINE3), (SPINE3, NECK), (NECK, HEAD),
+        # Head to spine
+        (HEAD_TOP, NECK),
+        # Shoulders
+        (NECK, LEFT_SHOULDER), (NECK, RIGHT_SHOULDER),
+        # Arms
+        (LEFT_SHOULDER, LEFT_ELBOW), (LEFT_ELBOW, LEFT_WRIST),
+        (RIGHT_SHOULDER, RIGHT_ELBOW), (RIGHT_ELBOW, RIGHT_WRIST),
+        # Hips
+        (NECK, LEFT_HIP), (NECK, RIGHT_HIP),
         # Left leg
-        (PELVIS, LEFT_HIP), (LEFT_HIP, LEFT_KNEE), (LEFT_KNEE, LEFT_ANKLE), (LEFT_ANKLE, LEFT_FOOT),
+        (LEFT_HIP, LEFT_KNEE), (LEFT_KNEE, LEFT_ANKLE), (LEFT_ANKLE, LEFT_TOE),
         # Right leg
-        (PELVIS, RIGHT_HIP), (RIGHT_HIP, RIGHT_KNEE), (RIGHT_KNEE, RIGHT_ANKLE), (RIGHT_ANKLE, RIGHT_FOOT),
-        # Left arm
-        (SPINE3, LEFT_COLLAR), (LEFT_COLLAR, LEFT_SHOULDER), (LEFT_SHOULDER, LEFT_ELBOW), (LEFT_ELBOW, LEFT_WRIST),
-        # Right arm
-        (SPINE3, RIGHT_COLLAR), (RIGHT_COLLAR, RIGHT_SHOULDER), (RIGHT_SHOULDER, RIGHT_ELBOW), (RIGHT_ELBOW, RIGHT_WRIST),
+        (RIGHT_HIP, RIGHT_KNEE), (RIGHT_KNEE, RIGHT_ANKLE), (RIGHT_ANKLE, RIGHT_TOE_1),
     ]
+
+
+# Keep SMPLHJoints as alias for backward compatibility
+SMPLHJoints = MHRJoints
 
 
 def to_numpy(data):
@@ -271,6 +299,8 @@ def detect_foot_contact(
     vertices: np.ndarray,
     skeleton_mode: str = "simple",
     threshold_ratio: float = 0.05,
+    frame_idx: int = -1,
+    debug: bool = False,
 ) -> str:
     """
     Detect if feet are in contact with ground.
@@ -278,16 +308,19 @@ def detect_foot_contact(
     Args:
         keypoints_3d: [J, 3] keypoint positions
         vertices: [V, 3] mesh vertices
-        skeleton_mode: "simple" (18-joint) or "full" (127-joint)
+        skeleton_mode: "simple" (18-joint) or "full" (127-joint MHR)
         threshold_ratio: Threshold as ratio of leg length
+        frame_idx: Frame index for debug output
+        debug: Whether to print debug info
     
     Returns:
         "both", "left", "right", or "none"
     
     Note:
         - For "simple" (18-joint): Uses ANKLE joints (no foot joints available)
-        - For "full" (127-joint SMPL-H): Uses FOOT joints (10, 11) which are
-          at the ball of the foot, more accurate for ground contact detection
+        - For "full" (127-joint MHR): Uses TOE joints:
+          - LEFT_TOE (joint 14) for left foot
+          - RIGHT_TOE_1/2 (joints 18, 19) for right foot - uses lower Y
     """
     if skeleton_mode == "simple":
         # 18-joint skeleton has no foot joints, use ankles
@@ -300,17 +333,28 @@ def detect_foot_contact(
         right_hip = keypoints_3d[J.RIGHT_HIP]
         right_knee = keypoints_3d[J.RIGHT_KNEE]
         right_ankle = keypoints_3d[J.RIGHT_ANKLE]
+        joint_name = "ANKLE"
+        left_idx = J.LEFT_ANKLE
+        right_idx = J.RIGHT_ANKLE
     else:
-        # 127-joint SMPL-H skeleton has actual foot joints
-        J = SMPLHJoints
-        left_foot_point = keypoints_3d[J.LEFT_FOOT]    # Index 10 - ball of foot
-        right_foot_point = keypoints_3d[J.RIGHT_FOOT]  # Index 11 - ball of foot
+        # 127-joint MHR skeleton - use TOE joints for ground contact
+        J = MHRJoints
+        left_foot_point = keypoints_3d[J.LEFT_TOE]  # Joint 14
+        # For right foot, use lowest of joints 18 and 19 (both are toe joints)
+        right_toe1 = keypoints_3d[J.RIGHT_TOE_1]    # Joint 18
+        right_toe2 = keypoints_3d[J.RIGHT_TOE_2]    # Joint 19
+        # Use the one with lower Y (closer to ground)
+        right_foot_point = right_toe1 if right_toe1[1] < right_toe2[1] else right_toe2
+        
         left_hip = keypoints_3d[J.LEFT_HIP]
         left_knee = keypoints_3d[J.LEFT_KNEE]
         left_ankle = keypoints_3d[J.LEFT_ANKLE]
         right_hip = keypoints_3d[J.RIGHT_HIP]
         right_knee = keypoints_3d[J.RIGHT_KNEE]
         right_ankle = keypoints_3d[J.RIGHT_ANKLE]
+        joint_name = "TOE"
+        left_idx = J.LEFT_TOE
+        right_idx = f"{J.RIGHT_TOE_1}/{J.RIGHT_TOE_2}"
     
     # Ground plane estimate (lowest point of mesh)
     ground_y = vertices[:, 1].min()
@@ -323,9 +367,24 @@ def detect_foot_contact(
     # Adaptive threshold based on leg length
     threshold = avg_leg * threshold_ratio
     
-    # Check contact using foot points (feet for SMPL-H, ankles for simple)
-    left_contact = abs(left_foot_point[1] - ground_y) < threshold
-    right_contact = abs(right_foot_point[1] - ground_y) < threshold
+    # Calculate distances from ground
+    left_dist = abs(left_foot_point[1] - ground_y)
+    right_dist = abs(right_foot_point[1] - ground_y)
+    
+    # Debug output for first few frames
+    if debug and frame_idx >= 0 and frame_idx < 3:
+        print(f"[Foot Contact DEBUG] Frame {frame_idx}:")
+        print(f"  Joint type: {joint_name} (L={left_idx}, R={right_idx})")
+        print(f"  Ground Y (mesh min): {ground_y:.4f}")
+        print(f"  Left foot Y: {left_foot_point[1]:.4f}, distance from ground: {left_dist:.4f}")
+        print(f"  Right foot Y: {right_foot_point[1]:.4f}, distance from ground: {right_dist:.4f}")
+        print(f"  Leg length: {avg_leg:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
+        print(f"  Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
+        print(f"  Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
+    
+    # Check contact using foot points (feet for MHR, ankles for simple)
+    left_contact = left_dist < threshold
+    right_contact = right_dist < threshold
     
     if left_contact and right_contact:
         return "both"
@@ -618,6 +677,11 @@ class MotionAnalyzer:
             }
         }
         
+        # Debug: show available keys in first frame
+        if sorted_indices:
+            first_frame = frames_dict[sorted_indices[0]]
+            print(f"[Motion Analyzer] First frame keys: {list(first_frame.keys())}")
+        
         for idx in sorted_indices:
             frame = frames_dict[idx]
             converted["vertices"].append(frame.get("vertices"))
@@ -632,10 +696,28 @@ class MotionAnalyzer:
             converted["params"]["focal_length"].append(frame.get("focal_length"))
             
             # Check both naming conventions for keypoints
-            kp2d = frame.get("keypoints_2d") or frame.get("pred_keypoints_2d")
-            kp3d = frame.get("keypoints_3d") or frame.get("pred_keypoints_3d")
+            # Use explicit None checks because numpy arrays don't work with `or`
+            kp2d = frame.get("keypoints_2d")
+            if kp2d is None:
+                kp2d = frame.get("pred_keypoints_2d")
+            
+            kp3d = frame.get("keypoints_3d")
+            if kp3d is None:
+                kp3d = frame.get("pred_keypoints_3d")
+            
             converted["params"]["keypoints_2d"].append(kp2d)
             converted["params"]["keypoints_3d"].append(kp3d)
+            
+            # Debug first frame keypoints
+            if idx == sorted_indices[0]:
+                print(f"[Motion Analyzer] Frame 0 keypoints_2d source: {'keypoints_2d' if frame.get('keypoints_2d') is not None else ('pred_keypoints_2d' if frame.get('pred_keypoints_2d') is not None else 'None')}")
+                print(f"[Motion Analyzer] Frame 0 keypoints_3d source: {'keypoints_3d' if frame.get('keypoints_3d') is not None else ('pred_keypoints_3d' if frame.get('pred_keypoints_3d') is not None else 'None')}")
+                if kp2d is not None:
+                    kp2d_shape = kp2d.shape if hasattr(kp2d, 'shape') else f"len={len(kp2d)}"
+                    print(f"[Motion Analyzer] Frame 0 kp2d shape: {kp2d_shape}")
+                if kp3d is not None:
+                    kp3d_shape = kp3d.shape if hasattr(kp3d, 'shape') else f"len={len(kp3d)}"
+                    print(f"[Motion Analyzer] Frame 0 kp3d shape: {kp3d_shape}")
         
         print(f"[Motion Analyzer] Converted {len(sorted_indices)} frames from SAM3DBody2abc format")
         
@@ -903,7 +985,8 @@ class MotionAnalyzer:
             # Foot contact detection
             skeleton_mode_str = "simple" if kp_source == "keypoints_3d" else "full"
             foot_contact = detect_foot_contact(
-                keypoints_3d, vertices, skeleton_mode_str, foot_contact_threshold
+                keypoints_3d, vertices, skeleton_mode_str, foot_contact_threshold,
+                frame_idx=i, debug=True
             )
             subject_motion["foot_contact"].append(foot_contact)
         

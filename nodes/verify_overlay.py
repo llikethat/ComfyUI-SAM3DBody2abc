@@ -78,35 +78,54 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
 
 
 # Define key body joint indices for MHR model visualization
-# These are approximate mappings for the main body landmarks
+# Based on visual inspection of joint labels in overlay output
 MHR_KEY_JOINTS = {
-    'pelvis': 0,
-    'spine1': 1,
-    'spine2': 2, 
-    'spine3': 3,
+    # Head joints (0-4)
+    'head': 0,
+    'head_1': 1,
+    'head_2': 2, 
+    'head_3': 3,
     'neck': 4,
-    'head': 5,
-    'left_shoulder': 6,
+    # Upper body (5-8)
+    'left_shoulder': 5,
+    'right_shoulder': 6,
     'left_elbow': 7,
-    'left_wrist': 8,
-    'right_shoulder': 9,
-    'right_elbow': 10,
-    'right_wrist': 11,
-    'left_hip': 12,
-    'left_knee': 13,
-    'left_ankle': 14,
-    'right_hip': 15,
-    'right_knee': 16,
-    'right_ankle': 17,
+    'right_elbow': 8,
+    # Hips (9-10)
+    'left_hip': 9,
+    'right_hip': 10,
+    # Left leg (11-14)
+    'left_knee': 11,
+    'left_ankle': 12,
+    'left_heel': 13,
+    'left_toe': 14,
+    # Right leg (15-19)
+    'right_knee': 15,
+    'right_ankle': 16,
+    'right_heel': 17,
+    'right_toe_1': 18,
+    'right_toe_2': 19,
+    # Wrists (20-21)
+    'left_wrist': 20,
+    'right_wrist': 21,
 }
 
 # Fallback skeleton connections if joint_parents not available
+# Based on MHR joint ordering (0-21 body joints)
 FALLBACK_SKELETON_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4), (4, 5),  # Spine to head
-    (3, 6), (6, 7), (7, 8),  # Left arm
-    (3, 9), (9, 10), (10, 11),  # Right arm
-    (0, 12), (12, 13), (13, 14),  # Left leg
-    (0, 15), (15, 16), (16, 17),  # Right leg
+    # Head to neck
+    (0, 4),
+    # Shoulders from neck
+    (4, 5), (4, 6),
+    # Arms
+    (5, 7), (7, 20),  # Left arm: shoulder -> elbow -> wrist
+    (6, 8), (8, 21),  # Right arm: shoulder -> elbow -> wrist
+    # Hips from neck (spine simplified)
+    (4, 9), (4, 10),
+    # Left leg
+    (9, 11), (11, 12), (12, 14),  # hip -> knee -> ankle -> toe
+    # Right leg
+    (10, 15), (15, 16), (16, 18),  # hip -> knee -> ankle -> toe
 ]
 
 
