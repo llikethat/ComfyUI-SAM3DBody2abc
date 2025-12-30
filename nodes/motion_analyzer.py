@@ -283,28 +283,39 @@ def detect_foot_contact(
     
     Returns:
         "both", "left", "right", or "none"
+    
+    Note:
+        - For "simple" (18-joint): Uses ANKLE joints (no foot joints available)
+        - For "full" (127-joint SMPL-H): Uses FOOT joints (10, 11) which are
+          at the ball of the foot, more accurate for ground contact detection
     """
     if skeleton_mode == "simple":
+        # 18-joint skeleton has no foot joints, use ankles
         J = SAM3DJoints
-        left_ankle = keypoints_3d[J.LEFT_ANKLE]
-        right_ankle = keypoints_3d[J.RIGHT_ANKLE]
+        left_foot_point = keypoints_3d[J.LEFT_ANKLE]
+        right_foot_point = keypoints_3d[J.RIGHT_ANKLE]
         left_hip = keypoints_3d[J.LEFT_HIP]
         left_knee = keypoints_3d[J.LEFT_KNEE]
+        left_ankle = keypoints_3d[J.LEFT_ANKLE]
         right_hip = keypoints_3d[J.RIGHT_HIP]
         right_knee = keypoints_3d[J.RIGHT_KNEE]
+        right_ankle = keypoints_3d[J.RIGHT_ANKLE]
     else:
+        # 127-joint SMPL-H skeleton has actual foot joints
         J = SMPLHJoints
-        left_ankle = keypoints_3d[J.LEFT_ANKLE]
-        right_ankle = keypoints_3d[J.RIGHT_ANKLE]
+        left_foot_point = keypoints_3d[J.LEFT_FOOT]    # Index 10 - ball of foot
+        right_foot_point = keypoints_3d[J.RIGHT_FOOT]  # Index 11 - ball of foot
         left_hip = keypoints_3d[J.LEFT_HIP]
         left_knee = keypoints_3d[J.LEFT_KNEE]
+        left_ankle = keypoints_3d[J.LEFT_ANKLE]
         right_hip = keypoints_3d[J.RIGHT_HIP]
         right_knee = keypoints_3d[J.RIGHT_KNEE]
+        right_ankle = keypoints_3d[J.RIGHT_ANKLE]
     
     # Ground plane estimate (lowest point of mesh)
     ground_y = vertices[:, 1].min()
     
-    # Calculate leg length for adaptive threshold
+    # Calculate leg length for adaptive threshold (hip -> knee -> ankle)
     left_leg = np.linalg.norm(left_knee - left_hip) + np.linalg.norm(left_ankle - left_knee)
     right_leg = np.linalg.norm(right_knee - right_hip) + np.linalg.norm(right_ankle - right_knee)
     avg_leg = (left_leg + right_leg) / 2
@@ -312,9 +323,9 @@ def detect_foot_contact(
     # Adaptive threshold based on leg length
     threshold = avg_leg * threshold_ratio
     
-    # Check contact
-    left_contact = abs(left_ankle[1] - ground_y) < threshold
-    right_contact = abs(right_ankle[1] - ground_y) < threshold
+    # Check contact using foot points (feet for SMPL-H, ankles for simple)
+    left_contact = abs(left_foot_point[1] - ground_y) < threshold
+    right_contact = abs(right_foot_point[1] - ground_y) < threshold
     
     if left_contact and right_contact:
         return "both"
@@ -619,8 +630,12 @@ class MotionAnalyzer:
             converted["params"]["camera_t"].append(cam_t)
             
             converted["params"]["focal_length"].append(frame.get("focal_length"))
-            converted["params"]["keypoints_2d"].append(frame.get("keypoints_2d"))
-            converted["params"]["keypoints_3d"].append(frame.get("keypoints_3d"))
+            
+            # Check both naming conventions for keypoints
+            kp2d = frame.get("keypoints_2d") or frame.get("pred_keypoints_2d")
+            kp3d = frame.get("keypoints_3d") or frame.get("pred_keypoints_3d")
+            converted["params"]["keypoints_2d"].append(kp2d)
+            converted["params"]["keypoints_3d"].append(kp3d)
         
         print(f"[Motion Analyzer] Converted {len(sorted_indices)} frames from SAM3DBody2abc format")
         
