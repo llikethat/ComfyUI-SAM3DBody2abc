@@ -322,7 +322,7 @@ def detect_foot_contact(
     Args:
         keypoints_3d: [J, 3] keypoint positions
         vertices: [V, 3] mesh vertices
-        skeleton_mode: "simple" (18-joint) or "full" (127-joint MHR)
+        skeleton_mode: "simple" (17-joint COCO) or "full" (127-joint SMPL-H)
         threshold_ratio: Threshold as ratio of leg length
         frame_idx: Frame index for debug output
         debug: Whether to print debug info
@@ -331,16 +331,17 @@ def detect_foot_contact(
         "both", "left", "right", or "none"
     
     Note:
-        - For "simple" (18-joint): Uses ANKLE joints (no foot joints available)
-        - For "full" (127-joint MHR): Uses TOE joints:
-          - LEFT_TOE (joint 14) for left foot
-          - RIGHT_TOE_1/2 (joints 18, 19) for right foot - uses lower Y
+        - For "simple" (COCO): Uses ankle joints (15, 16) - no toe joints in COCO
+        - For "full" (SMPL-H 127-joint): Dynamically finds lowest left/right joints
     """
+    # Ground plane estimate (lowest point of mesh)
+    ground_y = vertices[:, 1].min()
+    
     if skeleton_mode == "simple":
-        # 18-joint skeleton has no foot joints, use ankles
+        # COCO 17-joint skeleton - use ankles (joints 15, 16)
         J = SAM3DJoints
-        left_foot_point = keypoints_3d[J.LEFT_ANKLE]
-        right_foot_point = keypoints_3d[J.RIGHT_ANKLE]
+        left_foot_point = keypoints_3d[J.LEFT_ANKLE]   # Joint 15
+        right_foot_point = keypoints_3d[J.RIGHT_ANKLE] # Joint 16
         left_hip = keypoints_3d[J.LEFT_HIP]
         left_knee = keypoints_3d[J.LEFT_KNEE]
         left_ankle = keypoints_3d[J.LEFT_ANKLE]
@@ -351,27 +352,60 @@ def detect_foot_contact(
         left_idx = J.LEFT_ANKLE
         right_idx = J.RIGHT_ANKLE
     else:
-        # 127-joint MHR skeleton - use TOE joints for ground contact
-        J = MHRJoints
-        left_foot_point = keypoints_3d[J.LEFT_TOE]  # Joint 14
-        # For right foot, use lowest of joints 18 and 19 (both are toe joints)
-        right_toe1 = keypoints_3d[J.RIGHT_TOE_1]    # Joint 18
-        right_toe2 = keypoints_3d[J.RIGHT_TOE_2]    # Joint 19
-        # Use the one with lower Y (closer to ground)
-        right_foot_point = right_toe1 if right_toe1[1] < right_toe2[1] else right_toe2
+        # 127-joint SMPL-H skeleton - dynamically find lowest joints
+        # The skeleton has pelvis at origin (Y=0), so lowest Y = closest to ground
+        num_joints = len(keypoints_3d)
         
-        left_hip = keypoints_3d[J.LEFT_HIP]
-        left_knee = keypoints_3d[J.LEFT_KNEE]
-        left_ankle = keypoints_3d[J.LEFT_ANKLE]
-        right_hip = keypoints_3d[J.RIGHT_HIP]
-        right_knee = keypoints_3d[J.RIGHT_KNEE]
-        right_ankle = keypoints_3d[J.RIGHT_ANKLE]
-        joint_name = "TOE"
-        left_idx = J.LEFT_TOE
-        right_idx = f"{J.RIGHT_TOE_1}/{J.RIGHT_TOE_2}"
-    
-    # Ground plane estimate (lowest point of mesh)
-    ground_y = vertices[:, 1].min()
+        # Get all Y values
+        y_values = keypoints_3d[:, 1]
+        
+        # Find the joints with lowest Y (closest to ground)
+        # We need to separate left vs right - use X position
+        # Negative X = left side of body, Positive X = right side
+        x_values = keypoints_3d[:, 0]
+        
+        # Find lowest joints on each side (only check body joints, not hands - first ~22)
+        body_joint_limit = min(22, num_joints)  # SMPL-H has 22 body joints
+        
+        left_lowest_idx = -1
+        left_lowest_y = float('inf')
+        right_lowest_idx = -1
+        right_lowest_y = float('inf')
+        
+        for j in range(body_joint_limit):
+            y = y_values[j]
+            x = x_values[j]
+            # Use X position to determine side (negative X = stage right = body's left)
+            if x <= 0:  # Left side of body
+                if y < left_lowest_y:
+                    left_lowest_y = y
+                    left_lowest_idx = j
+            else:  # Right side of body
+                if y < right_lowest_y:
+                    right_lowest_y = y
+                    right_lowest_idx = j
+        
+        # Fallback to SMPL-H standard indices if dynamic detection fails
+        if left_lowest_idx < 0:
+            left_lowest_idx = 10  # SMPL-H LEFT_FOOT
+        if right_lowest_idx < 0:
+            right_lowest_idx = 11  # SMPL-H RIGHT_FOOT
+        
+        left_foot_point = keypoints_3d[left_lowest_idx]
+        right_foot_point = keypoints_3d[right_lowest_idx]
+        
+        # For leg length calculation, use standard SMPL-H indices
+        # SMPL-H: LEFT_HIP=1, LEFT_KNEE=4, LEFT_ANKLE=7, RIGHT_HIP=2, RIGHT_KNEE=5, RIGHT_ANKLE=8
+        left_hip = keypoints_3d[1]
+        left_knee = keypoints_3d[4]
+        left_ankle = keypoints_3d[7]
+        right_hip = keypoints_3d[2]
+        right_knee = keypoints_3d[5]
+        right_ankle = keypoints_3d[8]
+        
+        joint_name = "LOWEST"
+        left_idx = left_lowest_idx
+        right_idx = right_lowest_idx
     
     # Calculate leg length for adaptive threshold (hip -> knee -> ankle)
     left_leg = np.linalg.norm(left_knee - left_hip) + np.linalg.norm(left_ankle - left_knee)
@@ -396,7 +430,7 @@ def detect_foot_contact(
         print(f"  Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
         print(f"  Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
     
-    # Check contact using foot points (feet for MHR, ankles for simple)
+    # Check contact
     left_contact = left_dist < threshold
     right_contact = right_dist < threshold
     
