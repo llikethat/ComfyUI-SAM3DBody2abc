@@ -33,41 +33,55 @@ from typing import Dict, List, Optional, Tuple, Any
 # This is what pred_keypoints_2d and pred_keypoints_3d use
 # ============================================================================
 class SAM3DJoints:
-    """SAM3DBody 18-joint skeleton indices (pred_keypoints_2d/3d)."""
-    PELVIS = 0
-    SPINE1 = 1
-    SPINE2 = 2
-    SPINE3 = 3
-    NECK = 4
-    HEAD = 5
-    LEFT_SHOULDER = 6
+    """SAM3DBody keypoint indices for pred_keypoints_2d/3d (COCO-based 70-joint format).
+    
+    The first 17 joints follow COCO keypoint ordering.
+    Note: pred_keypoints_3d has 70 joints total (17 body + face/hands).
+    """
+    # COCO format (first 17 joints)
+    NOSE = 0
+    LEFT_EYE = 1
+    RIGHT_EYE = 2
+    LEFT_EAR = 3
+    RIGHT_EAR = 4
+    LEFT_SHOULDER = 5
+    RIGHT_SHOULDER = 6
     LEFT_ELBOW = 7
-    LEFT_WRIST = 8
-    RIGHT_SHOULDER = 9
-    RIGHT_ELBOW = 10
-    RIGHT_WRIST = 11
-    LEFT_HIP = 12
+    RIGHT_ELBOW = 8
+    LEFT_WRIST = 9
+    RIGHT_WRIST = 10
+    LEFT_HIP = 11
+    RIGHT_HIP = 12
     LEFT_KNEE = 13
-    LEFT_ANKLE = 14
-    RIGHT_HIP = 15
-    RIGHT_KNEE = 16
-    RIGHT_ANKLE = 17
+    RIGHT_KNEE = 14
+    LEFT_ANKLE = 15
+    RIGHT_ANKLE = 16
     
-    NUM_JOINTS = 18
+    # Aliases for compatibility
+    HEAD = NOSE  # Use nose as head proxy
+    PELVIS = 11  # Use left hip as pelvis proxy (center would be between 11 and 12)
+    NECK = 0     # Use nose as neck proxy (no explicit neck in COCO)
     
-    # Skeleton connections for visualization
+    NUM_JOINTS = 17  # Core body joints
+    
+    # Skeleton connections for visualization (COCO format)
     CONNECTIONS = [
-        # Spine to head
-        (PELVIS, SPINE1), (SPINE1, SPINE2), (SPINE2, SPINE3), 
-        (SPINE3, NECK), (NECK, HEAD),
+        # Face
+        (LEFT_EYE, NOSE), (RIGHT_EYE, NOSE),
+        (LEFT_EAR, LEFT_EYE), (RIGHT_EAR, RIGHT_EYE),
+        # Shoulders
+        (LEFT_SHOULDER, RIGHT_SHOULDER),
         # Left arm
-        (SPINE3, LEFT_SHOULDER), (LEFT_SHOULDER, LEFT_ELBOW), (LEFT_ELBOW, LEFT_WRIST),
+        (LEFT_SHOULDER, LEFT_ELBOW), (LEFT_ELBOW, LEFT_WRIST),
         # Right arm
-        (SPINE3, RIGHT_SHOULDER), (RIGHT_SHOULDER, RIGHT_ELBOW), (RIGHT_ELBOW, RIGHT_WRIST),
+        (RIGHT_SHOULDER, RIGHT_ELBOW), (RIGHT_ELBOW, RIGHT_WRIST),
+        # Torso
+        (LEFT_SHOULDER, LEFT_HIP), (RIGHT_SHOULDER, RIGHT_HIP),
+        (LEFT_HIP, RIGHT_HIP),
         # Left leg
-        (PELVIS, LEFT_HIP), (LEFT_HIP, LEFT_KNEE), (LEFT_KNEE, LEFT_ANKLE),
+        (LEFT_HIP, LEFT_KNEE), (LEFT_KNEE, LEFT_ANKLE),
         # Right leg
-        (PELVIS, RIGHT_HIP), (RIGHT_HIP, RIGHT_KNEE), (RIGHT_KNEE, RIGHT_ANKLE),
+        (RIGHT_HIP, RIGHT_KNEE), (RIGHT_KNEE, RIGHT_ANKLE),
     ]
 
 
