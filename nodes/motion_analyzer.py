@@ -86,80 +86,59 @@ class SAM3DJoints:
 
 
 # ============================================================================
-# MHR 127-Joint Skeleton (Full Mode) - Based on actual SAM3DBody output
-# This is what pred_joint_coords uses
+# SMPL-H 127-Joint Skeleton (Full Mode) - Standard SMPL-H ordering
+# This is what joint_coords (pred_joint_coords) uses
 # ============================================================================
-class MHRJoints:
-    """MHR 127-joint skeleton indices (pred_joint_coords from SAM3DBody).
+class SMPLHJoints:
+    """SMPL-H 127-joint skeleton indices (joint_coords from SAM3DBody).
     
-    Based on visual inspection of joint labels in verify_overlay output.
-    Note: This is an approximation based on observed joint positions.
-    The exact mapping may need refinement based on further testing.
+    Standard SMPL-H body joint ordering (first 22 joints).
+    Joints 22-126 are hand joints (not used for body analysis).
     """
-    # Head/Face joints (0-4)
-    HEAD_TOP = 0
-    HEAD_1 = 1
-    HEAD_2 = 2
-    HEAD_3 = 3
-    NECK = 4
-    
-    # Upper body (5-8)
-    LEFT_SHOULDER = 5
-    RIGHT_SHOULDER = 6
-    LEFT_ELBOW = 7
-    RIGHT_ELBOW = 8
-    
-    # Hips (9-10)
-    LEFT_HIP = 9
-    RIGHT_HIP = 10
-    
-    # Left leg (11-14)
-    LEFT_KNEE = 11
-    LEFT_ANKLE = 12
-    LEFT_HEEL = 13
-    LEFT_TOE = 14  # Ground contact point
-    
-    # Right leg (15-19)
-    RIGHT_KNEE = 15
-    RIGHT_ANKLE = 16
-    RIGHT_HEEL = 17
-    RIGHT_TOE_1 = 18  # Ground contact point
-    RIGHT_TOE_2 = 19  # Ground contact point
-    
-    # Wrists (estimated - may need adjustment)
-    # These are likely in the 20+ range with hand joints
+    # Core body joints (0-21)
+    PELVIS = 0
+    LEFT_HIP = 1
+    RIGHT_HIP = 2
+    SPINE1 = 3
+    LEFT_KNEE = 4
+    RIGHT_KNEE = 5
+    SPINE2 = 6
+    LEFT_ANKLE = 7
+    RIGHT_ANKLE = 8
+    SPINE3 = 9
+    LEFT_FOOT = 10   # Ball of foot - use for ground contact
+    RIGHT_FOOT = 11  # Ball of foot - use for ground contact
+    NECK = 12
+    LEFT_COLLAR = 13
+    RIGHT_COLLAR = 14
+    HEAD = 15
+    LEFT_SHOULDER = 16
+    RIGHT_SHOULDER = 17
+    LEFT_ELBOW = 18
+    RIGHT_ELBOW = 19
     LEFT_WRIST = 20
     RIGHT_WRIST = 21
-    
-    # Aliases for compatibility
-    PELVIS = 9  # Use LEFT_HIP as pelvis approximation (center would be between 9 and 10)
-    HEAD = 0
-    LEFT_FOOT = 14   # LEFT_TOE for ground contact
-    RIGHT_FOOT = 18  # RIGHT_TOE_1 for ground contact
     
     NUM_BODY_JOINTS = 22
     NUM_TOTAL_JOINTS = 127
     
     # Skeleton connections for body visualization
     CONNECTIONS = [
-        # Head to spine
-        (HEAD_TOP, NECK),
-        # Shoulders
-        (NECK, LEFT_SHOULDER), (NECK, RIGHT_SHOULDER),
-        # Arms
-        (LEFT_SHOULDER, LEFT_ELBOW), (LEFT_ELBOW, LEFT_WRIST),
-        (RIGHT_SHOULDER, RIGHT_ELBOW), (RIGHT_ELBOW, RIGHT_WRIST),
-        # Hips
-        (NECK, LEFT_HIP), (NECK, RIGHT_HIP),
+        # Spine
+        (PELVIS, SPINE1), (SPINE1, SPINE2), (SPINE2, SPINE3), (SPINE3, NECK), (NECK, HEAD),
         # Left leg
-        (LEFT_HIP, LEFT_KNEE), (LEFT_KNEE, LEFT_ANKLE), (LEFT_ANKLE, LEFT_TOE),
+        (PELVIS, LEFT_HIP), (LEFT_HIP, LEFT_KNEE), (LEFT_KNEE, LEFT_ANKLE), (LEFT_ANKLE, LEFT_FOOT),
         # Right leg
-        (RIGHT_HIP, RIGHT_KNEE), (RIGHT_KNEE, RIGHT_ANKLE), (RIGHT_ANKLE, RIGHT_TOE_1),
+        (PELVIS, RIGHT_HIP), (RIGHT_HIP, RIGHT_KNEE), (RIGHT_KNEE, RIGHT_ANKLE), (RIGHT_ANKLE, RIGHT_FOOT),
+        # Left arm
+        (SPINE3, LEFT_COLLAR), (LEFT_COLLAR, LEFT_SHOULDER), (LEFT_SHOULDER, LEFT_ELBOW), (LEFT_ELBOW, LEFT_WRIST),
+        # Right arm
+        (SPINE3, RIGHT_COLLAR), (RIGHT_COLLAR, RIGHT_SHOULDER), (RIGHT_SHOULDER, RIGHT_ELBOW), (RIGHT_ELBOW, RIGHT_WRIST),
     ]
 
 
-# Keep SMPLHJoints as alias for backward compatibility
-SMPLHJoints = MHRJoints
+# Keep MHRJoints as alias for backward compatibility
+MHRJoints = SMPLHJoints
 
 
 def to_numpy(data):
@@ -332,7 +311,13 @@ def detect_foot_contact(
     
     Note:
         - For "simple" (COCO): Uses ankle joints (15, 16) - no toe joints in COCO
-        - For "full" (SMPL-H 127-joint): Dynamically finds lowest left/right joints
+        - For "full" (SMPL-H 127-joint): Uses foot joints (10, 11) - ball of foot
+        
+    SMPL-H 22 Body Joint Indices:
+        0=Pelvis, 1=L_Hip, 2=R_Hip, 3=Spine1, 4=L_Knee, 5=R_Knee,
+        6=Spine2, 7=L_Ankle, 8=R_Ankle, 9=Spine3, 10=L_Foot, 11=R_Foot,
+        12=Neck, 13=L_Collar, 14=R_Collar, 15=Head, 16=L_Shoulder, 17=R_Shoulder,
+        18=L_Elbow, 19=R_Elbow, 20=L_Wrist, 21=R_Wrist
     """
     # Ground plane estimate (lowest point of mesh)
     ground_y = vertices[:, 1].min()
@@ -352,60 +337,29 @@ def detect_foot_contact(
         left_idx = J.LEFT_ANKLE
         right_idx = J.RIGHT_ANKLE
     else:
-        # 127-joint SMPL-H skeleton - dynamically find lowest joints
-        # The skeleton has pelvis at origin (Y=0), so lowest Y = closest to ground
-        num_joints = len(keypoints_3d)
+        # SMPL-H 127-joint skeleton - use foot joints (10, 11)
+        # These are the ball-of-foot joints in standard SMPL-H ordering
+        SMPLH_LEFT_FOOT = 10
+        SMPLH_RIGHT_FOOT = 11
+        SMPLH_LEFT_HIP = 1
+        SMPLH_RIGHT_HIP = 2
+        SMPLH_LEFT_KNEE = 4
+        SMPLH_RIGHT_KNEE = 5
+        SMPLH_LEFT_ANKLE = 7
+        SMPLH_RIGHT_ANKLE = 8
         
-        # Get all Y values
-        y_values = keypoints_3d[:, 1]
+        left_foot_point = keypoints_3d[SMPLH_LEFT_FOOT]
+        right_foot_point = keypoints_3d[SMPLH_RIGHT_FOOT]
+        left_hip = keypoints_3d[SMPLH_LEFT_HIP]
+        left_knee = keypoints_3d[SMPLH_LEFT_KNEE]
+        left_ankle = keypoints_3d[SMPLH_LEFT_ANKLE]
+        right_hip = keypoints_3d[SMPLH_RIGHT_HIP]
+        right_knee = keypoints_3d[SMPLH_RIGHT_KNEE]
+        right_ankle = keypoints_3d[SMPLH_RIGHT_ANKLE]
         
-        # Find the joints with lowest Y (closest to ground)
-        # We need to separate left vs right - use X position
-        # Negative X = left side of body, Positive X = right side
-        x_values = keypoints_3d[:, 0]
-        
-        # Find lowest joints on each side (only check body joints, not hands - first ~22)
-        body_joint_limit = min(22, num_joints)  # SMPL-H has 22 body joints
-        
-        left_lowest_idx = -1
-        left_lowest_y = float('inf')
-        right_lowest_idx = -1
-        right_lowest_y = float('inf')
-        
-        for j in range(body_joint_limit):
-            y = y_values[j]
-            x = x_values[j]
-            # Use X position to determine side (negative X = stage right = body's left)
-            if x <= 0:  # Left side of body
-                if y < left_lowest_y:
-                    left_lowest_y = y
-                    left_lowest_idx = j
-            else:  # Right side of body
-                if y < right_lowest_y:
-                    right_lowest_y = y
-                    right_lowest_idx = j
-        
-        # Fallback to SMPL-H standard indices if dynamic detection fails
-        if left_lowest_idx < 0:
-            left_lowest_idx = 10  # SMPL-H LEFT_FOOT
-        if right_lowest_idx < 0:
-            right_lowest_idx = 11  # SMPL-H RIGHT_FOOT
-        
-        left_foot_point = keypoints_3d[left_lowest_idx]
-        right_foot_point = keypoints_3d[right_lowest_idx]
-        
-        # For leg length calculation, use standard SMPL-H indices
-        # SMPL-H: LEFT_HIP=1, LEFT_KNEE=4, LEFT_ANKLE=7, RIGHT_HIP=2, RIGHT_KNEE=5, RIGHT_ANKLE=8
-        left_hip = keypoints_3d[1]
-        left_knee = keypoints_3d[4]
-        left_ankle = keypoints_3d[7]
-        right_hip = keypoints_3d[2]
-        right_knee = keypoints_3d[5]
-        right_ankle = keypoints_3d[8]
-        
-        joint_name = "LOWEST"
-        left_idx = left_lowest_idx
-        right_idx = right_lowest_idx
+        joint_name = "FOOT"
+        left_idx = SMPLH_LEFT_FOOT
+        right_idx = SMPLH_RIGHT_FOOT
     
     # Calculate leg length for adaptive threshold (hip -> knee -> ankle)
     left_leg = np.linalg.norm(left_knee - left_hip) + np.linalg.norm(left_ankle - left_knee)
