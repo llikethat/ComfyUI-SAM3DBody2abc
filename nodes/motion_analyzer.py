@@ -299,10 +299,10 @@ def detect_foot_contact(
     Detect if feet are in contact with ground.
     
     Args:
-        keypoints_3d: [J, 3] keypoint positions
-        vertices: [V, 3] mesh vertices
+        keypoints_3d: [J, 3] keypoint positions (may be pelvis-centered)
+        vertices: [V, 3] mesh vertices (in ground-relative coordinates)
         skeleton_mode: "simple" (17-joint COCO) or "full" (127-joint SMPL-H)
-        threshold_ratio: Threshold as ratio of leg length
+        threshold_ratio: Threshold as ratio of mesh height
         frame_idx: Frame index for debug output
         debug: Whether to print debug info
     
@@ -310,77 +310,58 @@ def detect_foot_contact(
         "both", "left", "right", or "none"
     
     Note:
-        - For "simple" (COCO): Uses ankle joints (15, 16) - no toe joints in COCO
-        - For "full" (SMPL-H 127-joint): Uses foot joints (10, 11) - ball of foot
+        For accurate ground contact detection, we use MESH VERTICES because:
+        - joint_coords is in pelvis-centered space (pelvis at origin)
+        - mesh vertices are in ground-relative space (feet at ground level)
         
-    SMPL-H 22 Body Joint Indices:
-        0=Pelvis, 1=L_Hip, 2=R_Hip, 3=Spine1, 4=L_Knee, 5=R_Knee,
-        6=Spine2, 7=L_Ankle, 8=R_Ankle, 9=Spine3, 10=L_Foot, 11=R_Foot,
-        12=Neck, 13=L_Collar, 14=R_Collar, 15=Head, 16=L_Shoulder, 17=R_Shoulder,
-        18=L_Elbow, 19=R_Elbow, 20=L_Wrist, 21=R_Wrist
+        We find the lowest mesh vertices on left and right sides of the body
+        and compare them to the mesh minimum (ground plane).
     """
+    from datetime import datetime, timezone, timedelta
+    
     # Ground plane estimate (lowest point of mesh)
     ground_y = vertices[:, 1].min()
     
-    if skeleton_mode == "simple":
-        # COCO 17-joint skeleton - use ankles (joints 15, 16)
-        J = SAM3DJoints
-        left_foot_point = keypoints_3d[J.LEFT_ANKLE]   # Joint 15
-        right_foot_point = keypoints_3d[J.RIGHT_ANKLE] # Joint 16
-        left_hip = keypoints_3d[J.LEFT_HIP]
-        left_knee = keypoints_3d[J.LEFT_KNEE]
-        left_ankle = keypoints_3d[J.LEFT_ANKLE]
-        right_hip = keypoints_3d[J.RIGHT_HIP]
-        right_knee = keypoints_3d[J.RIGHT_KNEE]
-        right_ankle = keypoints_3d[J.RIGHT_ANKLE]
-        joint_name = "ANKLE"
-        left_idx = J.LEFT_ANKLE
-        right_idx = J.RIGHT_ANKLE
+    # Use mesh vertices to find foot positions (they're in ground-relative coords)
+    # Split vertices by X position: negative X = left, positive X = right
+    x_values = vertices[:, 0]
+    y_values = vertices[:, 1]
+    
+    # Find lowest Y on each side of the body
+    left_mask = x_values <= 0  # Left side of body
+    right_mask = x_values > 0   # Right side of body
+    
+    if left_mask.sum() > 0:
+        left_foot_y = y_values[left_mask].min()
     else:
-        # SMPL-H 127-joint skeleton - use foot joints (10, 11)
-        # These are the ball-of-foot joints in standard SMPL-H ordering
-        SMPLH_LEFT_FOOT = 10
-        SMPLH_RIGHT_FOOT = 11
-        SMPLH_LEFT_HIP = 1
-        SMPLH_RIGHT_HIP = 2
-        SMPLH_LEFT_KNEE = 4
-        SMPLH_RIGHT_KNEE = 5
-        SMPLH_LEFT_ANKLE = 7
-        SMPLH_RIGHT_ANKLE = 8
+        left_foot_y = ground_y + 1.0  # Fallback: not on ground
         
-        left_foot_point = keypoints_3d[SMPLH_LEFT_FOOT]
-        right_foot_point = keypoints_3d[SMPLH_RIGHT_FOOT]
-        left_hip = keypoints_3d[SMPLH_LEFT_HIP]
-        left_knee = keypoints_3d[SMPLH_LEFT_KNEE]
-        left_ankle = keypoints_3d[SMPLH_LEFT_ANKLE]
-        right_hip = keypoints_3d[SMPLH_RIGHT_HIP]
-        right_knee = keypoints_3d[SMPLH_RIGHT_KNEE]
-        right_ankle = keypoints_3d[SMPLH_RIGHT_ANKLE]
-        
-        joint_name = "FOOT"
-        left_idx = SMPLH_LEFT_FOOT
-        right_idx = SMPLH_RIGHT_FOOT
+    if right_mask.sum() > 0:
+        right_foot_y = y_values[right_mask].min()
+    else:
+        right_foot_y = ground_y + 1.0  # Fallback: not on ground
     
-    # Calculate leg length for adaptive threshold (hip -> knee -> ankle)
-    left_leg = np.linalg.norm(left_knee - left_hip) + np.linalg.norm(left_ankle - left_knee)
-    right_leg = np.linalg.norm(right_knee - right_hip) + np.linalg.norm(right_ankle - right_knee)
-    avg_leg = (left_leg + right_leg) / 2
+    # Calculate mesh height for adaptive threshold
+    mesh_height = vertices[:, 1].max() - vertices[:, 1].min()
     
-    # Adaptive threshold based on leg length
-    threshold = avg_leg * threshold_ratio
+    # Adaptive threshold based on mesh height (5% of body height)
+    threshold = mesh_height * threshold_ratio
     
     # Calculate distances from ground
-    left_dist = abs(left_foot_point[1] - ground_y)
-    right_dist = abs(right_foot_point[1] - ground_y)
+    left_dist = abs(left_foot_y - ground_y)
+    right_dist = abs(right_foot_y - ground_y)
     
     # Debug output for first few frames
     if debug and frame_idx >= 0 and frame_idx < 3:
-        print(f"[Foot Contact DEBUG] Frame {frame_idx}:")
-        print(f"  Joint type: {joint_name} (L={left_idx}, R={right_idx})")
+        # Get timestamp in UTC+05:30 (IST)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+        print(f"[{timestamp}] [Foot Contact DEBUG] Frame {frame_idx}:")
+        print(f"  Method: MESH VERTICES (ground-relative coordinates)")
         print(f"  Ground Y (mesh min): {ground_y:.4f}")
-        print(f"  Left foot Y: {left_foot_point[1]:.4f}, distance from ground: {left_dist:.4f}")
-        print(f"  Right foot Y: {right_foot_point[1]:.4f}, distance from ground: {right_dist:.4f}")
-        print(f"  Leg length: {avg_leg:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
+        print(f"  Left foot Y (lowest left vertex): {left_foot_y:.4f}, distance: {left_dist:.4f}")
+        print(f"  Right foot Y (lowest right vertex): {right_foot_y:.4f}, distance: {right_dist:.4f}")
+        print(f"  Mesh height: {mesh_height:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
         print(f"  Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
         print(f"  Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
     
