@@ -876,10 +876,12 @@ class MotionAnalyzer:
         subject_motion = {
             "pelvis_2d": [],
             "pelvis_3d": [],
+            "body_world_3d": [],  # Global trajectory from joint_coords[0]
             "joints_2d": [],
             "joints_3d": [],
             "velocity_2d": [],
             "velocity_3d": [],
+            "body_world_velocity": [],  # Trajectory velocity
             "apparent_height": [],
             "depth_estimate": [],
             "foot_contact": [],
@@ -953,6 +955,27 @@ class MotionAnalyzer:
             subject_motion["pelvis_3d"].append(pelvis_3d.copy())
             subject_motion["pelvis_2d"].append(pelvis_2d.copy())
             
+            # Body world position (MHR joint_coords[0] - global trajectory reference)
+            # Only available in Full Skeleton mode - this is the root joint for global character movement
+            if not use_simple and has_joint_coords and i < len(joint_coords_list) and joint_coords_list[i] is not None:
+                jc = to_numpy(joint_coords_list[i])
+                if jc.ndim == 3:
+                    jc = jc.squeeze(0)
+                body_world_3d = jc[0] * scale_factor  # MHR Joint 0 = body_world (near feet)
+                
+                # Debug output for first 3 frames
+                if i < 3:
+                    from datetime import datetime, timezone, timedelta
+                    ist = timezone(timedelta(hours=5, minutes=30))
+                    timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+                    print(f"[{timestamp}] [Body World DEBUG] Frame {i}:")
+                    print(f"  MHR joint_coords[0] (raw): X={jc[0][0]:.4f}, Y={jc[0][1]:.4f}, Z={jc[0][2]:.4f}")
+                    print(f"  body_world_3d (scaled): X={body_world_3d[0]:.4f}m, Y={body_world_3d[1]:.4f}m, Z={body_world_3d[2]:.4f}m")
+            else:
+                # Not available in Simple Skeleton mode
+                body_world_3d = None
+            subject_motion["body_world_3d"].append(body_world_3d)
+            
             # Apparent height (pixels)
             head_2d = joints_2d[head_idx]
             left_ankle_2d = joints_2d[left_ankle_idx]
@@ -977,19 +1000,42 @@ class MotionAnalyzer:
         pelvis_2d_arr = np.array(subject_motion["pelvis_2d"])
         pelvis_3d_arr = np.array(subject_motion["pelvis_3d"])
         
+        # Body world only available in Full Skeleton mode
+        has_body_world = all(bw is not None for bw in subject_motion["body_world_3d"])
+        if has_body_world:
+            body_world_arr = np.array(subject_motion["body_world_3d"])
+        else:
+            body_world_arr = None
+        
         if num_frames > 1:
             velocity_2d = np.diff(pelvis_2d_arr, axis=0)
             velocity_3d = np.diff(pelvis_3d_arr, axis=0)
+            if has_body_world:
+                body_world_velocity = np.diff(body_world_arr, axis=0)
+            else:
+                body_world_velocity = None
         else:
             velocity_2d = np.zeros((0, 2))
             velocity_3d = np.zeros((0, 3))
+            body_world_velocity = None
         
         subject_motion["velocity_2d"] = velocity_2d.tolist()
         subject_motion["velocity_3d"] = velocity_3d.tolist()
+        subject_motion["body_world_velocity"] = body_world_velocity.tolist() if body_world_velocity is not None else None
         
         # ===== STATISTICS =====
         avg_velocity_2d = np.mean(np.abs(velocity_2d)) if len(velocity_2d) > 0 else 0
         max_velocity_2d = np.max(np.abs(velocity_2d)) if len(velocity_2d) > 0 else 0
+        
+        # Body world trajectory statistics (Full Skeleton mode only)
+        if has_body_world and body_world_arr is not None:
+            body_world_start = body_world_arr[0]
+            body_world_end = body_world_arr[-1]
+            body_world_displacement = body_world_end - body_world_start
+            body_world_total_distance = np.sum(np.linalg.norm(body_world_velocity, axis=1)) if body_world_velocity is not None and len(body_world_velocity) > 0 else 0
+        else:
+            body_world_displacement = None
+            body_world_total_distance = None
         
         grounded_count = sum(1 for fc in subject_motion["foot_contact"] if fc in ["both", "left", "right"])
         airborne_count = sum(1 for fc in subject_motion["foot_contact"] if fc == "none")
@@ -1001,6 +1047,11 @@ class MotionAnalyzer:
         print(f"[Motion Analyzer] Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
         print(f"[Motion Analyzer] Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
         print(f"[Motion Analyzer] Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
+        if body_world_displacement is not None:
+            print(f"[Motion Analyzer] Body world displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
+            print(f"[Motion Analyzer] Body world total distance: {body_world_total_distance:.3f}m")
+        else:
+            print(f"[Motion Analyzer] Body world tracking: Not available (requires Full Skeleton mode)")
         
         # ===== DEBUG INFO STRING =====
         debug_info = (
@@ -1014,6 +1065,15 @@ class MotionAnalyzer:
             f"Grounded: {grounded_count}/{num_frames} frames\n"
             f"Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m\n"
         )
+        
+        if body_world_displacement is not None:
+            debug_info += (
+                f"\n=== Body World Trajectory (MHR joint_coords[0]) ===\n"
+                f"Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m\n"
+                f"Total distance: {body_world_total_distance:.3f}m\n"
+            )
+        else:
+            debug_info += f"\nBody world tracking: Requires Full Skeleton mode\n"
         
         # ===== DEBUG OVERLAY =====
         if show_debug and images is not None:
