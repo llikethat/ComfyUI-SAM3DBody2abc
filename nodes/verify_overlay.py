@@ -449,6 +449,10 @@ class VerifyOverlayBatch:
                     "default": "Wireframe",
                     "tooltip": "Wireframe: edge lines only. Solid: filled triangles."
                 }),
+                "mesh_alignment": (["Auto (Match Joints)", "None (Direct Projection)"], {
+                    "default": "None (Direct Projection)",
+                    "tooltip": "Auto aligns mesh to joints (can cause jitter). None uses direct projection."
+                }),
                 "joint_radius": ("INT", {"default": 5, "min": 1, "max": 20}),
                 "line_thickness": ("INT", {"default": 2, "min": 1, "max": 10}),
                 "joint_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "green"}),
@@ -490,6 +494,7 @@ class VerifyOverlayBatch:
         show_skeleton: bool = True,
         show_mesh: bool = False,
         mesh_render_mode: str = "Wireframe",
+        mesh_alignment: str = "None (Direct Projection)",
         joint_radius: int = 5,
         line_thickness: int = 2,
         joint_color: str = "green",
@@ -519,13 +524,33 @@ class VerifyOverlayBatch:
         moge_cx = None
         moge_cy = None
         if camera_intrinsics:
-            moge_focal = camera_intrinsics.get("focal_length_px")
-            moge_cx = camera_intrinsics.get("principal_point_x")
-            moge_cy = camera_intrinsics.get("principal_point_y")
+            # Debug: print all keys to find the right ones
+            print(f"[VerifyOverlayBatch] camera_intrinsics keys: {list(camera_intrinsics.keys())}")
+            
+            # Try multiple possible key names (different MoGe2 packages use different keys)
+            moge_focal = (
+                camera_intrinsics.get("focal_length_px") or
+                camera_intrinsics.get("focal_length") or
+                camera_intrinsics.get("focal") or
+                camera_intrinsics.get("fx")
+            )
+            moge_cx = (
+                camera_intrinsics.get("principal_point_x") or
+                camera_intrinsics.get("cx") or
+                camera_intrinsics.get("principal_x")
+            )
+            moge_cy = (
+                camera_intrinsics.get("principal_point_y") or
+                camera_intrinsics.get("cy") or
+                camera_intrinsics.get("principal_y")
+            )
+            
             if moge_focal is not None:
                 cx_str = f"{moge_cx:.1f}" if moge_cx is not None else "N/A"
                 cy_str = f"{moge_cy:.1f}" if moge_cy is not None else "N/A"
                 print(f"[VerifyOverlayBatch] MoGe2 intrinsics: focal={moge_focal:.1f}px, cx={cx_str}, cy={cy_str}")
+            else:
+                print(f"[VerifyOverlayBatch] MoGe2 intrinsics: Connected but focal_length key not found")
         
         # Get colors
         joint_bgr = self._get_color(joint_color)
@@ -757,13 +782,14 @@ class VerifyOverlayBatch:
                             moge_cy_use = moge_cy if moge_cy is not None else h / 2.0
                             verts_2d_moge = project_points_to_2d(vertices, moge_focal, cam_t_np, w, h, moge_cx_use, moge_cy_use)
                         
-                        # Compute offset to align mesh with detected keypoints
+                        # Compute offset to align mesh with detected keypoints (optional)
                         offset_x, offset_y = 0.0, 0.0
                         
-                        if joints_2d is not None:
+                        if mesh_alignment == "Auto (Match Joints)" and joints_2d is not None:
                             # Method 1: Use centroid of joints vs projected mesh
                             # The pred_keypoints_2d are the ground truth positions
                             # The projected mesh should align with them
+                            # NOTE: This can cause jitter if joints_2d is noisy
                             
                             # Get centroid of visible joints (the red dots)
                             valid_joints = []
@@ -791,10 +817,12 @@ class VerifyOverlayBatch:
                                     offset_y = joints_center[1] - mesh_center[1]
                                     
                                     if img_idx == 0:
-                                        print(f"[VerifyOverlayBatch] Mesh alignment:")
+                                        print(f"[VerifyOverlayBatch] Mesh alignment (Auto):")
                                         print(f"  Joints center: ({joints_center[0]:.1f}, {joints_center[1]:.1f})")
                                         print(f"  Mesh center: ({mesh_center[0]:.1f}, {mesh_center[1]:.1f})")
                                         print(f"  Offset: ({offset_x:.1f}, {offset_y:.1f})")
+                        elif img_idx == 0 and show_mesh:
+                            print(f"[VerifyOverlayBatch] Mesh alignment: Direct projection (no offset)")
                         
                         # Apply offset to mesh vertices
                         verts_2d[:, 0] += offset_x

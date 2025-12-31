@@ -2322,6 +2322,7 @@ def export_fbx(output_path, axis_forward, axis_up):
         mesh_smooth_type='FACE',
         use_armature_deform_only=False,
         add_leaf_bones=False,
+        use_custom_props=True,  # *** CRUCIAL: Export custom properties for Maya Extra Attributes ***
         bake_anim=True,
         bake_anim_use_all_bones=True,
         bake_anim_use_nla_strips=False,
