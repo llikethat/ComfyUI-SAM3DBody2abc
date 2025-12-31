@@ -522,7 +522,10 @@ class VerifyOverlayBatch:
             moge_focal = camera_intrinsics.get("focal_length_px")
             moge_cx = camera_intrinsics.get("principal_point_x")
             moge_cy = camera_intrinsics.get("principal_point_y")
-            print(f"[VerifyOverlayBatch] MoGe2 intrinsics: focal={moge_focal:.1f}px, cx={moge_cx:.1f}, cy={moge_cy:.1f}")
+            if moge_focal is not None:
+                cx_str = f"{moge_cx:.1f}" if moge_cx is not None else "N/A"
+                cy_str = f"{moge_cy:.1f}" if moge_cy is not None else "N/A"
+                print(f"[VerifyOverlayBatch] MoGe2 intrinsics: focal={moge_focal:.1f}px, cx={cx_str}, cy={cy_str}")
         
         # Get colors
         joint_bgr = self._get_color(joint_color)
