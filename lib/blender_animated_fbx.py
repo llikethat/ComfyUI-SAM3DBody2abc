@@ -2254,6 +2254,56 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     return camera
 
 
+def create_metadata_locator(metadata: dict):
+    """
+    Create a metadata locator with custom properties for FBX export.
+    
+    These properties become Extra Attributes in Maya, accessible via:
+        cmds.getAttr("SAM3DBody_Metadata.world_translation")
+    
+    Args:
+        metadata: Dict of metadata to embed
+    
+    Returns:
+        The metadata empty object
+    """
+    if not metadata:
+        print("[Blender] No metadata to embed")
+        return None
+    
+    # Create empty object as metadata container
+    metadata_obj = bpy.data.objects.new("SAM3DBody_Metadata", None)
+    metadata_obj.empty_display_type = 'PLAIN_AXES'
+    metadata_obj.empty_display_size = 0.1
+    bpy.context.collection.objects.link(metadata_obj)
+    
+    # Add custom properties
+    # Note: Blender custom properties become Extra Attributes in Maya FBX
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        
+        # Handle different types
+        if isinstance(value, bool):
+            metadata_obj[key] = int(value)  # Store as int for Maya compatibility
+        elif isinstance(value, (int, float)):
+            metadata_obj[key] = value
+        elif isinstance(value, str):
+            metadata_obj[key] = value
+        elif isinstance(value, (list, tuple)):
+            # Convert to string for complex types
+            metadata_obj[key] = str(value)
+        else:
+            metadata_obj[key] = str(value)
+    
+    print(f"[Blender] Metadata locator created with {len(metadata)} properties:")
+    for key, value in metadata.items():
+        if value is not None:
+            print(f"[Blender]   {key}: {value}")
+    
+    return metadata_obj
+
+
 def export_fbx(output_path, axis_forward, axis_up):
     """Export to FBX."""
     print(f"[Blender] Exporting FBX: {output_path}")
@@ -2573,6 +2623,11 @@ def main():
                     print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
                 else:
                     print(f"[Blender] Camera uses local TRANSLATION to frame character")
+    
+    # Create metadata locator (for Maya Extra Attributes)
+    metadata = data.get("metadata", {})
+    if metadata:
+        create_metadata_locator(metadata)
     
     # Export
     if output_format == "abc":

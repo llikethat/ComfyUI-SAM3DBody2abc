@@ -246,6 +246,31 @@ class ExportAnimatedFBX:
                     "tooltip": "Camera sensor width in mm. Only used if camera_intrinsics not provided."
                 }),
                 
+                # Metadata inputs for embedding in FBX
+                "subject_motion": ("SUBJECT_MOTION", {
+                    "tooltip": "Motion analysis data from Motion Analyzer node (for metadata embedding)"
+                }),
+                "scale_info": ("SCALE_INFO", {
+                    "tooltip": "Scale information from Motion Analyzer node (for metadata embedding)"
+                }),
+                "video_info": ("VIDEO_INFO", {
+                    "tooltip": "Video information (fps, skip_first_frames) from Load Video node"
+                }),
+                
+                # Alternative direct inputs for video metadata (if VIDEO_INFO not available)
+                "source_video_fps": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 120.0,
+                    "tooltip": "Source video FPS (for metadata). 0 = not specified."
+                }),
+                "skip_first_frames": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 10000,
+                    "tooltip": "Number of frames skipped from start of video (for metadata)."
+                }),
+                
                 "output_dir": ("STRING", {
                     "default": "",
                 }),
@@ -257,6 +282,107 @@ class ExportAnimatedFBX:
     FUNCTION = "export_fbx"
     CATEGORY = "SAM3DBody2abc/Export"
     OUTPUT_NODE = True
+    
+    def _build_metadata(
+        self,
+        world_translation: str,
+        camera_motion: str,
+        subject_motion: Optional[Dict],
+        scale_info: Optional[Dict],
+        video_info: Optional[Dict],
+        source_video_fps: float,
+        skip_first_frames: int,
+        fps: float,
+        frame_count: int,
+    ) -> Dict:
+        """
+        Build metadata dict to be embedded in FBX as custom properties.
+        
+        This creates a SAM3DBody_Metadata locator in the FBX with all
+        analysis data accessible as Extra Attributes in Maya.
+        """
+        from datetime import datetime, timezone, timedelta
+        
+        # Get version from package
+        try:
+            from . import __version__
+        except ImportError:
+            __version__ = "unknown"
+        
+        # Get timestamp in IST
+        ist = timezone(timedelta(hours=5, minutes=30))
+        timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+        
+        metadata = {
+            # Build info
+            "sam3dbody2abc_version": __version__,
+            "export_timestamp": timestamp,
+            # Export settings
+            "world_translation": world_translation,
+            "camera_motion": camera_motion,
+            "export_fps": fps,
+            "frame_count": frame_count,
+        }
+        
+        # Video info (from Load Video node OR direct inputs)
+        if video_info:
+            metadata["video_fps"] = video_info.get("fps", 0)
+            metadata["skip_first_frames"] = video_info.get("skip_first_frames", 0)
+            metadata["video_total_frames"] = video_info.get("total_frames", 0)
+            metadata["video_filename"] = video_info.get("filename", "")
+        else:
+            # Use direct inputs if VIDEO_INFO not connected
+            if source_video_fps > 0:
+                metadata["video_fps"] = source_video_fps
+            if skip_first_frames > 0:
+                metadata["skip_first_frames"] = skip_first_frames
+        
+        # Scale info (from Motion Analyzer)
+        if scale_info:
+            metadata["subject_height_m"] = scale_info.get("actual_height", 0)
+            metadata["mesh_height_units"] = scale_info.get("mesh_height", 0)
+            metadata["scale_factor"] = scale_info.get("scale_factor", 1.0)
+            metadata["leg_length_units"] = scale_info.get("leg_length", 0)
+            metadata["torso_head_units"] = scale_info.get("torso_head_length", 0)
+            metadata["height_source"] = scale_info.get("height_source", "auto")
+            metadata["skeleton_mode"] = scale_info.get("skeleton_mode", "")
+        
+        # Motion analysis results (from Motion Analyzer)
+        if subject_motion:
+            metadata["motion_num_frames"] = subject_motion.get("num_frames", 0)
+            metadata["motion_scale_factor"] = subject_motion.get("scale_factor", 1.0)
+            metadata["motion_skeleton_mode"] = subject_motion.get("skeleton_mode", "")
+            
+            # Foot contact statistics
+            foot_contact = subject_motion.get("foot_contact", [])
+            if foot_contact:
+                grounded = sum(1 for fc in foot_contact if fc in ["both", "left", "right"])
+                metadata["grounded_frames"] = grounded
+                metadata["airborne_frames"] = len(foot_contact) - grounded
+            
+            # Depth range
+            depth_estimates = subject_motion.get("depth_estimate", [])
+            if depth_estimates:
+                metadata["depth_min_m"] = min(depth_estimates)
+                metadata["depth_max_m"] = max(depth_estimates)
+            
+            # Body world trajectory (if available - Full Skeleton mode only)
+            body_world_3d = subject_motion.get("body_world_3d", [])
+            if body_world_3d and all(bw is not None for bw in body_world_3d):
+                import numpy as np
+                bw_arr = np.array(body_world_3d)
+                displacement = bw_arr[-1] - bw_arr[0]
+                metadata["body_world_disp_x"] = float(displacement[0])
+                metadata["body_world_disp_y"] = float(displacement[1])
+                metadata["body_world_disp_z"] = float(displacement[2])
+                
+                # Total distance
+                if len(bw_arr) > 1:
+                    velocities = np.diff(bw_arr, axis=0)
+                    total_dist = np.sum(np.linalg.norm(velocities, axis=1))
+                    metadata["body_world_total_distance"] = float(total_dist)
+        
+        return metadata
     
     def export_fbx(
         self,
@@ -277,6 +403,11 @@ class ExportAnimatedFBX:
         extrinsics_smoothing: str = "Kalman Filter",
         smoothing_strength: float = 0.5,
         sensor_width: float = 36.0,
+        subject_motion: Optional[Dict] = None,
+        scale_info: Optional[Dict] = None,
+        video_info: Optional[Dict] = None,
+        source_video_fps: float = 0.0,
+        skip_first_frames: int = 0,
         output_dir: str = "",
     ) -> Tuple[str, str, int, float]:
         """Export to animated FBX or Alembic."""
@@ -494,6 +625,18 @@ class ExportAnimatedFBX:
             "extrinsics_smoothing_method": smoothing_method,
             "extrinsics_smoothing_strength": smoothing_strength,
             "frames": [],
+            # Metadata for embedding in FBX
+            "metadata": self._build_metadata(
+                world_translation=world_translation,
+                camera_motion=camera_motion,
+                subject_motion=subject_motion,
+                scale_info=scale_info,
+                video_info=video_info,
+                source_video_fps=source_video_fps,
+                skip_first_frames=skip_first_frames,
+                fps=fps,
+                frame_count=len(sorted_indices),
+            ),
         }
         
         # DEBUG: Show root_locator and body_offset calculation for frame 0

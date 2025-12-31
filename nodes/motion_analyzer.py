@@ -8,6 +8,7 @@ Analyzes subject motion from SAM3DBody mesh sequence outputs:
 - Pelvis/joint tracking (2D + 3D positions)
 - Foot contact detection
 - Motion vector debug overlay
+- Body world trajectory (Full Skeleton MHR mode)
 
 Compatible with SAM3DBody2abc mesh_sequence format:
 {
@@ -20,12 +21,99 @@ Joint Index Reference:
 - SAM3DBody outputs 18-joint keypoints (pred_keypoints_2d/3d)
 - Also outputs 127-joint full skeleton (pred_joint_coords)
 - This module uses 18-joint by default, 127-joint for full skeleton mode
+- Body World (Global Trajectory) is joint_coords[0] in MHR rig
 """
 
 import numpy as np
 import torch
 import cv2
 from typing import Dict, List, Optional, Tuple, Any
+
+
+# ============================================================================
+# Body World / Global Trajectory Utilities
+# ============================================================================
+
+def get_body_world_point(mesh_sequence: Dict, frame_index: int, scale_factor: float = 1.0) -> Optional[np.ndarray]:
+    """
+    Returns the Body World (Global Trajectory) coordinate for a single frame.
+    Safe to use with SAM3DBody's 'pred_joint_coords' (127-joint MHR rig).
+    
+    Args:
+        mesh_sequence: The mesh sequence dict from SAM3DBody2abc
+        frame_index: Frame index to retrieve
+        scale_factor: Scale factor to apply (default 1.0)
+    
+    Returns:
+        np.ndarray [X, Y, Z] of body world position, or None if unavailable
+    
+    Note:
+        - Uses joint_coords[0] which is the global root in MHR rig
+        - This is distinct from Pelvis (joint_coords[1] in SMPL-H)
+        - Only available with Full Skeleton (127-joint) mode
+    """
+    # Handle both formats: frames dict or params dict
+    if "frames" in mesh_sequence:
+        frames = mesh_sequence.get("frames", {})
+        if frame_index not in frames:
+            return None
+        frame_data = frames[frame_index]
+        joint_coords = frame_data.get("joint_coords")
+    else:
+        params = mesh_sequence.get("params", {})
+        joint_coords_list = params.get("joint_coords", [])
+        if frame_index >= len(joint_coords_list):
+            return None
+        joint_coords = joint_coords_list[frame_index]
+    
+    if joint_coords is None:
+        return None
+    
+    # Handle tensor vs numpy
+    if hasattr(joint_coords, "cpu"):
+        joint_coords = joint_coords.cpu().numpy()
+    
+    # Handle shape
+    if joint_coords.ndim == 3:
+        joint_coords = joint_coords.squeeze(0)
+    
+    # Return Index 0 (body_world) with scale
+    return joint_coords[0] * scale_factor
+
+
+def get_body_world_trajectory(mesh_sequence: Dict, scale_factor: float = 1.0) -> Optional[np.ndarray]:
+    """
+    Returns the full Body World trajectory for all frames.
+    
+    Args:
+        mesh_sequence: The mesh sequence dict from SAM3DBody2abc
+        scale_factor: Scale factor to apply (default 1.0)
+    
+    Returns:
+        np.ndarray [N, 3] of body world positions, or None if unavailable
+    """
+    # Determine number of frames
+    if "frames" in mesh_sequence:
+        frames = mesh_sequence.get("frames", {})
+        num_frames = len(frames)
+        frame_indices = sorted(frames.keys())
+    else:
+        params = mesh_sequence.get("params", {})
+        joint_coords_list = params.get("joint_coords", [])
+        num_frames = len(joint_coords_list)
+        frame_indices = list(range(num_frames))
+    
+    if num_frames == 0:
+        return None
+    
+    trajectory = []
+    for i in frame_indices:
+        point = get_body_world_point(mesh_sequence, i, scale_factor)
+        if point is None:
+            return None  # If any frame missing, return None
+        trajectory.append(point)
+    
+    return np.array(trajectory)
 
 
 # ============================================================================
