@@ -25,7 +25,7 @@ def to_numpy(data):
     return np.array(data)
 
 
-def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_height):
+def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_height, cx=None, cy=None):
     """
     Project 3D points to 2D using SAM3DBody's camera model.
     
@@ -40,6 +40,7 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
         focal_length: focal length in pixels
         cam_t: camera translation [tx, ty, tz]
         image_width, image_height: image dimensions
+        cx, cy: optional custom principal point (default: image center)
         
     Returns:
         points_2d: (N, 2) array of 2D points
@@ -47,9 +48,11 @@ def project_points_to_2d(points_3d, focal_length, cam_t, image_width, image_heig
     points_3d = np.array(points_3d)
     cam_t = np.array(cam_t).flatten()
     
-    # Camera center (principal point)
-    cx = image_width / 2.0
-    cy = image_height / 2.0
+    # Camera center (principal point) - use custom if provided
+    if cx is None:
+        cx = image_width / 2.0
+    if cy is None:
+        cy = image_height / 2.0
     
     if len(cam_t) < 3:
         # Fallback if cam_t is incomplete
@@ -416,6 +419,8 @@ class VerifyOverlayBatch:
     """
     Create verification overlay for ALL frames in a sequence.
     Outputs a video/batch of overlay images.
+    
+    Can compare SAM3DBody intrinsics vs MoGe2 intrinsics to verify camera calibration.
     """
     
     @classmethod
@@ -430,6 +435,13 @@ class VerifyOverlayBatch:
                 }),
             },
             "optional": {
+                "camera_intrinsics": ("CAMERA_INTRINSICS", {
+                    "tooltip": "Camera intrinsics from MoGe2 (optional - for comparison)"
+                }),
+                "intrinsics_source": (["SAM3DBody (Default)", "MoGe2", "Compare Both"], {
+                    "default": "SAM3DBody (Default)",
+                    "tooltip": "Which camera intrinsics to use for projection"
+                }),
                 "show_joints": ("BOOLEAN", {"default": True}),
                 "show_skeleton": ("BOOLEAN", {"default": True}),
                 "show_mesh": ("BOOLEAN", {"default": False}),
@@ -443,6 +455,10 @@ class VerifyOverlayBatch:
                 "skeleton_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "cyan"}),
                 "mesh_color": (["red", "green", "blue", "yellow", "cyan", "magenta", "white"], {"default": "yellow"}),
                 "opacity": ("FLOAT", {"default": 0.7, "min": 0.1, "max": 1.0, "step": 0.1}),
+                "show_intrinsics_info": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Show camera intrinsics info on overlay"
+                }),
             }
         }
     
@@ -468,6 +484,8 @@ class VerifyOverlayBatch:
         self,
         images: torch.Tensor,
         mesh_sequence: Dict,
+        camera_intrinsics: Optional[Dict] = None,
+        intrinsics_source: str = "SAM3DBody (Default)",
         show_joints: bool = True,
         show_skeleton: bool = True,
         show_mesh: bool = False,
@@ -478,8 +496,9 @@ class VerifyOverlayBatch:
         skeleton_color: str = "cyan",
         mesh_color: str = "yellow",
         opacity: float = 0.7,
+        show_intrinsics_info: bool = True,
     ) -> Tuple[Any, str]:
-        """Create overlay for all frames."""
+        """Create overlay for all frames with optional intrinsics comparison."""
         
         frames = mesh_sequence.get("frames", {})
         faces = mesh_sequence.get("faces")
@@ -495,10 +514,24 @@ class VerifyOverlayBatch:
         else:
             print(f"[VerifyOverlayBatch] Using fallback skeleton connections")
         
+        # Get MoGe2 intrinsics if available
+        moge_focal = None
+        moge_cx = None
+        moge_cy = None
+        if camera_intrinsics:
+            moge_focal = camera_intrinsics.get("focal_length_px")
+            moge_cx = camera_intrinsics.get("principal_point_x")
+            moge_cy = camera_intrinsics.get("principal_point_y")
+            print(f"[VerifyOverlayBatch] MoGe2 intrinsics: focal={moge_focal:.1f}px, cx={moge_cx:.1f}, cy={moge_cy:.1f}")
+        
         # Get colors
         joint_bgr = self._get_color(joint_color)
         skeleton_bgr = self._get_color(skeleton_color)
         mesh_bgr = self._get_color(mesh_color)
+        
+        # Secondary color for comparison mode (slightly different shade)
+        compare_joint_bgr = (0, 128, 255)  # Orange for MoGe2
+        compare_skeleton_bgr = (255, 128, 0)  # Light blue for MoGe2
         
         # Convert images to numpy
         if isinstance(images, torch.Tensor):
@@ -510,6 +543,7 @@ class VerifyOverlayBatch:
         h, w = images_np.shape[1], images_np.shape[2]
         
         print(f"[VerifyOverlayBatch] Processing {num_images} images, {len(frames)} frames in sequence")
+        print(f"[VerifyOverlayBatch] Intrinsics source: {intrinsics_source}")
         
         # Get sorted frame indices
         sorted_frame_indices = sorted(frames.keys())
@@ -557,12 +591,45 @@ class VerifyOverlayBatch:
                 keypoints_2d = frame.get("pred_keypoints_2d")
                 keypoints_3d = frame.get("pred_keypoints_3d")  # Same 70 joints as keypoints_2d
                 joint_coords = frame.get("joint_coords")  # 127 full skeleton joints
-                focal_length = frame.get("focal_length")
+                sam3d_focal_length = frame.get("focal_length")
                 cam_t = frame.get("pred_cam_t")
                 if cam_t is None:
                     cam_t = frame.get("camera")
                 
+                # Determine which focal length to use based on intrinsics_source
+                focal_length = sam3d_focal_length  # Default
+                active_source = "SAM3DBody"
+                cx, cy = w / 2.0, h / 2.0  # Default principal point
+                
+                if intrinsics_source == "MoGe2" and moge_focal is not None:
+                    focal_length = moge_focal
+                    active_source = "MoGe2"
+                    if moge_cx is not None:
+                        cx = moge_cx
+                    if moge_cy is not None:
+                        cy = moge_cy
+                elif intrinsics_source == "Compare Both":
+                    # Use SAM3DBody as primary, will draw MoGe2 comparison below
+                    active_source = "Compare"
+                
+                # Log intrinsics comparison on first frame
+                if img_idx == 0 and sam3d_focal_length is not None:
+                    print(f"\n[VerifyOverlayBatch] ========== INTRINSICS COMPARISON ==========")
+                    print(f"[VerifyOverlayBatch] SAM3DBody focal: {sam3d_focal_length:.1f}px")
+                    if moge_focal is not None:
+                        focal_diff = moge_focal - sam3d_focal_length
+                        focal_diff_pct = 100 * focal_diff / sam3d_focal_length
+                        print(f"[VerifyOverlayBatch] MoGe2 focal: {moge_focal:.1f}px (diff: {focal_diff:+.1f}px, {focal_diff_pct:+.1f}%)")
+                        if moge_cx is not None and moge_cy is not None:
+                            print(f"[VerifyOverlayBatch] MoGe2 principal point: ({moge_cx:.1f}, {moge_cy:.1f})")
+                            print(f"[VerifyOverlayBatch] Image center: ({w/2:.1f}, {h/2:.1f})")
+                    else:
+                        print(f"[VerifyOverlayBatch] MoGe2 intrinsics: Not connected")
+                    print(f"[VerifyOverlayBatch] Using: {active_source}")
+                    print(f"[VerifyOverlayBatch] ============================================\n")
+                
                 joints_2d = None
+                joints_2d_moge = None  # For comparison mode
                 
                 # DEBUG: Compare ground truth vs our projection (frame 0 only)
                 if img_idx == 0 and keypoints_2d is not None and focal_length is not None and cam_t is not None:
@@ -677,8 +744,15 @@ class VerifyOverlayBatch:
                         vertices = np.array(vertices)
                         cam_t_np = np.array(cam_t)
                         
-                        # Project mesh vertices first
-                        verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h)
+                        # Project mesh vertices with selected intrinsics
+                        verts_2d = project_points_to_2d(vertices, focal_length, cam_t_np, w, h, cx, cy)
+                        
+                        # In Compare Both mode, also project with MoGe2 intrinsics
+                        verts_2d_moge = None
+                        if intrinsics_source == "Compare Both" and moge_focal is not None:
+                            moge_cx_use = moge_cx if moge_cx is not None else w / 2.0
+                            moge_cy_use = moge_cy if moge_cy is not None else h / 2.0
+                            verts_2d_moge = project_points_to_2d(vertices, moge_focal, cam_t_np, w, h, moge_cx_use, moge_cy_use)
                         
                         # Compute offset to align mesh with detected keypoints
                         offset_x, offset_y = 0.0, 0.0
@@ -745,7 +819,7 @@ class VerifyOverlayBatch:
                                        np.all(pts[:, 1] >= 0) and np.all(pts[:, 1] < h):
                                         cv2.fillPoly(overlay, [pts], mesh_bgr)
                         else:
-                            # Wireframe rendering
+                            # Wireframe rendering - SAM3DBody intrinsics (primary)
                             step = max(1, len(faces) // 300)  # Limit edges for performance
                             for face_idx in range(0, len(faces), step):
                                 face = faces[face_idx]
@@ -757,6 +831,48 @@ class VerifyOverlayBatch:
                                         if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
                                             0 <= pt2[0] < w and 0 <= pt2[1] < h):
                                             cv2.line(overlay, pt1, pt2, mesh_bgr, 1)
+                            
+                            # Compare Both mode: also draw MoGe2 mesh in different color
+                            if verts_2d_moge is not None:
+                                moge_mesh_color = (255, 128, 0)  # Orange for MoGe2
+                                for face_idx in range(0, len(faces), step):
+                                    face = faces[face_idx]
+                                    for k in range(3):
+                                        vi, vj = int(face[k]), int(face[(k + 1) % 3])
+                                        if vi < len(verts_2d_moge) and vj < len(verts_2d_moge):
+                                            pt1 = (int(verts_2d_moge[vi][0]), int(verts_2d_moge[vi][1]))
+                                            pt2 = (int(verts_2d_moge[vj][0]), int(verts_2d_moge[vj][1]))
+                                            if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
+                                                0 <= pt2[0] < w and 0 <= pt2[1] < h):
+                                                cv2.line(overlay, pt1, pt2, moge_mesh_color, 1)
+                
+                # Draw intrinsics info on overlay if requested
+                if show_intrinsics_info and sam3d_focal_length is not None:
+                    y_pos = 30
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    
+                    # SAM3DBody focal
+                    cv2.putText(overlay, f"SAM3D focal: {sam3d_focal_length:.1f}px", 
+                               (10, y_pos), font, font_scale, (0, 255, 0), 1)
+                    y_pos += 20
+                    
+                    # MoGe2 focal if available
+                    if moge_focal is not None:
+                        focal_diff = moge_focal - sam3d_focal_length
+                        cv2.putText(overlay, f"MoGe2 focal: {moge_focal:.1f}px (diff: {focal_diff:+.1f})", 
+                                   (10, y_pos), font, font_scale, (255, 128, 0), 1)
+                        y_pos += 20
+                    
+                    # Active source
+                    cv2.putText(overlay, f"Using: {active_source}", 
+                               (10, y_pos), font, font_scale, (255, 255, 255), 1)
+                    
+                    # Legend for Compare Both mode
+                    if intrinsics_source == "Compare Both" and moge_focal is not None:
+                        y_pos += 25
+                        cv2.putText(overlay, "Green=SAM3D, Orange=MoGe2", 
+                                   (10, y_pos), font, font_scale, (255, 255, 255), 1)
             
             # Blend with opacity
             blended = cv2.addWeighted(overlay, opacity, img_bgr, 1 - opacity, 0)

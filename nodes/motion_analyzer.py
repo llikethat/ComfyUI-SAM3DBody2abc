@@ -37,7 +37,10 @@ from typing import Dict, List, Optional, Tuple, Any
 def get_body_world_point(mesh_sequence: Dict, frame_index: int, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     """
     Returns the Body World (Global Trajectory) coordinate for a single frame.
-    Safe to use with SAM3DBody's 'pred_joint_coords' (127-joint MHR rig).
+    
+    Computed from pred_cam_t (camera translation parameters).
+    SAM3DBody outputs mesh in pelvis-centered coords (pelvis at origin).
+    The actual character position is encoded in pred_cam_t [tx, ty, tz].
     
     Args:
         mesh_sequence: The mesh sequence dict from SAM3DBody2abc
@@ -48,9 +51,10 @@ def get_body_world_point(mesh_sequence: Dict, frame_index: int, scale_factor: fl
         np.ndarray [X, Y, Z] of body world position, or None if unavailable
     
     Note:
-        - Uses joint_coords[0] which is the global root in MHR rig
-        - This is distinct from Pelvis (joint_coords[1] in SMPL-H)
-        - Only available with Full Skeleton (127-joint) mode
+        - X = tx * tz (horizontal position)
+        - Y = ty * tz (vertical position)
+        - Z = tz (depth from camera)
+        - This tracks global character position in camera space
     """
     # Handle both formats: frames dict or params dict
     if "frames" in mesh_sequence:
@@ -58,27 +62,33 @@ def get_body_world_point(mesh_sequence: Dict, frame_index: int, scale_factor: fl
         if frame_index not in frames:
             return None
         frame_data = frames[frame_index]
-        joint_coords = frame_data.get("joint_coords")
+        camera_t = frame_data.get("pred_cam_t")
     else:
         params = mesh_sequence.get("params", {})
-        joint_coords_list = params.get("joint_coords", [])
-        if frame_index >= len(joint_coords_list):
+        camera_t_list = params.get("camera_t", [])
+        if frame_index >= len(camera_t_list):
             return None
-        joint_coords = joint_coords_list[frame_index]
+        camera_t = camera_t_list[frame_index]
     
-    if joint_coords is None:
+    if camera_t is None:
         return None
     
     # Handle tensor vs numpy
-    if hasattr(joint_coords, "cpu"):
-        joint_coords = joint_coords.cpu().numpy()
+    if hasattr(camera_t, "cpu"):
+        camera_t = camera_t.cpu().numpy()
     
     # Handle shape
-    if joint_coords.ndim == 3:
-        joint_coords = joint_coords.squeeze(0)
+    if hasattr(camera_t, 'ndim') and camera_t.ndim > 1:
+        camera_t = camera_t.flatten()[:3]
     
-    # Return Index 0 (body_world) with scale
-    return joint_coords[0] * scale_factor
+    # Compute body world from pred_cam_t
+    tx, ty, tz = camera_t[0], camera_t[1], camera_t[2]
+    
+    return np.array([
+        tx * tz * scale_factor,  # X = tx * tz
+        ty * tz * scale_factor,  # Y = ty * tz
+        tz * scale_factor        # Z = depth
+    ])
 
 
 def get_body_world_trajectory(mesh_sequence: Dict, scale_factor: float = 1.0) -> Optional[np.ndarray]:
@@ -99,8 +109,8 @@ def get_body_world_trajectory(mesh_sequence: Dict, scale_factor: float = 1.0) ->
         frame_indices = sorted(frames.keys())
     else:
         params = mesh_sequence.get("params", {})
-        joint_coords_list = params.get("joint_coords", [])
-        num_frames = len(joint_coords_list)
+        camera_t_list = params.get("camera_t", [])
+        num_frames = len(camera_t_list)
         frame_indices = list(range(num_frames))
     
     if num_frames == 0:
@@ -964,7 +974,7 @@ class MotionAnalyzer:
         subject_motion = {
             "pelvis_2d": [],
             "pelvis_3d": [],
-            "body_world_3d": [],  # Global trajectory from joint_coords[0]
+            "body_world_3d": [],  # Global trajectory (mesh centroid at ground level)
             "joints_2d": [],
             "joints_3d": [],
             "velocity_2d": [],
@@ -1043,26 +1053,31 @@ class MotionAnalyzer:
             subject_motion["pelvis_3d"].append(pelvis_3d.copy())
             subject_motion["pelvis_2d"].append(pelvis_2d.copy())
             
-            # Body world position (MHR joint_coords[0] - global trajectory reference)
-            # Only available in Full Skeleton mode - this is the root joint for global character movement
-            if not use_simple and has_joint_coords and i < len(joint_coords_list) and joint_coords_list[i] is not None:
-                jc = to_numpy(joint_coords_list[i])
-                if jc.ndim == 3:
-                    jc = jc.squeeze(0)
-                body_world_3d = jc[0] * scale_factor  # MHR Joint 0 = body_world (near feet)
-                
-                # Debug output for first 3 frames
-                if i < 3:
-                    from datetime import datetime, timezone, timedelta
-                    ist = timezone(timedelta(hours=5, minutes=30))
-                    timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-                    print(f"[{timestamp}] [Body World DEBUG] Frame {i}:")
-                    print(f"  MHR joint_coords[0] (raw): X={jc[0][0]:.4f}, Y={jc[0][1]:.4f}, Z={jc[0][2]:.4f}")
-                    print(f"  body_world_3d (scaled): X={body_world_3d[0]:.4f}m, Y={body_world_3d[1]:.4f}m, Z={body_world_3d[2]:.4f}m")
-            else:
-                # Not available in Simple Skeleton mode
-                body_world_3d = None
-            subject_motion["body_world_3d"].append(body_world_3d)
+            # Body world position - computed from pred_cam_t
+            # SAM3DBody outputs mesh in pelvis-centered coords (pelvis always at origin)
+            # The actual character position is encoded in pred_cam_t [tx, ty, tz]
+            # For weak perspective projection:
+            #   screen_x = focal * tx / tz + cx
+            #   screen_y = focal * ty / tz + cy
+            # So world position: X = tx * tz, Y = ty * tz, Z = tz (depth)
+            # This tracks the character's global trajectory in camera space
+            tz = camera_t[2]  # Depth
+            body_world_3d = np.array([
+                camera_t[0] * tz * scale_factor,  # X = tx * tz * scale (left/right)
+                camera_t[1] * tz * scale_factor,  # Y = ty * tz * scale (up/down)
+                tz * scale_factor                  # Z = depth
+            ])
+            
+            # Debug output for first 3 frames
+            if i < 3:
+                from datetime import datetime, timezone, timedelta
+                ist = timezone(timedelta(hours=5, minutes=30))
+                timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+                print(f"[{timestamp}] [Body World DEBUG] Frame {i}:")
+                print(f"  pred_cam_t: tx={camera_t[0]:.4f}, ty={camera_t[1]:.4f}, tz={camera_t[2]:.4f}")
+                print(f"  body_world_3d: X={body_world_3d[0]:.4f}m, Y={body_world_3d[1]:.4f}m, Z={body_world_3d[2]:.4f}m")
+            
+            subject_motion["body_world_3d"].append(body_world_3d.copy())
             
             # Apparent height (pixels)
             head_2d = joints_2d[head_idx]
@@ -1087,64 +1102,91 @@ class MotionAnalyzer:
         # ===== CALCULATE VELOCITIES =====
         pelvis_2d_arr = np.array(subject_motion["pelvis_2d"])
         pelvis_3d_arr = np.array(subject_motion["pelvis_3d"])
-        
-        # Body world only available in Full Skeleton mode
-        has_body_world = all(bw is not None for bw in subject_motion["body_world_3d"])
-        if has_body_world:
-            body_world_arr = np.array(subject_motion["body_world_3d"])
-        else:
-            body_world_arr = None
+        body_world_arr = np.array(subject_motion["body_world_3d"])  # Always available (from mesh)
         
         if num_frames > 1:
             velocity_2d = np.diff(pelvis_2d_arr, axis=0)
             velocity_3d = np.diff(pelvis_3d_arr, axis=0)
-            if has_body_world:
-                body_world_velocity = np.diff(body_world_arr, axis=0)
-            else:
-                body_world_velocity = None
+            body_world_velocity = np.diff(body_world_arr, axis=0)
         else:
             velocity_2d = np.zeros((0, 2))
             velocity_3d = np.zeros((0, 3))
-            body_world_velocity = None
+            body_world_velocity = np.zeros((0, 3))
         
         subject_motion["velocity_2d"] = velocity_2d.tolist()
         subject_motion["velocity_3d"] = velocity_3d.tolist()
-        subject_motion["body_world_velocity"] = body_world_velocity.tolist() if body_world_velocity is not None else None
+        subject_motion["body_world_velocity"] = body_world_velocity.tolist()
         
         # ===== STATISTICS =====
         avg_velocity_2d = np.mean(np.abs(velocity_2d)) if len(velocity_2d) > 0 else 0
         max_velocity_2d = np.max(np.abs(velocity_2d)) if len(velocity_2d) > 0 else 0
         
-        # Body world trajectory statistics (Full Skeleton mode only)
-        if has_body_world and body_world_arr is not None:
-            body_world_start = body_world_arr[0]
-            body_world_end = body_world_arr[-1]
-            body_world_displacement = body_world_end - body_world_start
-            body_world_total_distance = np.sum(np.linalg.norm(body_world_velocity, axis=1)) if body_world_velocity is not None and len(body_world_velocity) > 0 else 0
+        # Body world trajectory statistics (from pred_cam_t)
+        body_world_start = body_world_arr[0]
+        body_world_end = body_world_arr[-1]
+        body_world_displacement = body_world_end - body_world_start
+        body_world_total_distance = np.sum(np.linalg.norm(body_world_velocity, axis=1)) if len(body_world_velocity) > 0 else 0
+        
+        # Calculate velocity and direction
+        fps_val = mesh_sequence.get("fps", 24.0)
+        if body_world_total_distance > 0 and num_frames > 1:
+            # Average speed in m/s
+            duration_sec = (num_frames - 1) / fps_val
+            avg_speed_ms = body_world_total_distance / duration_sec if duration_sec > 0 else 0
+            
+            # Direction of movement (XZ plane - horizontal movement)
+            # Using displacement vector to get overall direction
+            disp_xz = np.array([body_world_displacement[0], body_world_displacement[2]])
+            disp_magnitude = np.linalg.norm(disp_xz)
+            
+            if disp_magnitude > 0.01:  # Significant movement
+                # Angle in degrees (0° = forward/+Z, 90° = right/+X, -90° = left/-X, 180° = backward/-Z)
+                direction_angle = np.degrees(np.arctan2(body_world_displacement[0], body_world_displacement[2]))
+                
+                # Dominant direction description
+                if abs(direction_angle) < 45:
+                    direction_desc = "Forward (toward camera)" if body_world_displacement[2] < 0 else "Backward (away from camera)"
+                elif abs(direction_angle) > 135:
+                    direction_desc = "Backward (away from camera)" if body_world_displacement[2] > 0 else "Forward (toward camera)"
+                elif direction_angle > 0:
+                    direction_desc = "Right"
+                else:
+                    direction_desc = "Left"
+            else:
+                direction_angle = 0
+                direction_desc = "Stationary"
         else:
-            body_world_displacement = None
-            body_world_total_distance = None
+            avg_speed_ms = 0
+            direction_angle = 0
+            direction_desc = "Stationary"
+        
+        # Store in subject_motion
+        subject_motion["avg_speed_ms"] = avg_speed_ms
+        subject_motion["direction_angle"] = direction_angle
+        subject_motion["direction_desc"] = direction_desc
+        subject_motion["total_distance_m"] = body_world_total_distance
+        subject_motion["duration_sec"] = (num_frames - 1) / fps_val if num_frames > 1 else 0
         
         grounded_count = sum(1 for fc in subject_motion["foot_contact"] if fc in ["both", "left", "right"])
         airborne_count = sum(1 for fc in subject_motion["foot_contact"] if fc == "none")
         
         print(f"\n[Motion Analyzer] ----- MOTION STATISTICS -----")
-        print(f"[Motion Analyzer] Frames: {num_frames}")
+        print(f"[Motion Analyzer] Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps")
         print(f"[Motion Analyzer] Avg 2D velocity: {avg_velocity_2d:.2f} px/frame")
         print(f"[Motion Analyzer] Max 2D velocity: {max_velocity_2d:.2f} px/frame")
         print(f"[Motion Analyzer] Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
         print(f"[Motion Analyzer] Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
         print(f"[Motion Analyzer] Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
-        if body_world_displacement is not None:
-            print(f"[Motion Analyzer] Body world displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
-            print(f"[Motion Analyzer] Body world total distance: {body_world_total_distance:.3f}m")
-        else:
-            print(f"[Motion Analyzer] Body world tracking: Not available (requires Full Skeleton mode)")
+        print(f"[Motion Analyzer] ----- TRAJECTORY -----")
+        print(f"[Motion Analyzer] Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
+        print(f"[Motion Analyzer] Total distance traveled: {body_world_total_distance:.3f}m")
+        print(f"[Motion Analyzer] Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
+        print(f"[Motion Analyzer] Direction: {direction_desc} ({direction_angle:.1f}°)")
         
         # ===== DEBUG INFO STRING =====
         debug_info = (
             f"=== Motion Analysis Results ===\n"
-            f"Frames: {num_frames}\n"
+            f"Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps\n"
             f"Skeleton: {skeleton_mode} ({kp_source})\n"
             f"Subject height: {actual_height:.2f}m ({height_source})\n"
             f"Scale factor: {scale_factor:.3f}\n"
@@ -1152,16 +1194,12 @@ class MotionAnalyzer:
             f"Max 2D velocity: {max_velocity_2d:.2f} px/frame\n"
             f"Grounded: {grounded_count}/{num_frames} frames\n"
             f"Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m\n"
+            f"\n=== Trajectory (from pred_cam_t) ===\n"
+            f"Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m\n"
+            f"Total distance: {body_world_total_distance:.3f}m\n"
+            f"Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)\n"
+            f"Direction: {direction_desc} ({direction_angle:.1f}°)\n"
         )
-        
-        if body_world_displacement is not None:
-            debug_info += (
-                f"\n=== Body World Trajectory (MHR joint_coords[0]) ===\n"
-                f"Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m\n"
-                f"Total distance: {body_world_total_distance:.3f}m\n"
-            )
-        else:
-            debug_info += f"\nBody world tracking: Requires Full Skeleton mode\n"
         
         # ===== DEBUG OVERLAY =====
         if show_debug and images is not None:

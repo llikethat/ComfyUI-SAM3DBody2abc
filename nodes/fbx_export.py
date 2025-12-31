@@ -253,16 +253,13 @@ class ExportAnimatedFBX:
                 "scale_info": ("SCALE_INFO", {
                     "tooltip": "Scale information from Motion Analyzer node (for metadata embedding)"
                 }),
-                "video_info": ("VIDEO_INFO", {
-                    "tooltip": "Video information (fps, skip_first_frames) from Load Video node"
-                }),
                 
-                # Alternative direct inputs for video metadata (if VIDEO_INFO not available)
+                # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
                 "source_video_fps": ("FLOAT", {
                     "default": 0.0,
                     "min": 0.0,
                     "max": 120.0,
-                    "tooltip": "Source video FPS (for metadata). 0 = not specified."
+                    "tooltip": "Source video FPS (for metadata). 0 = use fps from mesh_sequence."
                 }),
                 "skip_first_frames": ("INT", {
                     "default": 0,
@@ -289,7 +286,6 @@ class ExportAnimatedFBX:
         camera_motion: str,
         subject_motion: Optional[Dict],
         scale_info: Optional[Dict],
-        video_info: Optional[Dict],
         source_video_fps: float,
         skip_first_frames: int,
         fps: float,
@@ -324,34 +320,34 @@ class ExportAnimatedFBX:
             "frame_count": frame_count,
         }
         
-        # Video info (from Load Video node OR direct inputs)
-        if video_info:
-            metadata["video_fps"] = video_info.get("fps", 0)
-            metadata["skip_first_frames"] = video_info.get("skip_first_frames", 0)
-            metadata["video_total_frames"] = video_info.get("total_frames", 0)
-            metadata["video_filename"] = video_info.get("filename", "")
+        # Video info - use source_video_fps if provided, otherwise use export fps
+        if source_video_fps > 0:
+            metadata["video_fps"] = source_video_fps
         else:
-            # Use direct inputs if VIDEO_INFO not connected
-            if source_video_fps > 0:
-                metadata["video_fps"] = source_video_fps
-            if skip_first_frames > 0:
-                metadata["skip_first_frames"] = skip_first_frames
+            metadata["video_fps"] = fps  # Fall back to export fps
+        
+        if skip_first_frames > 0:
+            metadata["skip_first_frames"] = skip_first_frames
         
         # Scale info (from Motion Analyzer)
         if scale_info:
-            metadata["subject_height_m"] = scale_info.get("actual_height", 0)
+            metadata["subject_height_m"] = scale_info.get("actual_height_m", 0)  # Fixed key name
             metadata["mesh_height_units"] = scale_info.get("mesh_height", 0)
+            metadata["estimated_height_units"] = scale_info.get("estimated_height", 0)
             metadata["scale_factor"] = scale_info.get("scale_factor", 1.0)
             metadata["leg_length_units"] = scale_info.get("leg_length", 0)
             metadata["torso_head_units"] = scale_info.get("torso_head_length", 0)
             metadata["height_source"] = scale_info.get("height_source", "auto")
             metadata["skeleton_mode"] = scale_info.get("skeleton_mode", "")
+            metadata["keypoint_source"] = scale_info.get("keypoint_source", "")
+            metadata["reference_frame"] = scale_info.get("reference_frame", 0)
         
         # Motion analysis results (from Motion Analyzer)
         if subject_motion:
             metadata["motion_num_frames"] = subject_motion.get("num_frames", 0)
             metadata["motion_scale_factor"] = subject_motion.get("scale_factor", 1.0)
             metadata["motion_skeleton_mode"] = subject_motion.get("skeleton_mode", "")
+            metadata["motion_keypoint_source"] = subject_motion.get("keypoint_source", "")
             
             # Foot contact statistics
             foot_contact = subject_motion.get("foot_contact", [])
@@ -359,28 +355,44 @@ class ExportAnimatedFBX:
                 grounded = sum(1 for fc in foot_contact if fc in ["both", "left", "right"])
                 metadata["grounded_frames"] = grounded
                 metadata["airborne_frames"] = len(foot_contact) - grounded
+                metadata["grounded_percent"] = round(100.0 * grounded / len(foot_contact), 1)
             
             # Depth range
             depth_estimates = subject_motion.get("depth_estimate", [])
             if depth_estimates:
-                metadata["depth_min_m"] = min(depth_estimates)
-                metadata["depth_max_m"] = max(depth_estimates)
+                metadata["depth_min_m"] = round(min(depth_estimates), 3)
+                metadata["depth_max_m"] = round(max(depth_estimates), 3)
             
-            # Body world trajectory (if available - Full Skeleton mode only)
+            # Body world trajectory (always available - computed from pred_cam_t)
             body_world_3d = subject_motion.get("body_world_3d", [])
-            if body_world_3d and all(bw is not None for bw in body_world_3d):
+            if body_world_3d:
                 import numpy as np
                 bw_arr = np.array(body_world_3d)
                 displacement = bw_arr[-1] - bw_arr[0]
-                metadata["body_world_disp_x"] = float(displacement[0])
-                metadata["body_world_disp_y"] = float(displacement[1])
-                metadata["body_world_disp_z"] = float(displacement[2])
+                metadata["body_world_disp_x"] = round(float(displacement[0]), 4)
+                metadata["body_world_disp_y"] = round(float(displacement[1]), 4)
+                metadata["body_world_disp_z"] = round(float(displacement[2]), 4)
                 
                 # Total distance
                 if len(bw_arr) > 1:
                     velocities = np.diff(bw_arr, axis=0)
                     total_dist = np.sum(np.linalg.norm(velocities, axis=1))
-                    metadata["body_world_total_distance"] = float(total_dist)
+                    metadata["body_world_total_distance"] = round(float(total_dist), 4)
+                    
+                    # Average speed (per frame, then per second)
+                    avg_speed_per_frame = total_dist / (len(bw_arr) - 1)
+                    metadata["body_world_avg_speed_per_frame"] = round(float(avg_speed_per_frame), 4)
+            
+            # New trajectory metrics
+            metadata["total_distance_m"] = round(subject_motion.get("total_distance_m", 0), 4)
+            metadata["avg_speed_ms"] = round(subject_motion.get("avg_speed_ms", 0), 4)
+            metadata["avg_speed_kmh"] = round(subject_motion.get("avg_speed_ms", 0) * 3.6, 2)
+            metadata["direction_angle"] = round(subject_motion.get("direction_angle", 0), 1)
+            metadata["direction_desc"] = subject_motion.get("direction_desc", "Unknown")
+            metadata["duration_sec"] = round(subject_motion.get("duration_sec", 0), 2)
+        
+        # Add joint indices reference for Maya users
+        metadata["joint_indices_info"] = "Full: 0=Pelvis, 1=L_Hip, 2=R_Hip, 7=L_Ankle, 8=R_Ankle, 15=Head | Simple: 0=Nose, 11=L_Hip, 15=L_Ankle"
         
         return metadata
     
@@ -405,7 +417,6 @@ class ExportAnimatedFBX:
         sensor_width: float = 36.0,
         subject_motion: Optional[Dict] = None,
         scale_info: Optional[Dict] = None,
-        video_info: Optional[Dict] = None,
         source_video_fps: float = 0.0,
         skip_first_frames: int = 0,
         output_dir: str = "",
@@ -631,7 +642,6 @@ class ExportAnimatedFBX:
                 camera_motion=camera_motion,
                 subject_motion=subject_motion,
                 scale_info=scale_info,
-                video_info=video_info,
                 source_video_fps=source_video_fps,
                 skip_first_frames=skip_first_frames,
                 fps=fps,
