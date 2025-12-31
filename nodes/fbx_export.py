@@ -299,10 +299,20 @@ class ExportAnimatedFBX:
         """
         from datetime import datetime, timezone, timedelta
         
-        # Get version from package
+        # Get version from parent package - use direct file read since module name has dashes
+        __version__ = "unknown"
         try:
-            from . import __version__
-        except ImportError:
+            import os
+            init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
+            if os.path.exists(init_path):
+                with open(init_path, "r") as f:
+                    for line in f:
+                        if line.strip().startswith("__version__"):
+                            # Parse: __version__ = "4.5.8"
+                            __version__ = line.split("=")[1].strip().strip('"\'').strip()
+                            break
+        except Exception as e:
+            print(f"[Export] Warning: Could not read version: {e}")
             __version__ = "unknown"
         
         # Get timestamp in IST
@@ -390,11 +400,39 @@ class ExportAnimatedFBX:
             metadata["direction_angle"] = round(subject_motion.get("direction_angle", 0), 1)
             metadata["direction_desc"] = subject_motion.get("direction_desc", "Unknown")
             metadata["duration_sec"] = round(subject_motion.get("duration_sec", 0), 2)
+            
+            # Direction vector (normalized, Y-up coordinate system)
+            direction_vector = subject_motion.get("direction_vector", [0, 0, 0])
+            if direction_vector:
+                metadata["direction_vector_x"] = round(direction_vector[0], 4)
+                metadata["direction_vector_y"] = round(direction_vector[1], 4)
+                metadata["direction_vector_z"] = round(direction_vector[2], 4)
         
-        # Add joint indices reference for Maya users
-        metadata["joint_indices_info"] = "Full: 0=Pelvis, 1=L_Hip, 2=R_Hip, 7=L_Ankle, 8=R_Ankle, 15=Head | Simple: 0=Nose, 11=L_Hip, 15=L_Ankle"
+        # Add detailed joint indices reference for Maya users
+        # Full Skeleton (127 joints) - SMPL-X based
+        full_skeleton_joints = (
+            "0=Pelvis, 1=L_Hip, 2=R_Hip, 3=Spine1, 4=L_Knee, 5=R_Knee, "
+            "6=Spine2, 7=L_Ankle, 8=R_Ankle, 9=Spine3, 10=L_Foot, 11=R_Foot, "
+            "12=Neck, 13=L_Collar, 14=R_Collar, 15=Head, 16=L_Shoulder, 17=R_Shoulder, "
+            "18=L_Elbow, 19=R_Elbow, 20=L_Wrist, 21=R_Wrist, "
+            "22-36=L_Hand (15 joints), 37-51=R_Hand (15 joints), "
+            "52-67=Face/Jaw, 68-126=Additional body"
+        )
+        simple_skeleton_joints = (
+            "0=Nose, 1=L_Eye, 2=R_Eye, 3=L_Ear, 4=R_Ear, "
+            "5=L_Shoulder, 6=R_Shoulder, 7=L_Elbow, 8=R_Elbow, "
+            "9=L_Wrist, 10=R_Wrist, 11=L_Hip, 12=R_Hip, "
+            "13=L_Knee, 14=R_Knee, 15=L_Ankle, 16=R_Ankle"
+        )
+        metadata["full_skeleton_joints"] = full_skeleton_joints
+        metadata["simple_skeleton_joints"] = simple_skeleton_joints
         
-        return metadata
+        # Convert ALL values to strings to avoid sliders in Maya
+        string_metadata = {}
+        for key, value in metadata.items():
+            string_metadata[key] = str(value)
+        
+        return string_metadata
     
     def export_fbx(
         self,

@@ -1139,6 +1139,14 @@ class MotionAnalyzer:
             disp_xz = np.array([body_world_displacement[0], body_world_displacement[2]])
             disp_magnitude = np.linalg.norm(disp_xz)
             
+            # Normalized direction vector (full 3D)
+            disp_3d = np.array(body_world_displacement)
+            disp_3d_magnitude = np.linalg.norm(disp_3d)
+            if disp_3d_magnitude > 0.01:
+                direction_vector = disp_3d / disp_3d_magnitude
+            else:
+                direction_vector = np.array([0.0, 0.0, 0.0])
+            
             if disp_magnitude > 0.01:  # Significant movement
                 # Angle in degrees (0° = forward/+Z, 90° = right/+X, -90° = left/-X, 180° = backward/-Z)
                 direction_angle = np.degrees(np.arctan2(body_world_displacement[0], body_world_displacement[2]))
@@ -1159,11 +1167,13 @@ class MotionAnalyzer:
             avg_speed_ms = 0
             direction_angle = 0
             direction_desc = "Stationary"
+            direction_vector = np.array([0.0, 0.0, 0.0])
         
         # Store in subject_motion
         subject_motion["avg_speed_ms"] = avg_speed_ms
         subject_motion["direction_angle"] = direction_angle
         subject_motion["direction_desc"] = direction_desc
+        subject_motion["direction_vector"] = direction_vector.tolist()  # [X, Y, Z] normalized
         subject_motion["total_distance_m"] = body_world_total_distance
         subject_motion["duration_sec"] = (num_frames - 1) / fps_val if num_frames > 1 else 0
         
@@ -1182,6 +1192,7 @@ class MotionAnalyzer:
         print(f"[Motion Analyzer] Total distance traveled: {body_world_total_distance:.3f}m")
         print(f"[Motion Analyzer] Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
         print(f"[Motion Analyzer] Direction: {direction_desc} ({direction_angle:.1f}°)")
+        print(f"[Motion Analyzer] Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}")
         
         # ===== DEBUG INFO STRING =====
         debug_info = (
@@ -1199,6 +1210,7 @@ class MotionAnalyzer:
             f"Total distance: {body_world_total_distance:.3f}m\n"
             f"Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)\n"
             f"Direction: {direction_desc} ({direction_angle:.1f}°)\n"
+            f"Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}\n"
         )
         
         # ===== DEBUG OVERLAY =====

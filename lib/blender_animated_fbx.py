@@ -2261,6 +2261,8 @@ def create_metadata_locator(metadata: dict):
     These properties become Extra Attributes in Maya, accessible via:
         cmds.getAttr("SAM3DBody_Metadata.world_translation")
     
+    All values are stored as strings to appear as text fields (not sliders) in Maya.
+    
     Args:
         metadata: Dict of metadata to embed
     
@@ -2278,20 +2280,25 @@ def create_metadata_locator(metadata: dict):
     bpy.context.collection.objects.link(metadata_obj)
     
     # Add custom properties
-    # Note: Blender custom properties become Extra Attributes in Maya FBX
+    # Note: All values stored as STRINGS to appear as text fields (not sliders) in Maya
     for key, value in metadata.items():
         if value is None:
             continue
         
-        # Handle different types
+        # Convert ALL values to strings for Maya text field display
         if isinstance(value, bool):
-            metadata_obj[key] = int(value)  # Store as int for Maya compatibility
-        elif isinstance(value, (int, float)):
-            metadata_obj[key] = value
+            metadata_obj[key] = "true" if value else "false"
+        elif isinstance(value, float):
+            # Format floats nicely (3 decimal places for most, more for small values)
+            if abs(value) < 0.001 and value != 0:
+                metadata_obj[key] = f"{value:.6f}"
+            else:
+                metadata_obj[key] = f"{value:.3f}"
+        elif isinstance(value, int):
+            metadata_obj[key] = str(value)
         elif isinstance(value, str):
             metadata_obj[key] = value
         elif isinstance(value, (list, tuple)):
-            # Convert to string for complex types
             metadata_obj[key] = str(value)
         else:
             metadata_obj[key] = str(value)
