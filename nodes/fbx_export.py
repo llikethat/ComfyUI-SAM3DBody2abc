@@ -393,20 +393,43 @@ class ExportAnimatedFBX:
                     avg_speed_per_frame = total_dist / (len(bw_arr) - 1)
                     metadata["body_world_avg_speed_per_frame"] = round(float(avg_speed_per_frame), 4)
             
-            # New trajectory metrics
-            metadata["total_distance_m"] = round(subject_motion.get("total_distance_m", 0), 4)
-            metadata["avg_speed_ms"] = round(subject_motion.get("avg_speed_ms", 0), 4)
-            metadata["avg_speed_kmh"] = round(subject_motion.get("avg_speed_ms", 0) * 3.6, 2)
-            metadata["direction_angle"] = round(subject_motion.get("direction_angle", 0), 1)
-            metadata["direction_desc"] = subject_motion.get("direction_desc", "Unknown")
+            # New trajectory metrics (RAW - includes camera effects)
+            metadata["total_distance_m_raw"] = round(subject_motion.get("total_distance_m", 0), 4)
+            metadata["avg_speed_ms_raw"] = round(subject_motion.get("avg_speed_ms", 0), 4)
+            metadata["avg_speed_kmh_raw"] = round(subject_motion.get("avg_speed_ms", 0) * 3.6, 2)
+            metadata["direction_angle_raw"] = round(subject_motion.get("direction_angle", 0), 1)
+            metadata["direction_desc_raw"] = subject_motion.get("direction_desc", "Unknown")
             metadata["duration_sec"] = round(subject_motion.get("duration_sec", 0), 2)
             
-            # Direction vector (normalized, Y-up coordinate system)
+            # Direction vector RAW (normalized, Y-up coordinate system)
             direction_vector = subject_motion.get("direction_vector", [0, 0, 0])
             if direction_vector:
-                metadata["direction_vector_x"] = round(direction_vector[0], 4)
-                metadata["direction_vector_y"] = round(direction_vector[1], 4)
-                metadata["direction_vector_z"] = round(direction_vector[2], 4)
+                metadata["direction_vector_x_raw"] = round(direction_vector[0], 4)
+                metadata["direction_vector_y_raw"] = round(direction_vector[1], 4)
+                metadata["direction_vector_z_raw"] = round(direction_vector[2], 4)
+            
+            # Compensated trajectory metrics (camera effects removed)
+            metadata["total_distance_m_comp"] = round(subject_motion.get("total_distance_m_compensated", 0), 4)
+            metadata["avg_speed_ms_comp"] = round(subject_motion.get("avg_speed_ms_compensated", 0), 4)
+            metadata["avg_speed_kmh_comp"] = round(subject_motion.get("avg_speed_ms_compensated", 0) * 3.6, 2)
+            metadata["direction_angle_comp"] = round(subject_motion.get("direction_angle_compensated", 0), 1)
+            metadata["direction_desc_comp"] = subject_motion.get("direction_desc_compensated", "Unknown")
+            
+            # Direction vector COMPENSATED (normalized, Y-up coordinate system)
+            direction_vector_comp = subject_motion.get("direction_vector_compensated", [0, 0, 0])
+            if direction_vector_comp:
+                metadata["direction_vector_x_comp"] = round(direction_vector_comp[0], 4)
+                metadata["direction_vector_y_comp"] = round(direction_vector_comp[1], 4)
+                metadata["direction_vector_z_comp"] = round(direction_vector_comp[2], 4)
+            
+            # Focal length info used for compensation
+            metadata["focal_length_ref_px"] = round(subject_motion.get("focal_length_ref_px", 0), 1)
+            metadata["focal_length_ref_mm"] = round(subject_motion.get("focal_length_ref_mm", 0), 1)
+            metadata["focal_length_min_mm"] = round(subject_motion.get("focal_length_min_mm", 0), 1)
+            metadata["focal_length_max_mm"] = round(subject_motion.get("focal_length_max_mm", 0), 1)
+            metadata["focal_variation_percent"] = round(subject_motion.get("focal_variation_percent", 0), 1)
+            metadata["sensor_width_mm"] = round(subject_motion.get("sensor_width_mm", 36.0), 1)
+            metadata["has_extrinsics_compensation"] = str(subject_motion.get("has_extrinsics_compensation", False))
         
         # Add detailed joint indices reference for Maya users
         # Full Skeleton (127 joints) - SMPL-X based
@@ -426,6 +449,13 @@ class ExportAnimatedFBX:
         )
         metadata["full_skeleton_joints"] = full_skeleton_joints
         metadata["simple_skeleton_joints"] = simple_skeleton_joints
+        
+        # Add trajectory interpretation note
+        metadata["trajectory_note"] = (
+            "RAW = motion relative to camera (includes camera pan/zoom effects). "
+            "COMP = estimated actual world motion (camera effects removed). "
+            "Use COMP for real subject velocity/direction."
+        )
         
         # Convert ALL values to strings to avoid sliders in Maya
         string_metadata = {}
@@ -674,6 +704,14 @@ class ExportAnimatedFBX:
             "extrinsics_smoothing_method": smoothing_method,
             "extrinsics_smoothing_strength": smoothing_strength,
             "frames": [],
+            # Body world trajectory for animated locator (COMPENSATED - camera effects removed)
+            # Uses body_world_3d_compensated if available, falls back to raw body_world_3d
+            "body_world_trajectory": (
+                subject_motion.get("body_world_3d_compensated") or 
+                subject_motion.get("body_world_3d", [])
+            ) if subject_motion else [],
+            # Also include raw trajectory for reference
+            "body_world_trajectory_raw": subject_motion.get("body_world_3d_raw", []) if subject_motion else [],
             # Metadata for embedding in FBX
             "metadata": self._build_metadata(
                 world_translation=world_translation,

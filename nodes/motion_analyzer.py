@@ -656,6 +656,9 @@ class MotionAnalyzer:
                 "images": ("IMAGE", {
                     "tooltip": "Original video frames for debug overlay"
                 }),
+                "camera_extrinsics": ("CAMERA_EXTRINSICS", {
+                    "tooltip": "Camera extrinsics from CameraSolver (for camera-compensated trajectory)"
+                }),
                 "skeleton_mode": (["Simple Skeleton", "Full Skeleton"], {
                     "default": "Simple Skeleton",
                     "tooltip": "Simple: 18-joint keypoints, Full: 127-joint SMPL-H"
@@ -699,6 +702,13 @@ class MotionAnalyzer:
                     "min": 1.0,
                     "max": 50.0,
                     "tooltip": "Scale factor for velocity arrows in debug view"
+                }),
+                "sensor_width_mm": ("FLOAT", {
+                    "default": 36.0,
+                    "min": 1.0,
+                    "max": 100.0,
+                    "step": 0.1,
+                    "tooltip": "Camera sensor width in mm (36mm = full frame, 23.5mm = APS-C)"
                 }),
             }
         }
@@ -814,6 +824,7 @@ class MotionAnalyzer:
         self,
         mesh_sequence: Dict,
         images: torch.Tensor = None,
+        camera_extrinsics: Optional[Dict] = None,
         skeleton_mode: str = "Simple Skeleton",
         subject_height_m: float = 0.0,
         reference_frame: int = 0,
@@ -822,9 +833,13 @@ class MotionAnalyzer:
         show_debug: bool = True,
         show_skeleton: bool = True,
         arrow_scale: float = 10.0,
+        sensor_width_mm: float = 36.0,
     ) -> Tuple[Dict, Dict, torch.Tensor, str]:
         """
         Analyze subject motion from mesh sequence.
+        
+        If camera_extrinsics is provided, also computes camera-compensated trajectory
+        (removes camera pan/tilt effects from body_world trajectory).
         """
         print("\n[Motion Analyzer] ========== SUBJECT MOTION ANALYSIS ==========")
         
@@ -1062,11 +1077,16 @@ class MotionAnalyzer:
             # So world position: X = tx * tz, Y = ty * tz, Z = tz (depth)
             # This tracks the character's global trajectory in camera space
             tz = camera_t[2]  # Depth
-            body_world_3d = np.array([
+            
+            # RAW trajectory (includes camera effects from focal length variation)
+            body_world_3d_raw = np.array([
                 camera_t[0] * tz * scale_factor,  # X = tx * tz * scale (left/right)
                 camera_t[1] * tz * scale_factor,  # Y = ty * tz * scale (up/down)
                 tz * scale_factor                  # Z = depth
             ])
+            
+            # Store raw trajectory and focal for later compensation
+            subject_motion["body_world_3d"].append(body_world_3d_raw.copy())
             
             # Debug output for first 3 frames
             if i < 3:
@@ -1075,9 +1095,8 @@ class MotionAnalyzer:
                 timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
                 print(f"[{timestamp}] [Body World DEBUG] Frame {i}:")
                 print(f"  pred_cam_t: tx={camera_t[0]:.4f}, ty={camera_t[1]:.4f}, tz={camera_t[2]:.4f}")
-                print(f"  body_world_3d: X={body_world_3d[0]:.4f}m, Y={body_world_3d[1]:.4f}m, Z={body_world_3d[2]:.4f}m")
-            
-            subject_motion["body_world_3d"].append(body_world_3d.copy())
+                print(f"  focal_length: {focal:.1f}px")
+                print(f"  body_world_3d: X={body_world_3d_raw[0]:.4f}m, Y={body_world_3d_raw[1]:.4f}m, Z={body_world_3d_raw[2]:.4f}m")
             
             # Apparent height (pixels)
             head_2d = joints_2d[head_idx]
@@ -1102,7 +1121,117 @@ class MotionAnalyzer:
         # ===== CALCULATE VELOCITIES =====
         pelvis_2d_arr = np.array(subject_motion["pelvis_2d"])
         pelvis_3d_arr = np.array(subject_motion["pelvis_3d"])
-        body_world_arr = np.array(subject_motion["body_world_3d"])  # Always available (from mesh)
+        body_world_arr = np.array(subject_motion["body_world_3d"])  # Raw trajectory (camera-space)
+        focal_arr = np.array(subject_motion["focal_length"])
+        
+        # ===== CAMERA-COMPENSATED TRAJECTORY =====
+        # Step 1: Compensate for focal length variation (intrinsics)
+        # Variable focal length affects the projection - normalize to reference focal
+        
+        ref_focal = np.mean(focal_arr)  # Use average as reference
+        focal_min = np.min(focal_arr)
+        focal_max = np.max(focal_arr)
+        focal_variation = (focal_max - focal_min) / ref_focal * 100 if ref_focal > 0 else 0
+        
+        # Convert focal length px to mm
+        # Formula: focal_mm = focal_px * sensor_width_mm / image_width_px
+        image_width = image_size[0] if image_size else 1920
+        ref_focal_mm = ref_focal * sensor_width_mm / image_width if image_width > 0 else 0
+        focal_min_mm = focal_min * sensor_width_mm / image_width if image_width > 0 else 0
+        focal_max_mm = focal_max * sensor_width_mm / image_width if image_width > 0 else 0
+        
+        print(f"\n[Motion Analyzer] ----- CAMERA COMPENSATION -----")
+        print(f"[Motion Analyzer] Sensor: {sensor_width_mm}mm, Image width: {image_width}px")
+        print(f"[Motion Analyzer] Focal length (px): ref={ref_focal:.1f}, min={focal_min:.1f}, max={focal_max:.1f}")
+        print(f"[Motion Analyzer] Focal length (mm): ref={ref_focal_mm:.1f}, min={focal_min_mm:.1f}, max={focal_max_mm:.1f}")
+        print(f"[Motion Analyzer] Focal variation: {focal_variation:.1f}%")
+        
+        # Apply focal length compensation
+        # When focal length increases (zoom in), same screen motion = less world motion
+        # Compensation: world_compensated = world_raw * (ref_focal / frame_focal)
+        body_world_focal_compensated = []
+        for i, (pos, focal) in enumerate(zip(body_world_arr, focal_arr)):
+            if focal > 0:
+                focal_ratio = ref_focal / focal
+                # Scale X and Y (lateral motion), keep Z (depth) as is
+                compensated = np.array([
+                    pos[0] * focal_ratio,
+                    pos[1] * focal_ratio,
+                    pos[2]  # Depth not affected by focal length
+                ])
+            else:
+                compensated = pos.copy()
+            body_world_focal_compensated.append(compensated)
+        
+        body_world_focal_compensated = np.array(body_world_focal_compensated)
+        
+        # Step 2: Optionally compensate for camera rotation (extrinsics)
+        body_world_compensated = body_world_focal_compensated.copy()
+        has_extrinsics_compensation = False
+        
+        if camera_extrinsics is not None:
+            try:
+                # Get per-frame rotations from camera solver
+                per_frame_data = camera_extrinsics.get("per_frame", [])
+                
+                if len(per_frame_data) >= len(body_world_arr):
+                    print(f"[Motion Analyzer] Applying camera extrinsics compensation (pan/tilt)...")
+                    body_world_extrinsics_compensated = []
+                    
+                    # Get reference (first frame) rotation to define world space
+                    ref_pan = np.radians(per_frame_data[0].get("pan", 0))
+                    ref_tilt = np.radians(per_frame_data[0].get("tilt", 0))
+                    
+                    for i, pos in enumerate(body_world_focal_compensated):
+                        if i < len(per_frame_data):
+                            # Get camera rotation for this frame
+                            pan = np.radians(per_frame_data[i].get("pan", 0))
+                            tilt = np.radians(per_frame_data[i].get("tilt", 0))
+                            
+                            # Delta rotation from reference frame
+                            delta_pan = pan - ref_pan
+                            delta_tilt = tilt - ref_tilt
+                            
+                            # Apply inverse rotation to remove camera motion effect
+                            # Rotation around Y axis (pan) in Y-up coordinate system
+                            cos_pan = np.cos(-delta_pan)
+                            sin_pan = np.sin(-delta_pan)
+                            
+                            # Rotate X and Z (horizontal plane)
+                            x_comp = pos[0] * cos_pan - pos[2] * sin_pan
+                            z_comp = pos[0] * sin_pan + pos[2] * cos_pan
+                            
+                            # For tilt, rotate around X axis
+                            cos_tilt = np.cos(-delta_tilt)
+                            sin_tilt = np.sin(-delta_tilt)
+                            y_comp = pos[1] * cos_tilt - z_comp * sin_tilt
+                            z_final = pos[1] * sin_tilt + z_comp * cos_tilt
+                            
+                            body_world_extrinsics_compensated.append([x_comp, y_comp, z_final])
+                        else:
+                            body_world_extrinsics_compensated.append(pos.tolist())
+                    
+                    body_world_compensated = np.array(body_world_extrinsics_compensated)
+                    has_extrinsics_compensation = True
+                    
+                    total_pan = per_frame_data[-1].get("pan", 0) - per_frame_data[0].get("pan", 0)
+                    total_tilt = per_frame_data[-1].get("tilt", 0) - per_frame_data[0].get("tilt", 0)
+                    print(f"[Motion Analyzer] Camera extrinsics: total pan={total_pan:.2f}°, total tilt={total_tilt:.2f}°")
+                else:
+                    print(f"[Motion Analyzer] Warning: Not enough extrinsics frames ({len(per_frame_data)} < {len(body_world_arr)})")
+            except Exception as e:
+                print(f"[Motion Analyzer] Warning: Could not apply extrinsics compensation: {e}")
+        
+        # Store all trajectory versions
+        subject_motion["body_world_3d_raw"] = [pos.tolist() for pos in body_world_arr]  # Original
+        subject_motion["body_world_3d_compensated"] = [pos.tolist() for pos in body_world_compensated]  # Fully compensated
+        subject_motion["focal_length_ref_px"] = float(ref_focal)
+        subject_motion["focal_length_ref_mm"] = float(ref_focal_mm)
+        subject_motion["focal_length_min_mm"] = float(focal_min_mm)
+        subject_motion["focal_length_max_mm"] = float(focal_max_mm)
+        subject_motion["focal_variation_percent"] = float(focal_variation)
+        subject_motion["sensor_width_mm"] = float(sensor_width_mm)
+        subject_motion["has_extrinsics_compensation"] = has_extrinsics_compensation
         
         if num_frames > 1:
             velocity_2d = np.diff(pelvis_2d_arr, axis=0)
@@ -1169,13 +1298,55 @@ class MotionAnalyzer:
             direction_desc = "Stationary"
             direction_vector = np.array([0.0, 0.0, 0.0])
         
-        # Store in subject_motion
+        # Store in subject_motion (RAW values)
         subject_motion["avg_speed_ms"] = avg_speed_ms
         subject_motion["direction_angle"] = direction_angle
         subject_motion["direction_desc"] = direction_desc
         subject_motion["direction_vector"] = direction_vector.tolist()  # [X, Y, Z] normalized
         subject_motion["total_distance_m"] = body_world_total_distance
         subject_motion["duration_sec"] = (num_frames - 1) / fps_val if num_frames > 1 else 0
+        
+        # ===== COMPENSATED TRAJECTORY STATISTICS =====
+        body_world_comp_velocity = np.diff(body_world_compensated, axis=0) if len(body_world_compensated) > 1 else np.zeros((0, 3))
+        comp_displacement = body_world_compensated[-1] - body_world_compensated[0]
+        comp_total_distance = np.sum(np.linalg.norm(body_world_comp_velocity, axis=1)) if len(body_world_comp_velocity) > 0 else 0
+        
+        if comp_total_distance > 0 and num_frames > 1:
+            duration_sec = (num_frames - 1) / fps_val
+            comp_avg_speed_ms = comp_total_distance / duration_sec if duration_sec > 0 else 0
+            
+            comp_disp_3d_mag = np.linalg.norm(comp_displacement)
+            if comp_disp_3d_mag > 0.01:
+                comp_direction_vector = comp_displacement / comp_disp_3d_mag
+            else:
+                comp_direction_vector = np.array([0.0, 0.0, 0.0])
+            
+            comp_disp_xz_mag = np.linalg.norm([comp_displacement[0], comp_displacement[2]])
+            if comp_disp_xz_mag > 0.01:
+                comp_direction_angle = np.degrees(np.arctan2(comp_displacement[0], comp_displacement[2]))
+                if abs(comp_direction_angle) < 45:
+                    comp_direction_desc = "Forward" if comp_displacement[2] < 0 else "Backward"
+                elif abs(comp_direction_angle) > 135:
+                    comp_direction_desc = "Backward" if comp_displacement[2] > 0 else "Forward"
+                elif comp_direction_angle > 0:
+                    comp_direction_desc = "Right"
+                else:
+                    comp_direction_desc = "Left"
+            else:
+                comp_direction_angle = 0
+                comp_direction_desc = "Stationary"
+        else:
+            comp_avg_speed_ms = 0
+            comp_direction_angle = 0
+            comp_direction_desc = "Stationary"
+            comp_direction_vector = np.array([0.0, 0.0, 0.0])
+        
+        # Store compensated values
+        subject_motion["avg_speed_ms_compensated"] = comp_avg_speed_ms
+        subject_motion["direction_angle_compensated"] = comp_direction_angle
+        subject_motion["direction_desc_compensated"] = comp_direction_desc
+        subject_motion["direction_vector_compensated"] = comp_direction_vector.tolist()
+        subject_motion["total_distance_m_compensated"] = comp_total_distance
         
         grounded_count = sum(1 for fc in subject_motion["foot_contact"] if fc in ["both", "left", "right"])
         airborne_count = sum(1 for fc in subject_motion["foot_contact"] if fc == "none")
@@ -1187,14 +1358,28 @@ class MotionAnalyzer:
         print(f"[Motion Analyzer] Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
         print(f"[Motion Analyzer] Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
         print(f"[Motion Analyzer] Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
-        print(f"[Motion Analyzer] ----- TRAJECTORY -----")
+        
+        print(f"[Motion Analyzer] ----- TRAJECTORY (RAW - includes camera effects) -----")
         print(f"[Motion Analyzer] Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
         print(f"[Motion Analyzer] Total distance traveled: {body_world_total_distance:.3f}m")
         print(f"[Motion Analyzer] Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
         print(f"[Motion Analyzer] Direction: {direction_desc} ({direction_angle:.1f}°)")
         print(f"[Motion Analyzer] Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}")
         
+        print(f"[Motion Analyzer] ----- TRAJECTORY (COMPENSATED - camera effects removed) -----")
+        print(f"[Motion Analyzer] Focal compensation: ref={ref_focal_mm:.1f}mm ({ref_focal:.0f}px), variation={focal_variation:.1f}%")
+        if has_extrinsics_compensation:
+            print(f"[Motion Analyzer] Extrinsics compensation: YES (pan/tilt removed)")
+        else:
+            print(f"[Motion Analyzer] Extrinsics compensation: NO (connect CameraSolver to enable)")
+        print(f"[Motion Analyzer] Displacement: X={comp_displacement[0]:.3f}m, Y={comp_displacement[1]:.3f}m, Z={comp_displacement[2]:.3f}m")
+        print(f"[Motion Analyzer] Total distance traveled: {comp_total_distance:.3f}m")
+        print(f"[Motion Analyzer] Average speed: {comp_avg_speed_ms:.3f} m/s ({comp_avg_speed_ms * 3.6:.2f} km/h)")
+        print(f"[Motion Analyzer] Direction: {comp_direction_desc} ({comp_direction_angle:.1f}°)")
+        print(f"[Motion Analyzer] Direction vector (Y-up): X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}")
+        
         # ===== DEBUG INFO STRING =====
+        extrinsics_status = "YES" if has_extrinsics_compensation else "NO"
         debug_info = (
             f"=== Motion Analysis Results ===\n"
             f"Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps\n"
@@ -1205,12 +1390,21 @@ class MotionAnalyzer:
             f"Max 2D velocity: {max_velocity_2d:.2f} px/frame\n"
             f"Grounded: {grounded_count}/{num_frames} frames\n"
             f"Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m\n"
-            f"\n=== Trajectory (from pred_cam_t) ===\n"
+            f"\n=== Trajectory RAW (camera-space) ===\n"
             f"Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m\n"
             f"Total distance: {body_world_total_distance:.3f}m\n"
             f"Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)\n"
             f"Direction: {direction_desc} ({direction_angle:.1f}°)\n"
-            f"Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}\n"
+            f"Direction vector: X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}\n"
+            f"\n=== Trajectory COMPENSATED (camera effects removed) ===\n"
+            f"Sensor: {sensor_width_mm}mm, Focal ref: {ref_focal_mm:.1f}mm ({ref_focal:.0f}px)\n"
+            f"Focal range: {focal_min_mm:.1f}mm - {focal_max_mm:.1f}mm, variation: {focal_variation:.1f}%\n"
+            f"Extrinsics compensation: {extrinsics_status}\n"
+            f"Displacement: X={comp_displacement[0]:.3f}m, Y={comp_displacement[1]:.3f}m, Z={comp_displacement[2]:.3f}m\n"
+            f"Total distance: {comp_total_distance:.3f}m\n"
+            f"Average speed: {comp_avg_speed_ms:.3f} m/s ({comp_avg_speed_ms * 3.6:.2f} km/h)\n"
+            f"Direction: {comp_direction_desc} ({comp_direction_angle:.1f}°)\n"
+            f"Direction vector: X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}\n"
         )
         
         # ===== DEBUG OVERLAY =====

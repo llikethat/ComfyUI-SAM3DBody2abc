@@ -649,6 +649,39 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     print(f"[Blender] Static camera at distance {cam_distance:.2f}")
     print(f"[Blender] Camera rotation mode: {camera.rotation_mode}")
     
+    # ============================================================
+    # ANIMATE FOCAL LENGTH IF IT VARIES
+    # ============================================================
+    # Check if per-frame focal length varies and animate if so
+    focal_lengths = []
+    for frame_data in frames:
+        fl = frame_data.get("focal_length")
+        if fl is not None:
+            if isinstance(fl, (list, tuple)):
+                fl = fl[0]
+            focal_lengths.append(fl)
+    
+    if len(focal_lengths) > 1:
+        fl_min, fl_max = min(focal_lengths), max(focal_lengths)
+        if fl_max - fl_min > 1.0:  # More than 1 pixel difference
+            print(f"[Blender] Variable focal length detected: {fl_min:.0f}px to {fl_max:.0f}px")
+            print(f"[Blender] Animating camera focal length over {len(frames)} frames...")
+            
+            for frame_idx, frame_data in enumerate(frames):
+                fl = frame_data.get("focal_length")
+                if fl is not None:
+                    if isinstance(fl, (list, tuple)):
+                        fl = fl[0]
+                    focal_mm = fl * (sensor_width / image_width)
+                    cam_data.lens = focal_mm
+                    cam_data.keyframe_insert(data_path="lens", frame=frame_offset + frame_idx)
+            
+            focal_mm_min = fl_min * (sensor_width / image_width)
+            focal_mm_max = fl_max * (sensor_width / image_width)
+            print(f"[Blender] Focal length animated: {focal_mm_min:.1f}mm to {focal_mm_max:.1f}mm")
+        else:
+            print(f"[Blender] Focal length constant at ~{fl_min:.0f}px ({fl_min * (sensor_width / image_width):.1f}mm)")
+    
     return camera
 
 
@@ -2004,6 +2037,9 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     else:
         # Static camera - positioned with offset for alignment
         camera.location = base_dir * cam_distance + target_offset
+        print(f"[Blender] DEBUG: Static camera setup")
+        print(f"[Blender] DEBUG: camera.location = {camera.location}")
+        print(f"[Blender] DEBUG: target.location = {target.location}")
         
         constraint = camera.constraints.new(type='TRACK_TO')
         constraint.target = target
@@ -2019,6 +2055,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         
         bpy.context.view_layer.update()
         camera.rotation_euler = camera.matrix_world.to_euler()
+        print(f"[Blender] DEBUG: After TRACK_TO constraint, rotation_euler (degrees) = ({math.degrees(camera.rotation_euler.x):.2f}°, {math.degrees(camera.rotation_euler.y):.2f}°, {math.degrees(camera.rotation_euler.z):.2f}°)")
+        
         constraint = camera.constraints.get("Track To")
         if constraint:
             camera.constraints.remove(constraint)
@@ -2065,6 +2103,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         # Store base rotation from static camera setup
         base_rotation = camera.rotation_euler.copy()
         
+        # DEBUG: Print base rotation values
+        print(f"[Blender] DEBUG: base_rotation (radians) = ({base_rotation.x:.4f}, {base_rotation.y:.4f}, {base_rotation.z:.4f})")
+        print(f"[Blender] DEBUG: base_rotation (degrees) = ({math.degrees(base_rotation.x):.2f}°, {math.degrees(base_rotation.y):.2f}°, {math.degrees(base_rotation.z):.2f}°)")
+        print(f"[Blender] DEBUG: pan_axis={pan_axis}, tilt_axis={tilt_axis}")
+        
         if camera_use_rotation:
             # ROTATION MODE: Camera pans/tilts to follow character (like real camera operator)
             print(f"[Blender] Using PAN/TILT rotation to frame character")
@@ -2078,6 +2121,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 # body_offset (from frame 0) handles initial positioning
                 # solved rotations handle frame-to-frame camera pan/tilt
                 print(f"[Blender] Using SOLVED camera rotations ({len(solved_camera_rotations)} frames)")
+                
+                # DEBUG: Print first few solved rotations
+                for i in range(min(3, len(solved_camera_rotations))):
+                    sr = solved_camera_rotations[i]
+                    print(f"[Blender] DEBUG: solved_rot[{i}]: pan={math.degrees(sr.get('pan', 0)):.4f}°, tilt={math.degrees(sr.get('tilt', 0)):.4f}°, roll={math.degrees(sr.get('roll', 0)):.4f}°")
                 
                 # Get first frame depth for camera distance
                 first_cam_t = all_frames[0].get("pred_cam_t", [0, 0, 5])
@@ -2093,6 +2141,14 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                         pan_angle = 0.0
                         tilt_angle = 0.0
                         roll_angle = 0.0
+                    
+                    # DEBUG: Print frame 0 and 24 values
+                    if frame_idx == 0 or frame_idx == 24:
+                        print(f"[Blender] DEBUG Frame {frame_idx}: pan_angle={math.degrees(pan_angle):.4f}°, tilt_angle={math.degrees(tilt_angle):.4f}°")
+                        final_x = base_rotation[tilt_axis] + tilt_angle
+                        final_y = base_rotation[pan_axis] + pan_angle
+                        final_z = base_rotation[2] + roll_angle
+                        print(f"[Blender] DEBUG Frame {frame_idx}: final rotation (deg) = X:{math.degrees(final_x):.2f}°, Y:{math.degrees(final_y):.2f}°, Z:{math.degrees(final_z):.2f}°")
                     
                     # Get per-frame depth (camera distance can vary)
                     frame_cam_t = all_frames[frame_idx].get("pred_cam_t")
@@ -2309,6 +2365,85 @@ def create_metadata_locator(metadata: dict):
             print(f"[Blender]   {key}: {value}")
     
     return metadata_obj
+
+
+def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset: int = 1):
+    """
+    Create an animated locator that follows the body world trajectory.
+    
+    The trajectory comes from pred_cam_t and represents the body's position
+    in world/camera space over time. This is useful for:
+    - Visualizing the motion path in Maya/Blender
+    - Constraining other objects to follow the path
+    - Analyzing movement patterns
+    
+    Args:
+        trajectory: List of [X, Y, Z] positions for each frame (Y-up coordinate system)
+        fps: Frame rate for animation
+        frame_offset: Starting frame number (usually 1)
+    
+    Returns:
+        The trajectory empty object
+    """
+    if not trajectory or len(trajectory) < 2:
+        print("[Blender] No trajectory data to create locator")
+        return None
+    
+    # Create empty object as trajectory locator
+    traj_obj = bpy.data.objects.new("SAM3DBody_Trajectory", None)
+    traj_obj.empty_display_type = 'SPHERE'
+    traj_obj.empty_display_size = 0.1
+    bpy.context.collection.objects.link(traj_obj)
+    
+    # Ensure animation data exists
+    if traj_obj.animation_data is None:
+        traj_obj.animation_data_create()
+    
+    # Create action for keyframes
+    action = bpy.data.actions.new(name="TrajectoryAction")
+    traj_obj.animation_data.action = action
+    
+    # Create F-curves for X, Y, Z location
+    fcurve_x = action.fcurves.new(data_path="location", index=0)
+    fcurve_y = action.fcurves.new(data_path="location", index=1)
+    fcurve_z = action.fcurves.new(data_path="location", index=2)
+    
+    # Add keyframes for each frame
+    for i, pos in enumerate(trajectory):
+        frame_num = frame_offset + i
+        
+        # Position is already in Y-up coordinate system from motion_analyzer
+        # [X, Y, Z] where Y is up
+        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+        
+        # Insert keyframes
+        fcurve_x.keyframe_points.insert(frame_num, x)
+        fcurve_y.keyframe_points.insert(frame_num, y)
+        fcurve_z.keyframe_points.insert(frame_num, z)
+    
+    # Set interpolation to linear for accurate path
+    for fcurve in [fcurve_x, fcurve_y, fcurve_z]:
+        for kf in fcurve.keyframe_points:
+            kf.interpolation = 'LINEAR'
+    
+    print(f"[Blender] Trajectory locator created with {len(trajectory)} keyframes")
+    print(f"[Blender]   Start pos: ({trajectory[0][0]:.3f}, {trajectory[0][1]:.3f}, {trajectory[0][2]:.3f})")
+    print(f"[Blender]   End pos: ({trajectory[-1][0]:.3f}, {trajectory[-1][1]:.3f}, {trajectory[-1][2]:.3f})")
+    
+    # Add trajectory info as custom properties
+    import numpy as np
+    traj_arr = np.array(trajectory)
+    displacement = traj_arr[-1] - traj_arr[0]
+    velocities = np.diff(traj_arr, axis=0)
+    total_dist = np.sum(np.linalg.norm(velocities, axis=1))
+    
+    traj_obj["total_frames"] = str(len(trajectory))
+    traj_obj["total_distance_m"] = f"{total_dist:.3f}"
+    traj_obj["displacement_x"] = f"{displacement[0]:.3f}"
+    traj_obj["displacement_y"] = f"{displacement[1]:.3f}"
+    traj_obj["displacement_z"] = f"{displacement[2]:.3f}"
+    
+    return traj_obj
 
 
 def export_fbx(output_path, axis_forward, axis_up):
@@ -2636,6 +2771,11 @@ def main():
     metadata = data.get("metadata", {})
     if metadata:
         create_metadata_locator(metadata)
+    
+    # Create trajectory locator (animated path from body_world)
+    trajectory = data.get("body_world_trajectory", [])
+    if trajectory:
+        create_trajectory_locator(trajectory, fps, frame_offset)
     
     # Export
     if output_format == "abc":
