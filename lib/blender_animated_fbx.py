@@ -2149,6 +2149,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                         final_y = base_rotation[pan_axis] + pan_angle
                         final_z = base_rotation[2] + roll_angle
                         print(f"[Blender] DEBUG Frame {frame_idx}: final rotation (deg) = X:{math.degrees(final_x):.2f}°, Y:{math.degrees(final_y):.2f}°, Z:{math.degrees(final_z):.2f}°")
+                        print(f"[Blender] DEBUG Frame {frame_idx}: EXPECTED MAYA = RotateX:{math.degrees(final_x):.2f}°, RotateY:{math.degrees(final_y):.2f}°, RotateZ:{math.degrees(final_z):.2f}°")
                     
                     # Get per-frame depth (camera distance can vary)
                     frame_cam_t = all_frames[frame_idx].get("pred_cam_t")
@@ -2456,7 +2457,8 @@ def export_fbx(output_path, axis_forward, axis_up):
         use_selection=False,
         global_scale=1.0,
         apply_unit_scale=True,
-        apply_scale_options='FBX_SCALE_ALL',
+        apply_scale_options='FBX_SCALE_UNITS',  # Changed from FBX_SCALE_ALL to match Maya import
+        bake_space_transform=False,  # Apply Transform: OFF - critical for rotation preservation
         axis_forward=axis_forward,
         axis_up=axis_up,
         object_types={'MESH', 'ARMATURE', 'EMPTY', 'CAMERA'},
@@ -2464,7 +2466,7 @@ def export_fbx(output_path, axis_forward, axis_up):
         mesh_smooth_type='FACE',
         use_armature_deform_only=False,
         add_leaf_bones=False,
-        use_custom_props=True,  # *** CRUCIAL: Export custom properties for Maya Extra Attributes ***
+        use_custom_props=True,  # Export custom properties for Maya Extra Attributes
         bake_anim=True,
         bake_anim_use_all_bones=True,
         bake_anim_use_nla_strips=False,
@@ -2764,6 +2766,14 @@ def main():
                     print(f"[Blender] Camera is STATIC - body_offset positions character correctly")
                 elif camera_use_rotation:
                     print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
+                    # Apply animated body offset to compensate for camera rotation
+                    # This keeps the body at correct screen position as camera pans/tilts
+                    if camera_extrinsics and len(camera_extrinsics) > 0:
+                        print(f"[Blender] Applying per-frame body offset to compensate for camera rotation...")
+                        apply_animated_body_offset(
+                            mesh_obj, armature_obj, frames, camera_extrinsics, 
+                            up_axis, frame_offset, smoothing=5
+                        )
                 else:
                     print(f"[Blender] Camera uses local TRANSLATION to frame character")
     
