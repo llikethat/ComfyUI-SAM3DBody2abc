@@ -22,6 +22,12 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
 
+# Import version from package
+try:
+    from .. import __version__
+except ImportError:
+    __version__ = "unknown"
+
 
 def to_list(obj):
     """Convert to JSON-serializable list."""
@@ -491,6 +497,9 @@ class ExportAnimatedFBX:
     ) -> Tuple[str, str, int, float]:
         """Export to animated FBX or Alembic."""
         
+        # Log version at start of export
+        print(f"[Export] SAM3DBody2abc version: {__version__}")
+        
         # Get fps from mesh_sequence if not specified (0 means use source)
         if fps <= 0:
             fps = mesh_sequence.get("fps", 24.0)
@@ -820,8 +829,19 @@ class ExportAnimatedFBX:
             
             # Log Blender output
             if result.stdout:
-                for line in result.stdout.split('\n')[-20:]:  # Last 20 lines
-                    if line.strip():
+                lines = result.stdout.split('\n')
+                
+                # First, print all DEBUG lines (important for troubleshooting)
+                debug_lines = [l for l in lines if 'DEBUG' in l and l.strip()]
+                if debug_lines:
+                    print(f"[Blender] === DEBUG OUTPUT ({len(debug_lines)} lines) ===")
+                    for line in debug_lines:
+                        print(f"[Blender] {line}")
+                    print(f"[Blender] === END DEBUG ===")
+                
+                # Then print last 30 lines of regular output
+                for line in lines[-30:]:
+                    if line.strip() and 'DEBUG' not in line:
                         print(f"[Blender] {line}")
             
             if result.returncode != 0:
