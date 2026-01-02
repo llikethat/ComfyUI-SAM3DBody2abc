@@ -518,6 +518,9 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     camera = bpy.data.objects.new("Camera", cam_data)
     bpy.context.collection.objects.link(camera)
     
+    # Set rotation mode to ZXY BEFORE any keyframes (critical for Maya compatibility)
+    camera.rotation_mode = 'ZXY'
+    
     # Set sensor width
     cam_data.sensor_width = sensor_width
     
@@ -1433,7 +1436,6 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
-    root.rotation_mode = 'XYZ'  # Maya compatibility
     bpy.context.collection.objects.link(root)
     
     # Animate root position based on pred_cam_t
@@ -1493,7 +1495,6 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
-    root.rotation_mode = 'XYZ'  # Maya compatibility
     bpy.context.collection.objects.link(root)
     
     # Pre-smooth camera extrinsics if requested
@@ -1691,8 +1692,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     camera = bpy.data.objects.new("Camera", cam_data)
     bpy.context.collection.objects.link(camera)
     
-    # Set rotation mode to XYZ for Maya compatibility
-    camera.rotation_mode = 'XYZ'
+    # Set rotation mode to ZXY BEFORE any keyframes (critical for Maya compatibility)
+    camera.rotation_mode = 'ZXY'
     
     # Set sensor width
     cam_data.sensor_width = sensor_width
@@ -2172,7 +2173,16 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
                 
                 print(f"[Blender] Camera rotation from SOLVED values (background tracking)")
-                print(f"[Blender] body_offset is STATIC (frame 0) - camera rotation handles alignment")
+                print(f"[Blender] body_offset is per-frame animated - camera rotation handles pan/tilt")
+                
+                # Add custom properties for debugging rotation in Maya
+                # These show the intended rotation values before FBX axis conversion
+                first_rot = solved_camera_rotations[0] if solved_camera_rotations else {}
+                last_rot = solved_camera_rotations[-1] if solved_camera_rotations else {}
+                camera["intended_rotation_x_deg"] = f"{math.degrees(base_rotation[0] + first_rot.get('tilt', 0)):.2f}"
+                camera["intended_rotation_y_deg"] = f"{math.degrees(base_rotation[1] + first_rot.get('pan', 0)):.2f}"
+                camera["intended_rotation_z_deg"] = f"{math.degrees(base_rotation[2] + first_rot.get('roll', 0)):.2f}"
+                camera["note_rotation"] = "FBX axis conversion adds ~90deg. Use CameraExtrinsics locator for raw values."
             
             else:
                 # FALLBACK: Compute pan/tilt from pred_cam_t
@@ -2368,6 +2378,301 @@ def create_metadata_locator(metadata: dict):
     return metadata_obj
 
 
+def create_world_position_locator(trajectory_compensated: list, fps: float = 24.0, frame_offset: int = 1):
+    """
+    Create WorldPosition locator with TRUE character trajectory (camera effects removed).
+    
+    This locator shows where the character actually moved in world space,
+    with camera pan/tilt/zoom effects removed.
+    
+    Args:
+        trajectory_compensated: List of [X, Y, Z] positions with camera effects removed
+        fps: Frame rate for animation
+        frame_offset: Starting frame number (usually 1)
+    
+    Returns:
+        The WorldPosition empty object
+    """
+    if not trajectory_compensated or len(trajectory_compensated) < 2:
+        print("[Blender] No compensated trajectory data for WorldPosition locator")
+        return None
+    
+    # Create empty object as locator
+    loc_obj = bpy.data.objects.new("SAM3DBody_WorldPosition", None)
+    loc_obj.empty_display_type = 'PLAIN_AXES'
+    loc_obj.empty_display_size = 0.2
+    bpy.context.collection.objects.link(loc_obj)
+    
+    # Ensure animation data exists
+    if loc_obj.animation_data is None:
+        loc_obj.animation_data_create()
+    
+    # Create action for keyframes
+    action = bpy.data.actions.new(name="WorldPositionAction")
+    loc_obj.animation_data.action = action
+    
+    # Create F-curves for X, Y, Z location
+    fcurve_x = action.fcurves.new(data_path="location", index=0)
+    fcurve_y = action.fcurves.new(data_path="location", index=1)
+    fcurve_z = action.fcurves.new(data_path="location", index=2)
+    
+    # Add keyframes for each frame
+    for i, pos in enumerate(trajectory_compensated):
+        frame_num = frame_offset + i
+        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+        fcurve_x.keyframe_points.insert(frame_num, x)
+        fcurve_y.keyframe_points.insert(frame_num, y)
+        fcurve_z.keyframe_points.insert(frame_num, z)
+    
+    # Set interpolation to linear
+    for fcurve in [fcurve_x, fcurve_y, fcurve_z]:
+        for kf in fcurve.keyframe_points:
+            kf.interpolation = 'LINEAR'
+    
+    # Add custom properties
+    import numpy as np
+    traj_arr = np.array(trajectory_compensated)
+    displacement = traj_arr[-1] - traj_arr[0]
+    velocities = np.diff(traj_arr, axis=0)
+    total_dist = np.sum(np.linalg.norm(velocities, axis=1))
+    
+    loc_obj["description"] = "True world position with camera effects removed"
+    loc_obj["total_frames"] = str(len(trajectory_compensated))
+    loc_obj["total_distance_m"] = f"{total_dist:.3f}"
+    loc_obj["displacement_x"] = f"{displacement[0]:.3f}"
+    loc_obj["displacement_y"] = f"{displacement[1]:.3f}"
+    loc_obj["displacement_z"] = f"{displacement[2]:.3f}"
+    
+    print(f"[Blender] WorldPosition locator created with {len(trajectory_compensated)} keyframes")
+    print(f"[Blender]   Start: ({trajectory_compensated[0][0]:.3f}, {trajectory_compensated[0][1]:.3f}, {trajectory_compensated[0][2]:.3f})")
+    print(f"[Blender]   End: ({trajectory_compensated[-1][0]:.3f}, {trajectory_compensated[-1][1]:.3f}, {trajectory_compensated[-1][2]:.3f})")
+    
+    return loc_obj
+
+
+def create_camera_extrinsics_locator(camera_extrinsics: list, fps: float = 24.0, frame_offset: int = 1, up_axis: str = "Y"):
+    """
+    Create CameraExtrinsics locator with animated rotation (pan/tilt/roll).
+    
+    This locator represents the camera's rotation over time from the CameraSolver.
+    The rotation is stored as animated transform so it can be directly applied or
+    used as a reference.
+    
+    Args:
+        camera_extrinsics: List of dicts with 'pan', 'tilt', 'roll' keys (in radians)
+        fps: Frame rate for animation
+        frame_offset: Starting frame number (usually 1)
+        up_axis: Up axis for coordinate system
+    
+    Returns:
+        The CameraExtrinsics empty object
+    """
+    if not camera_extrinsics or len(camera_extrinsics) < 2:
+        print("[Blender] No camera extrinsics data for CameraExtrinsics locator")
+        return None
+    
+    # Create empty object as locator
+    loc_obj = bpy.data.objects.new("SAM3DBody_CameraExtrinsics", None)
+    loc_obj.empty_display_type = 'ARROWS'
+    loc_obj.empty_display_size = 0.3
+    bpy.context.collection.objects.link(loc_obj)
+    
+    # Set rotation mode to ZXY - this locator carries camera extrinsic rotation data
+    loc_obj.rotation_mode = 'ZXY'
+    
+    # Ensure animation data exists
+    if loc_obj.animation_data is None:
+        loc_obj.animation_data_create()
+    
+    # Create action for keyframes
+    action = bpy.data.actions.new(name="CameraExtrinsicsAction")
+    loc_obj.animation_data.action = action
+    
+    # Create F-curves for rotation (Euler XYZ)
+    # Map: X = tilt, Y = pan, Z = roll
+    fcurve_rx = action.fcurves.new(data_path="rotation_euler", index=0)
+    fcurve_ry = action.fcurves.new(data_path="rotation_euler", index=1)
+    fcurve_rz = action.fcurves.new(data_path="rotation_euler", index=2)
+    
+    # Add keyframes for each frame
+    for i, ext in enumerate(camera_extrinsics):
+        frame_num = frame_offset + i
+        pan = ext.get("pan", 0.0)
+        tilt = ext.get("tilt", 0.0)
+        roll = ext.get("roll", 0.0)
+        
+        # Store as: X=tilt, Y=pan, Z=roll (standard camera convention)
+        fcurve_rx.keyframe_points.insert(frame_num, tilt)
+        fcurve_ry.keyframe_points.insert(frame_num, pan)
+        fcurve_rz.keyframe_points.insert(frame_num, roll)
+    
+    # Set interpolation to linear
+    for fcurve in [fcurve_rx, fcurve_ry, fcurve_rz]:
+        for kf in fcurve.keyframe_points:
+            kf.interpolation = 'LINEAR'
+    
+    # Add custom properties with final values in degrees
+    first_ext = camera_extrinsics[0]
+    last_ext = camera_extrinsics[-1]
+    
+    loc_obj["description"] = "Camera rotation from CameraSolver (X=tilt, Y=pan, Z=roll)"
+    loc_obj["rotation_order"] = "XYZ"
+    loc_obj["total_frames"] = str(len(camera_extrinsics))
+    loc_obj["frame_0_pan_deg"] = f"{math.degrees(first_ext.get('pan', 0)):.4f}"
+    loc_obj["frame_0_tilt_deg"] = f"{math.degrees(first_ext.get('tilt', 0)):.4f}"
+    loc_obj["frame_0_roll_deg"] = f"{math.degrees(first_ext.get('roll', 0)):.4f}"
+    loc_obj["final_pan_deg"] = f"{math.degrees(last_ext.get('pan', 0)):.4f}"
+    loc_obj["final_tilt_deg"] = f"{math.degrees(last_ext.get('tilt', 0)):.4f}"
+    loc_obj["final_roll_deg"] = f"{math.degrees(last_ext.get('roll', 0)):.4f}"
+    
+    print(f"[Blender] CameraExtrinsics locator created with {len(camera_extrinsics)} keyframes")
+    print(f"[Blender]   Frame 0: pan={math.degrees(first_ext.get('pan', 0)):.2f}°, tilt={math.degrees(first_ext.get('tilt', 0)):.2f}°")
+    print(f"[Blender]   Final: pan={math.degrees(last_ext.get('pan', 0)):.2f}°, tilt={math.degrees(last_ext.get('tilt', 0)):.2f}°")
+    
+    return loc_obj
+
+
+def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset: int = 1, up_axis: str = "Y"):
+    """
+    Create ScreenPosition locator showing character's screen-space position (from pred_cam_t).
+    
+    This locator shows tx, ty values which represent where the character appears
+    on screen relative to center. Useful for compositing reference.
+    
+    Args:
+        frames: List of frame data dicts with 'pred_cam_t'
+        fps: Frame rate for animation  
+        frame_offset: Starting frame number
+        up_axis: Up axis for coordinate system
+    
+    Returns:
+        The ScreenPosition empty object
+    """
+    if not frames or len(frames) < 2:
+        print("[Blender] No frame data for ScreenPosition locator")
+        return None
+    
+    # Create empty object as locator
+    loc_obj = bpy.data.objects.new("SAM3DBody_ScreenPosition", None)
+    loc_obj.empty_display_type = 'CIRCLE'
+    loc_obj.empty_display_size = 0.15
+    bpy.context.collection.objects.link(loc_obj)
+    
+    # Ensure animation data exists
+    if loc_obj.animation_data is None:
+        loc_obj.animation_data_create()
+    
+    # Create action for keyframes
+    action = bpy.data.actions.new(name="ScreenPositionAction")
+    loc_obj.animation_data.action = action
+    
+    # Create F-curves for X, Y location (screen-space)
+    fcurve_x = action.fcurves.new(data_path="location", index=0)
+    fcurve_y = action.fcurves.new(data_path="location", index=1)
+    fcurve_z = action.fcurves.new(data_path="location", index=2)
+    
+    # Add keyframes for each frame
+    for i, frame_data in enumerate(frames):
+        frame_num = frame_offset + i
+        pred_cam_t = frame_data.get("pred_cam_t", [0, 0, 5])
+        
+        tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
+        ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
+        tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
+        
+        # Store screen position: X=tx, Y=ty (negated for camera convention), Z=depth
+        if up_axis == "Y":
+            fcurve_x.keyframe_points.insert(frame_num, tx)
+            fcurve_y.keyframe_points.insert(frame_num, -ty)  # Negate for camera view
+            fcurve_z.keyframe_points.insert(frame_num, 0)  # Screen space, no Z
+        else:
+            fcurve_x.keyframe_points.insert(frame_num, tx)
+            fcurve_y.keyframe_points.insert(frame_num, 0)
+            fcurve_z.keyframe_points.insert(frame_num, -ty)
+    
+    # Set interpolation to linear
+    for fcurve in [fcurve_x, fcurve_y, fcurve_z]:
+        for kf in fcurve.keyframe_points:
+            kf.interpolation = 'LINEAR'
+    
+    # Add custom properties
+    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
+    last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
+    
+    loc_obj["description"] = "Screen-space position from pred_cam_t (tx, ty)"
+    loc_obj["total_frames"] = str(len(frames))
+    loc_obj["frame_0_tx"] = f"{first_cam_t[0]:.4f}"
+    loc_obj["frame_0_ty"] = f"{first_cam_t[1]:.4f}"
+    loc_obj["final_tx"] = f"{last_cam_t[0]:.4f}"
+    loc_obj["final_ty"] = f"{last_cam_t[1]:.4f}"
+    
+    print(f"[Blender] ScreenPosition locator created with {len(frames)} keyframes")
+    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}")
+    print(f"[Blender]   Final: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}")
+    
+    return loc_obj
+
+
+def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1):
+    """
+    Apply per-frame body offset based on pred_cam_t for each frame.
+    
+    This fixes the drift issue where static body_offset (from frame 0 only)
+    causes the character to drift relative to video as camera pans.
+    
+    Args:
+        mesh_obj: The mesh object to animate
+        armature_obj: The armature object to animate
+        frames: List of frame data with pred_cam_t
+        up_axis: Up axis for coordinate system
+        frame_offset: Starting frame number
+    """
+    if not frames:
+        print("[Blender] No frames for per-frame body offset")
+        return
+    
+    print(f"[Blender] Applying per-frame body offset ({len(frames)} frames)...")
+    
+    for i, frame_data in enumerate(frames):
+        frame_num = frame_offset + i
+        pred_cam_t = frame_data.get("pred_cam_t", [0, 0, 5])
+        
+        tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
+        ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
+        
+        # Compute body offset for this frame
+        if up_axis == "Y":
+            offset = Vector((tx, -ty, 0))
+        elif up_axis == "Z":
+            offset = Vector((tx, 0, -ty))
+        elif up_axis == "-Y":
+            offset = Vector((tx, ty, 0))
+        elif up_axis == "-Z":
+            offset = Vector((tx, 0, ty))
+        else:
+            offset = Vector((tx, -ty, 0))
+        
+        # Apply to mesh
+        if mesh_obj:
+            mesh_obj.location = offset
+            mesh_obj.keyframe_insert(data_path="location", frame=frame_num)
+        
+        # Apply to armature
+        if armature_obj:
+            armature_obj.location = offset
+            armature_obj.keyframe_insert(data_path="location", frame=frame_num)
+    
+    # Debug output
+    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
+    last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
+    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}")
+    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}")
+    if mesh_obj:
+        print(f"[Blender] Mesh animated with {len(frames)} position keyframes")
+    if armature_obj:
+        print(f"[Blender] Skeleton animated with {len(frames)} position keyframes")
+
+
 def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset: int = 1):
     """
     Create an animated locator that follows the body world trajectory.
@@ -2451,14 +2756,15 @@ def export_fbx(output_path, axis_forward, axis_up):
     """Export to FBX."""
     print(f"[Blender] Exporting FBX: {output_path}")
     print(f"[Blender] Orientation: forward={axis_forward}, up={axis_up}")
+    print(f"[Blender] Scale: 0.01 (meter to centimeter), Apply Scalings: All Local")
     
     bpy.ops.export_scene.fbx(
         filepath=output_path,
         use_selection=False,
-        global_scale=1.0,
+        global_scale=0.01,  # Meter to Centimeter - Maya will show scale=1
         apply_unit_scale=True,
-        apply_scale_options='FBX_SCALE_UNITS',  # Changed from FBX_SCALE_ALL to match Maya import
-        bake_space_transform=False,  # Apply Transform: OFF - critical for rotation preservation
+        apply_scale_options='FBX_SCALE_ALL',  # "All Local" - correct axis remap
+        bake_space_transform=False,  # Apply Transform: OFF
         axis_forward=axis_forward,
         axis_up=axis_up,
         object_types={'MESH', 'ARMATURE', 'EMPTY', 'CAMERA'},
@@ -2685,10 +2991,10 @@ def main():
             # Standard root locator (world translation from pred_cam_t)
             root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
         
-        # Get body offset for aligning body relative to camera (STATIC from frame 0)
+        # Get body offset from frame 0 for initial setup (will be overwritten by per-frame)
         first_cam_t = frames[0].get("pred_cam_t")
         body_offset = get_body_offset_from_cam_t(first_cam_t, up_axis)
-        print(f"[Blender] Body offset for camera alignment: {body_offset}")
+        print(f"[Blender] Initial body offset (frame 0): {body_offset}")
     
     # Create mesh with shape keys
     mesh_obj = None
@@ -2697,9 +3003,8 @@ def main():
         # Parent mesh to root locator if in "root" mode
         if world_translation_mode == "root" and root_locator and mesh_obj:
             mesh_obj.parent = root_locator
-            # Apply STATIC body offset for correct camera alignment
+            # Initial position (will be overwritten by per-frame animation)
             mesh_obj.location = body_offset
-            print(f"[Blender] Mesh offset applied: {body_offset}")
     
     # Create skeleton (armature with bones and hierarchy)
     # Pass camera_extrinsics to compensate body orientation for camera motion
@@ -2709,10 +3014,14 @@ def main():
         skeleton_camera_rots = camera_extrinsics
     armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
     
-    # Apply body offset to skeleton as well
+    # Apply body offset to skeleton as well (initial position)
     if world_translation_mode == "root" and root_locator and armature_obj:
         armature_obj.location = body_offset
-        print(f"[Blender] Skeleton offset applied: {body_offset}")
+    
+    # Apply PER-FRAME body offset (fixes drift issue)
+    # This overwrites the static offset with animated keyframes
+    if world_translation_mode == "root" and root_locator:
+        apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":
@@ -2763,17 +3072,10 @@ def main():
                 camera_obj.parent = root_locator
                 print(f"[Blender] Camera parented to root_locator - follows character movement")
                 if camera_static:
-                    print(f"[Blender] Camera is STATIC - body_offset positions character correctly")
+                    print(f"[Blender] Camera is STATIC - per-frame body_offset positions character")
                 elif camera_use_rotation:
-                    print(f"[Blender] Camera uses PAN/TILT rotation to frame character (like real camera operator)")
-                    # Apply animated body offset to compensate for camera rotation
-                    # This keeps the body at correct screen position as camera pans/tilts
-                    if camera_extrinsics and len(camera_extrinsics) > 0:
-                        print(f"[Blender] Applying per-frame body offset to compensate for camera rotation...")
-                        apply_animated_body_offset(
-                            mesh_obj, armature_obj, frames, camera_extrinsics, 
-                            up_axis, frame_offset, smoothing=5
-                        )
+                    print(f"[Blender] Camera uses PAN/TILT rotation to frame character")
+                    # Note: Per-frame body offset is already applied above for all root modes
                 else:
                     print(f"[Blender] Camera uses local TRANSLATION to frame character")
     
@@ -2782,10 +3084,30 @@ def main():
     if metadata:
         create_metadata_locator(metadata)
     
-    # Create trajectory locator (animated path from body_world)
+    # ========== NEW LOCATOR SYSTEM (v4.6.7) ==========
+    # 1. ScreenPosition - where character appears on screen (from pred_cam_t)
+    create_screen_position_locator(frames, fps, frame_offset, up_axis)
+    
+    # 2. WorldPosition - true trajectory with camera effects removed (compensated)
+    trajectory_compensated = data.get("body_world_trajectory_compensated", [])
+    if trajectory_compensated:
+        create_world_position_locator(trajectory_compensated, fps, frame_offset)
+    else:
+        # Fallback: use raw trajectory if compensated not available
+        trajectory_raw = data.get("body_world_trajectory", [])
+        if trajectory_raw:
+            print("[Blender] WARNING: Using raw trajectory (compensated not available)")
+            create_world_position_locator(trajectory_raw, fps, frame_offset)
+    
+    # 3. CameraExtrinsics - camera rotation from CameraSolver
+    if camera_extrinsics and len(camera_extrinsics) > 0:
+        create_camera_extrinsics_locator(camera_extrinsics, fps, frame_offset, up_axis)
+    
+    # Legacy: Create old trajectory locator for backward compatibility
     trajectory = data.get("body_world_trajectory", [])
     if trajectory:
         create_trajectory_locator(trajectory, fps, frame_offset)
+    # ========== END NEW LOCATOR SYSTEM ==========
     
     # Export
     if output_format == "abc":

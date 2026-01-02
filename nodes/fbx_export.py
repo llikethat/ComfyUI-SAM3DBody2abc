@@ -719,6 +719,8 @@ class ExportAnimatedFBX:
                 subject_motion.get("body_world_3d_compensated") or 
                 subject_motion.get("body_world_3d", [])
             ) if subject_motion else [],
+            # Explicitly pass compensated trajectory for WorldPosition locator (v4.6.7)
+            "body_world_trajectory_compensated": subject_motion.get("body_world_3d_compensated", []) if subject_motion else [],
             # Also include raw trajectory for reference
             "body_world_trajectory_raw": subject_motion.get("body_world_3d_raw", []) if subject_motion else [],
             # Metadata for embedding in FBX
