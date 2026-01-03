@@ -197,22 +197,38 @@ class CameraSolverV2:
         
         # Resolve checkpoint path
         if not checkpoint_path:
-            # Look in common locations
+            # Get ComfyUI base path (go up from custom_nodes/SAM3DBody2abc/nodes/)
+            current_dir = os.path.dirname(__file__)
+            custom_nodes_dir = os.path.dirname(os.path.dirname(current_dir))
+            comfyui_dir = os.path.dirname(custom_nodes_dir)
+            
+            # Search order:
+            # 1. ComfyUI/models/tapir/ (standard ComfyUI convention)
+            # 2. SAM3DBody2abc/models/tapir/ (self-contained fallback)
+            # 3. ~/.cache/tapir/ (user cache)
+            # 4. Current working directory
             possible_paths = [
-                self.DEFAULT_CHECKPOINT,
+                # Standard ComfyUI models path
+                os.path.join(comfyui_dir, "models", "tapir", "bootstapir_checkpoint_v2.pt"),
+                # Self-contained in extension
+                os.path.join(os.path.dirname(current_dir), "models", "tapir", "bootstapir_checkpoint_v2.pt"),
+                # User cache
                 os.path.expanduser("~/.cache/tapir/bootstapir_checkpoint_v2.pt"),
+                # Current directory
                 "bootstapir_checkpoint_v2.pt",
-                os.path.join(os.path.dirname(__file__), "..", "models", "tapir", "bootstapir_checkpoint_v2.pt"),
             ]
             for path in possible_paths:
                 if os.path.exists(path):
                     checkpoint_path = path
+                    print(f"[CameraSolverV2] Found checkpoint at: {path}")
                     break
         
         if not checkpoint_path or not os.path.exists(checkpoint_path):
             print(f"[CameraSolverV2] TAPIR checkpoint not found!")
             print(f"[CameraSolverV2] Download from: https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt")
-            print(f"[CameraSolverV2] Expected locations: {possible_paths}")
+            print(f"[CameraSolverV2] Place in one of these locations:")
+            print(f"[CameraSolverV2]   1. ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt (recommended)")
+            print(f"[CameraSolverV2]   2. ComfyUI-SAM3DBody2abc/models/tapir/bootstapir_checkpoint_v2.pt")
             return False
         
         try:

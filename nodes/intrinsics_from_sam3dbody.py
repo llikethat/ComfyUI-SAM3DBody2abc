@@ -177,7 +177,10 @@ class IntrinsicsFromSAM3DBody:
         print(f"[IntrinsicsFromSAM3DBody] Focal length: {focal_length_px:.1f}px")
         
         # Extract camera translation
-        pred_cam_t = mesh_data.get("camera") or mesh_data.get("pred_cam_t")
+        pred_cam_t = mesh_data.get("camera")
+        if pred_cam_t is None:
+            pred_cam_t = mesh_data.get("pred_cam_t")
+        
         cam_t_list = None
         pred_cam_t_np = None
         if pred_cam_t is not None:
