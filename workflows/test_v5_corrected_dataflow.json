@@ -1,0 +1,432 @@
+{
+  "last_node_id": 15,
+  "last_link_id": 20,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 200],
+      "size": [300, 280],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [1, 2, 10],
+          "slot_index": 0
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "your_test_video.mp4",
+        "force_rate": 0,
+        "force_size": "Disabled",
+        "custom_width": 512,
+        "custom_height": 512,
+        "frame_load_cap": 50,
+        "skip_first_frames": 0,
+        "select_every_nth": 1
+      },
+      "title": "📥 Load Video"
+    },
+    {
+      "id": 2,
+      "type": "SAM3DBodyModelLoader",
+      "pos": [50, 550],
+      "size": [300, 60],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "SAM3D_MODEL",
+          "type": "SAM3D_MODEL",
+          "links": [3],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBodyModelLoader"
+      },
+      "title": "📦 Load SAM3DBody Model"
+    },
+    {
+      "id": 3,
+      "type": "SAM3DBodyProcess",
+      "pos": [420, 200],
+      "size": [350, 300],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "link": 3
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mesh_data",
+          "type": "SAM3D_OUTPUT",
+          "links": [4, 11],
+          "slot_index": 0
+        },
+        {
+          "name": "debug_image",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBodyProcess"
+      },
+      "widgets_values": {
+        "bbox_threshold": 0.8,
+        "inference_type": "full"
+      },
+      "title": "🧍 SAM3DBody Process (Single Frame)"
+    },
+    {
+      "id": 4,
+      "type": "SAM3DBody2abc_IntrinsicsFromSAM3DBody",
+      "pos": [420, 550],
+      "size": [350, 280],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh_data",
+          "type": "SAM3D_OUTPUT",
+          "link": 4
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "intrinsics",
+          "type": "INTRINSICS",
+          "links": [5],
+          "slot_index": 0
+        },
+        {
+          "name": "debug_overlay",
+          "type": "IMAGE",
+          "links": [6],
+          "slot_index": 1
+        },
+        {
+          "name": "focal_length_mm",
+          "type": "FLOAT",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": [7],
+          "slot_index": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody2abc_IntrinsicsFromSAM3DBody"
+      },
+      "widgets_values": {
+        "sensor_width_mm": 36,
+        "generate_overlay": true,
+        "overlay_opacity": 0.7,
+        "show_skeleton": true,
+        "show_mesh": true
+      },
+      "title": "📷 Intrinsics from SAM3DBody"
+    },
+    {
+      "id": 5,
+      "type": "SAM3DBody2abc_CameraSolverV2",
+      "pos": [850, 200],
+      "size": [350, 380],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 10
+        },
+        {
+          "name": "intrinsics",
+          "type": "INTRINSICS",
+          "link": 5
+        },
+        {
+          "name": "foreground_mask",
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "camera_matrices",
+          "type": "CAMERA_MATRICES",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "debug_vis",
+          "type": "IMAGE",
+          "links": [8],
+          "slot_index": 1
+        },
+        {
+          "name": "shot_info",
+          "type": "SHOT_INFO",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": [9],
+          "slot_index": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody2abc_CameraSolverV2"
+      },
+      "widgets_values": {
+        "quality": "balanced",
+        "force_shot_type": "auto",
+        "grid_size": 12,
+        "checkpoint_path": "",
+        "debug_visualization": true,
+        "trail_length": 20,
+        "smoothing_window": 5,
+        "min_visible_ratio": 0.3
+      },
+      "title": "📷 Camera Solver V2 (TAPIR)"
+    },
+    {
+      "id": 6,
+      "type": "PreviewImage",
+      "pos": [850, 650],
+      "size": [350, 300],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "title": "🔍 Intrinsics Debug Overlay"
+    },
+    {
+      "id": 7,
+      "type": "PreviewImage",
+      "pos": [1250, 200],
+      "size": [400, 350],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "title": "🌈 TAPIR Rainbow Trail Debug"
+    },
+    {
+      "id": 8,
+      "type": "SAM3DBody2abc_VerifyOverlay",
+      "pos": [850, 1000],
+      "size": [350, 300],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "mesh_data",
+          "type": "SAM3D_OUTPUT",
+          "link": 11
+        }
+      ],
+      "outputs": [
+        {
+          "name": "overlay_image",
+          "type": "IMAGE",
+          "links": [12],
+          "slot_index": 0
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody2abc_VerifyOverlay"
+      },
+      "widgets_values": {
+        "show_joints": true,
+        "show_skeleton": true,
+        "show_mesh": true,
+        "mesh_render_mode": "Solid",
+        "joint_radius": 5,
+        "line_thickness": 2,
+        "joint_color": "green",
+        "skeleton_color": "cyan",
+        "mesh_color": "yellow",
+        "opacity": 0.7
+      },
+      "title": "🔍 Verify Overlay (Reference)"
+    },
+    {
+      "id": 9,
+      "type": "PreviewImage",
+      "pos": [1250, 1000],
+      "size": [400, 300],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 12
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "title": "🔍 VerifyOverlay Result (Compare)"
+    },
+    {
+      "id": 10,
+      "type": "Note",
+      "pos": [50, 50],
+      "size": [700, 130],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "SAM3DBody2abc v5.0 - Corrected Data Flow\n═══════════════════════════════════════════\n\nData Flow:\n1. Video → SAM3DBody Process → mesh_data (contains focal_length)\n2. mesh_data → IntrinsicsFromSAM3DBody → INTRINSICS\n3. Video + INTRINSICS → CameraSolverV2 (TAPIR) → Rainbow trails\n\nThe IntrinsicsFromSAM3DBody node extracts focal length from SAM3DBody's output!"
+      ],
+      "title": "📋 Data Flow"
+    },
+    {
+      "id": 11,
+      "type": "Note",
+      "pos": [1250, 600],
+      "size": [400, 350],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "Expected Focal Length Values:\n════════════════════════════════\n\nFrom your test (1280x720 video):\n• SAM3DBody: 1468.6px\n• With 36mm sensor: ~41.3mm equivalent\n• FOV: ~47°\n\nThis is a reasonable telephoto estimate for\na sports/action camera tracking athletes.\n\nVerify by checking:\n1. VerifyOverlay mesh fits the person\n2. IntrinsicsFromSAM3DBody shows same focal\n3. TAPIR tracks background points correctly\n\nIf TAPIR isn't installed:\n• Rainbow trails won't appear\n• Check ComfyUI console for install instructions"
+      ],
+      "title": "📊 Expected Values"
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 1, "IMAGE"],
+    [2, 1, 0, 4, 1, "IMAGE"],
+    [3, 2, 0, 3, 0, "SAM3D_MODEL"],
+    [4, 3, 0, 4, 0, "SAM3D_OUTPUT"],
+    [5, 4, 0, 5, 1, "INTRINSICS"],
+    [6, 4, 1, 6, 0, "IMAGE"],
+    [7, 4, 3, 10, 0, "STRING"],
+    [8, 5, 1, 7, 0, "IMAGE"],
+    [9, 5, 3, 11, 0, "STRING"],
+    [10, 1, 0, 5, 0, "IMAGE"],
+    [11, 3, 0, 8, 1, "SAM3D_OUTPUT"],
+    [12, 8, 0, 9, 0, "IMAGE"]
+  ],
+  "groups": [
+    {
+      "title": "📥 Input",
+      "bounding": [40, 140, 320, 500],
+      "color": "#3f789e"
+    },
+    {
+      "title": "🧍 SAM3DBody (Single Frame)",
+      "bounding": [410, 140, 370, 750],
+      "color": "#8A8"
+    },
+    {
+      "title": "📷 Camera Solver V2",
+      "bounding": [840, 140, 380, 500],
+      "color": "#A8A"
+    },
+    {
+      "title": "🔍 Debug Comparison",
+      "bounding": [840, 940, 820, 380],
+      "color": "#88A"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6,
+      "offset": [50, 50]
+    }
+  },
+  "version": 0.4
+}
