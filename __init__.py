@@ -79,6 +79,7 @@ _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes
 
 # v5.0 new modules
 _intrinsics_estimator = _load_module("sam3d2abc_intrinsics_estimator", os.path.join(_nodes, "intrinsics_estimator.py"))
+_intrinsics_from_sam3dbody = _load_module("sam3d2abc_intrinsics_from_sam3dbody", os.path.join(_nodes, "intrinsics_from_sam3dbody.py"))
 _camera_solver_v2 = _load_module("sam3d2abc_camera_solver_v2", os.path.join(_nodes, "camera_solver_v2.py"))
 
 # Register accumulator nodes
@@ -166,6 +167,12 @@ if _intrinsics_estimator:
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsInfo"] = "📷 Intrinsics Info"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsFromJSON"] = "📷 Intrinsics from JSON"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsToJSON"] = "📷 Intrinsics to JSON"
+
+# Register v5.0 intrinsics from SAM3DBody (single frame)
+if _intrinsics_from_sam3dbody:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsFromSAM3DBody"] = _intrinsics_from_sam3dbody.IntrinsicsFromSAM3DBody
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsFromSAM3DBody"] = "📷 Intrinsics from SAM3DBody"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

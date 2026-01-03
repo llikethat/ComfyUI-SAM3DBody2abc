@@ -6,19 +6,25 @@ v5.0 stabilization pipeline. It consolidates multiple intrinsics sources with
 clear priority ordering:
 
 Priority Order:
-    1. User Input (manual focal length) - Most trusted
-    2. EXIF Metadata (from video/image files) - Good for phone/DSLR
-    3. MoGe2 Estimation - AI-based estimation (fallback)
-    4. Heuristic - Simple W×1.0 assumption (last resort)
+    1. User Input (manual focal length) - Most trusted, use when you know the camera
+    2. EXIF Metadata (from video/image files) - Good for phone/DSLR with metadata
+    3. SAM3DBody (from mesh_sequence) - Uses SAM3DBody's internal focal estimation
+    4. MoGe2 Estimation - AI-based depth/intrinsics estimation
+    5. Heuristic - Simple W×1.0 assumption (last resort)
 
 Usage in v5.0 Pipeline:
-    Video → IntrinsicsEstimator → INTRINSICS
-                                      ↓
-                    ┌─────────────────┼─────────────────┐
-                    ↓                 ↓                 ↓
-              CameraSolverV2    VideoStabilizer    SAM3DBody
-                    ↓                 ↓                 ↓
-              Camera Solve      Stabilization     Pose Estimation
+    
+    Option A: Intrinsics BEFORE SAM3DBody (for camera solve)
+    ─────────────────────────────────────────────────────────
+    Video → IntrinsicsEstimator → INTRINSICS → CameraSolverV2
+    
+    Option B: Intrinsics FROM SAM3DBody (after pose estimation)
+    ─────────────────────────────────────────────────────────
+    Video → SAM3DBody → MESH_SEQUENCE → IntrinsicsEstimator → INTRINSICS
+    
+    Option C: Compare/validate multiple sources
+    ─────────────────────────────────────────────────────────
+    Both paths → IntrinsicsInfo → Compare focal lengths
 
 The INTRINSICS output is used consistently across all pipeline stages.
 
