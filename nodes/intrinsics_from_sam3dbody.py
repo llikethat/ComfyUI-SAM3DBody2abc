@@ -473,43 +473,65 @@ class IntrinsicsFromSAM3DBody:
         try:
             # Apply camera translation to vertices
             verts = vertices.copy()
+            
+            print(f"[IntrinsicsFromSAM3DBody]   Original vertex bounds:")
+            print(f"[IntrinsicsFromSAM3DBody]     X: [{verts[:, 0].min():.3f}, {verts[:, 0].max():.3f}]")
+            print(f"[IntrinsicsFromSAM3DBody]     Y: [{verts[:, 1].min():.3f}, {verts[:, 1].max():.3f}]")
+            print(f"[IntrinsicsFromSAM3DBody]     Z: [{verts[:, 2].min():.3f}, {verts[:, 2].max():.3f}]")
+            
             if pred_cam_t is not None and len(pred_cam_t) >= 3:
+                print(f"[IntrinsicsFromSAM3DBody]   Applying cam_t: [{pred_cam_t[0]:.3f}, {pred_cam_t[1]:.3f}, {pred_cam_t[2]:.3f}]")
                 verts[:, 0] += pred_cam_t[0]
                 verts[:, 1] += pred_cam_t[1]
                 verts[:, 2] += pred_cam_t[2]
             else:
+                print(f"[IntrinsicsFromSAM3DBody]   No cam_t, using default Z offset")
                 verts[:, 2] += 5.0
             
-            print(f"[IntrinsicsFromSAM3DBody]   Creating trimesh with {len(verts)} vertices...")
+            print(f"[IntrinsicsFromSAM3DBody]   Transformed vertex bounds:")
+            print(f"[IntrinsicsFromSAM3DBody]     X: [{verts[:, 0].min():.3f}, {verts[:, 0].max():.3f}]")
+            print(f"[IntrinsicsFromSAM3DBody]     Y: [{verts[:, 1].min():.3f}, {verts[:, 1].max():.3f}]")
+            print(f"[IntrinsicsFromSAM3DBody]     Z: [{verts[:, 2].min():.3f}, {verts[:, 2].max():.3f}]")
             
-            # Create trimesh
+            # Create trimesh with vertex colors
             mesh_color = np.array([color_rgb[0], color_rgb[1], color_rgb[2], 255]) / 255.0
             tri_mesh = trimesh.Trimesh(vertices=verts, faces=faces)
             tri_mesh.visual.vertex_colors = np.tile(mesh_color, (len(verts), 1))
             
             print(f"[IntrinsicsFromSAM3DBody]   Creating pyrender mesh...")
             
-            # Create pyrender mesh
-            mesh = pyrender.Mesh.from_trimesh(tri_mesh, smooth=True)
+            # Create pyrender mesh with material for better visibility
+            material = pyrender.MetallicRoughnessMaterial(
+                metallicFactor=0.0,
+                roughnessFactor=0.8,
+                baseColorFactor=[color_rgb[0]/255, color_rgb[1]/255, color_rgb[2]/255, 1.0]
+            )
+            mesh = pyrender.Mesh.from_trimesh(tri_mesh, material=material, smooth=True)
             
-            # Create scene
-            scene = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=[0.3, 0.3, 0.3])
+            # Create scene with background
+            scene = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=[0.5, 0.5, 0.5])
             scene.add(mesh)
             
-            # Add light
-            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=2.0)
+            # Add directional light from camera direction
+            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
             light_pose = np.eye(4)
-            light_pose[:3, 3] = [0, 0, 2]
             scene.add(light, pose=light_pose)
             
-            # Create camera
+            # Add point light for fill
+            point_light = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=10.0)
+            point_light_pose = np.eye(4)
+            point_light_pose[:3, 3] = [0, 0, 2]  # In front of camera
+            scene.add(point_light, pose=point_light_pose)
+            
+            # Create camera with intrinsics
+            # pyrender uses OpenGL convention: +X right, +Y up, -Z into screen
             camera = pyrender.IntrinsicsCamera(
                 fx=focal_length, fy=focal_length,
                 cx=W/2, cy=H/2,
-                znear=0.1, zfar=100.0
+                znear=0.01, zfar=100.0
             )
             
-            # Camera pose (looking down -Z axis, Y up)
+            # Camera at origin, looking down -Z
             camera_pose = np.eye(4)
             scene.add(camera, pose=camera_pose)
             
@@ -520,7 +542,14 @@ class IntrinsicsFromSAM3DBody:
             color, depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
             renderer.delete()
             
-            print(f"[IntrinsicsFromSAM3DBody]   Render complete, output shape: {color.shape}")
+            # Check if anything was rendered
+            non_zero_pixels = np.sum(color[:, :, 3] > 0)
+            print(f"[IntrinsicsFromSAM3DBody]   Render complete, non-zero alpha pixels: {non_zero_pixels}")
+            print(f"[IntrinsicsFromSAM3DBody]   Depth range: [{depth[depth > 0].min() if np.any(depth > 0) else 'none'}, {depth.max():.3f}]")
+            
+            if non_zero_pixels == 0:
+                print(f"[IntrinsicsFromSAM3DBody]   ⚠️ No pixels rendered! Mesh may be outside view.")
+                return None
             
             # Convert to BGR for OpenCV
             color_bgr = cv2.cvtColor(color[:, :, :3], cv2.COLOR_RGB2BGR)

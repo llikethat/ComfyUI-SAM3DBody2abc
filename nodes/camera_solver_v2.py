@@ -46,14 +46,37 @@ TAPIR_AVAILABLE = False
 TAPIR_IMPORT_ERROR = None
 print("[CameraSolverV2] Attempting to import TAPIR...")
 try:
-    from tapnet.torch import tapir_model
-    from tapnet.utils import transforms as tapir_transforms
-    TAPIR_AVAILABLE = True
-    print("[CameraSolverV2] ✅ TAPIR module imported successfully")
+    # Import only the torch components we need, avoiding tensorflow dependency
+    import sys
+    
+    # Block tensorflow import to avoid the dependency issue
+    class TensorFlowBlocker:
+        def find_module(self, name, path=None):
+            if name == 'tensorflow' or name.startswith('tensorflow.'):
+                return self
+            return None
+        def load_module(self, name):
+            raise ImportError(f"TensorFlow import blocked - not needed for TAPIR torch inference")
+    
+    # Temporarily block tensorflow
+    tf_blocker = TensorFlowBlocker()
+    sys.meta_path.insert(0, tf_blocker)
+    
+    try:
+        from tapnet.torch import tapir_model
+        from tapnet.utils import transforms as tapir_transforms
+        TAPIR_AVAILABLE = True
+        print("[CameraSolverV2] ✅ TAPIR module imported successfully (TensorFlow blocked)")
+    finally:
+        # Remove the blocker
+        if tf_blocker in sys.meta_path:
+            sys.meta_path.remove(tf_blocker)
+            
 except ImportError as e:
     TAPIR_IMPORT_ERROR = str(e)
     print(f"[CameraSolverV2] ❌ TAPIR ImportError: {e}")
-    print("[CameraSolverV2] Install with: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
+    print("[CameraSolverV2] Try: pip install tensorflow")
+    print("[CameraSolverV2] Or: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
 except Exception as e:
     TAPIR_IMPORT_ERROR = str(e)
     print(f"[CameraSolverV2] ❌ TAPIR import failed with unexpected error: {type(e).__name__}: {e}")
