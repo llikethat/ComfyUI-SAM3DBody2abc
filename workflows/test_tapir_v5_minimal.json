@@ -1,0 +1,276 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 12,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [50, 200],
+      "size": [315, 314],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [1, 2],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "example.png",
+        "image"
+      ],
+      "title": "📥 Load Test Image (or use LoadImageSequence)"
+    },
+    {
+      "id": 2,
+      "type": "SAM3DBody2abc_IntrinsicsEstimator",
+      "pos": [450, 50],
+      "size": [350, 320],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "intrinsics",
+          "type": "INTRINSICS",
+          "links": [3, 7],
+          "slot_index": 0
+        },
+        {
+          "name": "focal_length_mm",
+          "type": "FLOAT",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": [4],
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody2abc_IntrinsicsEstimator"
+      },
+      "widgets_values": {
+        "focal_length_mm": 0,
+        "sensor_preset": "full_frame",
+        "sensor_width_mm": 36,
+        "source_path": "",
+        "use_moge2": false,
+        "moge2_sample_frames": 5,
+        "per_frame_estimation": false,
+        "verbose": true
+      },
+      "title": "📷 Intrinsics Estimator (v5.0)"
+    },
+    {
+      "id": 3,
+      "type": "SAM3DBody2abc_CameraSolverV2",
+      "pos": [450, 420],
+      "size": [350, 420],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "intrinsics",
+          "type": "INTRINSICS",
+          "link": 3
+        },
+        {
+          "name": "foreground_mask",
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "camera_matrices",
+          "type": "CAMERA_MATRICES",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "debug_vis",
+          "type": "IMAGE",
+          "links": [5],
+          "slot_index": 1
+        },
+        {
+          "name": "shot_info",
+          "type": "SHOT_INFO",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": [6],
+          "slot_index": 3
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody2abc_CameraSolverV2"
+      },
+      "widgets_values": {
+        "quality": "balanced",
+        "force_shot_type": "auto",
+        "grid_size": 10,
+        "checkpoint_path": "",
+        "debug_visualization": true,
+        "trail_length": 20,
+        "smoothing_window": 5,
+        "min_visible_ratio": 0.3
+      },
+      "title": "📷 Camera Solver V2 (TAPIR)"
+    },
+    {
+      "id": 4,
+      "type": "PreviewImage",
+      "pos": [900, 420],
+      "size": [450, 400],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 5
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "title": "🌈 Rainbow Trail Debug Visualization"
+    },
+    {
+      "id": 5,
+      "type": "Note",
+      "pos": [900, 50],
+      "size": [450, 150],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "SAM3DBody2abc v5.0 Test Workflow\n=====================================\n\nThis workflow tests the new TAPIR-based camera solver.\n\nRequirements:\n1. TAPIR installed: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'\n2. Checkpoint downloaded to models/tapir/bootstapir_checkpoint_v2.pt\n\nFor video input, use VHS_LoadVideo or LoadImageSequence node.\n\nExpected Output:\n- Rainbow trail visualization showing tracked points\n- Shot classification (static/rotation/translation/mixed)\n- Camera matrices for each frame"
+      ],
+      "title": "📋 Instructions"
+    },
+    {
+      "id": 6,
+      "type": "Note",
+      "pos": [900, 220],
+      "size": [450, 180],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "properties": {
+        "text": ""
+      },
+      "widgets_values": [
+        "Intrinsics Status: [Connect ShowText node to see]\n\nCamera Solver Status: [Connect ShowText node to see]\n\nIf TAPIR is not installed, the solver will fall back to 'static' mode and return the original images without rainbow trails.\n\nCheck the ComfyUI console for detailed debug output."
+      ],
+      "title": "📊 Status (check console)"
+    },
+    {
+      "id": 7,
+      "type": "SAM3DBody2abc_IntrinsicsInfo",
+      "pos": [450, 880],
+      "size": [350, 150],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "intrinsics",
+          "type": "INTRINSICS",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "validation_passed",
+          "type": "BOOLEAN",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SAM3DBody2abc_IntrinsicsInfo"
+      },
+      "widgets_values": {
+        "expected_focal_mm": 0,
+        "tolerance_percent": 10
+      },
+      "title": "📷 Intrinsics Info (prints to console)"
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 1, 0, 3, 0, "IMAGE"],
+    [3, 2, 0, 3, 1, "INTRINSICS"],
+    [4, 2, 2, 5, 0, "STRING"],
+    [5, 3, 1, 4, 0, "IMAGE"],
+    [6, 3, 3, 6, 0, "STRING"],
+    [7, 2, 0, 7, 0, "INTRINSICS"]
+  ],
+  "groups": [
+    {
+      "title": "📥 Input",
+      "bounding": [40, 140, 340, 380],
+      "color": "#3f789e"
+    },
+    {
+      "title": "📷 v5.0 Nodes",
+      "bounding": [440, 40, 370, 1010],
+      "color": "#8A8"
+    },
+    {
+      "title": "🔍 Output",
+      "bounding": [890, 40, 470, 790],
+      "color": "#88A"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8,
+      "offset": [0, 0]
+    }
+  },
+  "version": 0.4
+}

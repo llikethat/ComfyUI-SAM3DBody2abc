@@ -1,28 +1,45 @@
 """
 SAM3DBody2abc - Video to Animated FBX Export
 
-Extends SAM3DBody with video processing and animated FBX export.
+v5.0 Architecture: Stabilization-First Pipeline
+================================================
 
-Workflow:
-    Load Video → SAM3 Segmentation → SAM3 Extract Masks
-                                            ↓
-    Load SAM3DBody → 🎬 Video Batch Processor ←──┘
-                              ↓
-                   📦 Export Animated FBX
+The v5.0 pipeline removes camera motion BEFORE pose estimation:
 
-Outputs match SAM3DBody Process:
-- mesh_data (SAM3D_OUTPUT) → vertices, faces, joint_coords
-- Uses SAM3DBodyExportFBX format for single frames
-- Animated FBX has shape keys + skeleton keyframes
+    Video Input
+        │
+        ├──► SAM3 Segmentation ──► Foreground Mask
+        │
+        ├──► Intrinsics Estimator ──► Camera K
+        │                                │
+        └──► Camera Solver V2 ◄──────────┘
+                    │
+                    ├── TAPIR background tracking
+                    ├── Shot classification (rotation/translation/mixed)
+                    ├── Camera solve
+                    │
+                    ▼
+             Video Stabilizer ──► Stabilized Frames
+                    │
+                    ▼
+             SAM3DBody ◄── External intrinsics
+                    │
+                    ▼
+             FBX Export ◄── Restore camera motion
 
-Fixed settings:
-- Scale: 1.0
-- Up axis: Y
+Key v5.0 Features:
+- TAPIR-based temporal point tracking (not frame-pair matching)
+- Automatic shot type classification
+- Video stabilization before pose estimation
+- Rainbow trail debug visualization
+- Unified intrinsics source
 
-Version: 3.1.0
+Legacy v4.x nodes are still available with "(Legacy v4)" suffix.
+
+Version: 5.0.0
 """
 
-__version__ = "4.6.8"
+__version__ = "5.0.0"
 
 import os
 import sys
@@ -59,6 +76,10 @@ _camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "c
 _moge_intrinsics = _load_module("sam3d2abc_moge_intrinsics", os.path.join(_nodes, "moge_intrinsics.py"))
 _colmap_bridge = _load_module("sam3d2abc_colmap_bridge", os.path.join(_nodes, "colmap_bridge.py"))
 _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes, "motion_analyzer.py"))
+
+# v5.0 new modules
+_intrinsics_estimator = _load_module("sam3d2abc_intrinsics_estimator", os.path.join(_nodes, "intrinsics_estimator.py"))
+_camera_solver_v2 = _load_module("sam3d2abc_camera_solver_v2", os.path.join(_nodes, "camera_solver_v2.py"))
 
 # Register accumulator nodes
 if _accumulator:
@@ -99,10 +120,18 @@ if _verify_overlay:
 # Register camera solver nodes
 if _camera_solver:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraSolver"] = _camera_solver.CameraSolver
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraSolverLegacy"] = _camera_solver.CameraSolver  # Alias for backwards compat
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = _camera_solver.CameraDataFromJSON
     
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolver"] = "📷 Camera Solver"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolver"] = "📷 Camera Solver (Legacy v4)"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolverLegacy"] = "📷 Camera Solver (Legacy v4)"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = "📷 Camera Extrinsics from JSON"
+
+# Register v5.0 Camera Solver V2 (TAPIR-based)
+if _camera_solver_v2:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraSolverV2"] = _camera_solver_v2.CameraSolverV2
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolverV2"] = "📷 Camera Solver V2 (TAPIR)"
 
 # Register COLMAP bridge node
 if _colmap_bridge:
@@ -125,6 +154,18 @@ if _motion_analyzer:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MotionAnalyzer"] = "📊 Motion Analyzer"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ScaleInfoDisplay"] = "📏 Scale Info Display"
+
+# Register v5.0 intrinsics estimator nodes
+if _intrinsics_estimator:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsEstimator"] = _intrinsics_estimator.IntrinsicsEstimator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsInfo"] = _intrinsics_estimator.IntrinsicsInfo
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsFromJSON"] = _intrinsics_estimator.IntrinsicsFromJSON
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsToJSON"] = _intrinsics_estimator.IntrinsicsToJSON
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsEstimator"] = "📷 Intrinsics Estimator (v5.0)"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsInfo"] = "📷 Intrinsics Info"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsFromJSON"] = "📷 Intrinsics from JSON"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsToJSON"] = "📷 Intrinsics to JSON"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
