@@ -339,6 +339,10 @@ class IntrinsicsFromSAM3DBody:
     ) -> torch.Tensor:
         """Generate debug overlay with mesh, skeleton, and mask outline."""
         
+        print(f"[IntrinsicsFromSAM3DBody] _generate_overlay called")
+        print(f"[IntrinsicsFromSAM3DBody]   render_mode: {render_mode}, mesh_color: {mesh_color}")
+        print(f"[IntrinsicsFromSAM3DBody]   PYRENDER_AVAILABLE: {PYRENDER_AVAILABLE}")
+        
         # Get the selected frame
         frame = images[frame_idx]
         
@@ -350,6 +354,7 @@ class IntrinsicsFromSAM3DBody:
             frame_np = frame_np.astype(np.uint8)
         
         overlay = frame_np.copy()
+        print(f"[IntrinsicsFromSAM3DBody]   Frame shape: {frame_np.shape}")
         
         # Get mesh data
         vertices = to_numpy(mesh_data.get("vertices"))
@@ -360,34 +365,51 @@ class IntrinsicsFromSAM3DBody:
         if faces is not None and faces.ndim == 3:
             faces = faces[0]
         
+        print(f"[IntrinsicsFromSAM3DBody]   Vertices: {vertices.shape if vertices is not None else None}")
+        print(f"[IntrinsicsFromSAM3DBody]   Faces: {faces.shape if faces is not None else None}")
+        
         # Render mesh
         if vertices is not None and faces is not None:
             color_rgb = self._parse_color(mesh_color)
+            print(f"[IntrinsicsFromSAM3DBody]   Color RGB: {color_rgb}")
             
             if render_mode == "solid" and PYRENDER_AVAILABLE:
+                print(f"[IntrinsicsFromSAM3DBody]   Using pyrender for solid rendering...")
                 # Use pyrender for high-quality solid rendering
                 mesh_render = self._render_mesh_pyrender(
                     vertices, faces, focal_length, pred_cam_t, W, H, color_rgb
                 )
                 if mesh_render is not None:
+                    print(f"[IntrinsicsFromSAM3DBody]   pyrender output shape: {mesh_render.shape}")
                     # Blend mesh render with original image
                     mask_render = (mesh_render.sum(axis=2) > 0).astype(np.float32)
                     mask_render = np.stack([mask_render] * 3, axis=2)
                     overlay = (overlay * (1 - mask_render * opacity) + 
                               mesh_render * mask_render * opacity).astype(np.uint8)
+                    print(f"[IntrinsicsFromSAM3DBody]   ✅ pyrender blend complete")
+                else:
+                    print(f"[IntrinsicsFromSAM3DBody]   ❌ pyrender returned None, falling back to OpenCV")
+                    overlay = self._render_mesh_solid_cv(
+                        overlay, vertices, faces, focal_length, pred_cam_t, W, H, color_rgb, opacity
+                    )
             elif render_mode == "solid":
+                print(f"[IntrinsicsFromSAM3DBody]   Using OpenCV fallback for solid rendering...")
                 # Fallback solid rendering with OpenCV
                 overlay = self._render_mesh_solid_cv(
                     overlay, vertices, faces, focal_length, pred_cam_t, W, H, color_rgb, opacity
                 )
             elif render_mode == "wireframe":
+                print(f"[IntrinsicsFromSAM3DBody]   Using wireframe rendering...")
                 overlay = self._render_mesh_wireframe(
                     overlay, vertices, faces, focal_length, pred_cam_t, W, H, color_rgb, opacity
                 )
             else:  # points
+                print(f"[IntrinsicsFromSAM3DBody]   Using points rendering...")
                 overlay = self._render_mesh_points(
                     overlay, vertices, focal_length, pred_cam_t, W, H, color_rgb, opacity
                 )
+        else:
+            print(f"[IntrinsicsFromSAM3DBody]   ❌ No vertices or faces found, skipping mesh render")
         
         # Draw mask outline
         if show_mask_outline and mask is not None:
@@ -442,7 +464,10 @@ class IntrinsicsFromSAM3DBody:
     ) -> Optional[np.ndarray]:
         """Render mesh using pyrender for high-quality output."""
         
+        print(f"[IntrinsicsFromSAM3DBody] _render_mesh_pyrender called")
+        
         if not PYRENDER_AVAILABLE:
+            print(f"[IntrinsicsFromSAM3DBody]   pyrender not available")
             return None
         
         try:
@@ -455,10 +480,14 @@ class IntrinsicsFromSAM3DBody:
             else:
                 verts[:, 2] += 5.0
             
+            print(f"[IntrinsicsFromSAM3DBody]   Creating trimesh with {len(verts)} vertices...")
+            
             # Create trimesh
             mesh_color = np.array([color_rgb[0], color_rgb[1], color_rgb[2], 255]) / 255.0
             tri_mesh = trimesh.Trimesh(vertices=verts, faces=faces)
             tri_mesh.visual.vertex_colors = np.tile(mesh_color, (len(verts), 1))
+            
+            print(f"[IntrinsicsFromSAM3DBody]   Creating pyrender mesh...")
             
             # Create pyrender mesh
             mesh = pyrender.Mesh.from_trimesh(tri_mesh, smooth=True)
@@ -484,10 +513,14 @@ class IntrinsicsFromSAM3DBody:
             camera_pose = np.eye(4)
             scene.add(camera, pose=camera_pose)
             
+            print(f"[IntrinsicsFromSAM3DBody]   Rendering {W}x{H}...")
+            
             # Render
             renderer = pyrender.OffscreenRenderer(W, H)
             color, depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
             renderer.delete()
+            
+            print(f"[IntrinsicsFromSAM3DBody]   Render complete, output shape: {color.shape}")
             
             # Convert to BGR for OpenCV
             color_bgr = cv2.cvtColor(color[:, :, :3], cv2.COLOR_RGB2BGR)
@@ -495,7 +528,9 @@ class IntrinsicsFromSAM3DBody:
             return color_bgr
             
         except Exception as e:
-            print(f"[IntrinsicsFromSAM3DBody] pyrender error: {e}")
+            print(f"[IntrinsicsFromSAM3DBody] ❌ pyrender error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _render_mesh_solid_cv(

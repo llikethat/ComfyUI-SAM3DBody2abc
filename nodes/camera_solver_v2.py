@@ -44,6 +44,7 @@ from enum import Enum
 # Check for TAPIR availability
 TAPIR_AVAILABLE = False
 TAPIR_IMPORT_ERROR = None
+print("[CameraSolverV2] Attempting to import TAPIR...")
 try:
     from tapnet.torch import tapir_model
     from tapnet.utils import transforms as tapir_transforms
@@ -51,8 +52,13 @@ try:
     print("[CameraSolverV2] ✅ TAPIR module imported successfully")
 except ImportError as e:
     TAPIR_IMPORT_ERROR = str(e)
-    print(f"[CameraSolverV2] ❌ TAPIR import failed: {e}")
+    print(f"[CameraSolverV2] ❌ TAPIR ImportError: {e}")
     print("[CameraSolverV2] Install with: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
+except Exception as e:
+    TAPIR_IMPORT_ERROR = str(e)
+    print(f"[CameraSolverV2] ❌ TAPIR import failed with unexpected error: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
 
 
 class ShotType(Enum):
