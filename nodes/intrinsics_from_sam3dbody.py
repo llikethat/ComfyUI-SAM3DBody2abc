@@ -141,99 +141,135 @@ class IntrinsicsFromSAM3DBody:
         Extract intrinsics from SAM3DBody mesh_data.
         """
         
-        num_frames = images.shape[0]
-        H, W = images.shape[1], images.shape[2]
-        
-        # Select reference frame for overlay
-        if frame_selection == "first":
-            frame_idx = 0
-        elif frame_selection == "middle":
-            frame_idx = num_frames // 2
-        elif frame_selection == "last":
-            frame_idx = num_frames - 1
-        else:  # specific
-            frame_idx = min(specific_frame, num_frames - 1)
-        
-        print(f"\n{'='*60}")
-        print(f"[IntrinsicsFromSAM3DBody] Extracting intrinsics from mesh_data")
-        print(f"[IntrinsicsFromSAM3DBody] Video: {num_frames} frames, {W}x{H}")
-        print(f"[IntrinsicsFromSAM3DBody] Debug overlay frame: {frame_idx}")
-        print(f"[IntrinsicsFromSAM3DBody] mesh_data keys: {list(mesh_data.keys())}")
-        print(f"{'='*60}")
-        
-        # Extract focal length
-        focal_length_px = mesh_data.get("focal_length")
-        if focal_length_px is None:
-            print("[IntrinsicsFromSAM3DBody] WARNING: No focal_length in mesh_data, using fallback")
-            focal_length_px = float(W)  # Fallback to image width
-        else:
-            if hasattr(focal_length_px, 'item'):
-                focal_length_px = float(focal_length_px.item())
-            elif hasattr(focal_length_px, 'cpu'):
-                focal_length_px = float(focal_length_px.cpu().numpy())
+        try:
+            num_frames = images.shape[0]
+            H, W = images.shape[1], images.shape[2]
+            
+            # Select reference frame for overlay
+            if frame_selection == "first":
+                frame_idx = 0
+            elif frame_selection == "middle":
+                frame_idx = num_frames // 2
+            elif frame_selection == "last":
+                frame_idx = num_frames - 1
+            else:  # specific
+                frame_idx = min(specific_frame, num_frames - 1)
+            
+            print(f"\n{'='*60}")
+            print(f"[IntrinsicsFromSAM3DBody] Extracting intrinsics from mesh_data")
+            print(f"[IntrinsicsFromSAM3DBody] Video: {num_frames} frames, {W}x{H}")
+            print(f"[IntrinsicsFromSAM3DBody] Debug overlay frame: {frame_idx}")
+            print(f"[IntrinsicsFromSAM3DBody] mesh_data keys: {list(mesh_data.keys())}")
+            print(f"{'='*60}")
+            
+            # Extract focal length
+            focal_length_px = mesh_data.get("focal_length")
+            if focal_length_px is None:
+                print("[IntrinsicsFromSAM3DBody] WARNING: No focal_length in mesh_data, using fallback")
+                focal_length_px = float(W)  # Fallback to image width
             else:
-                focal_length_px = float(focal_length_px)
-        
-        print(f"[IntrinsicsFromSAM3DBody] Focal length: {focal_length_px:.1f}px")
-        
-        # Extract camera translation
-        pred_cam_t = mesh_data.get("camera")
-        if pred_cam_t is None:
-            pred_cam_t = mesh_data.get("pred_cam_t")
-        
-        cam_t_list = None
-        pred_cam_t_np = None
-        if pred_cam_t is not None:
-            pred_cam_t_np = to_numpy(pred_cam_t)
-            if pred_cam_t_np is not None:
-                if pred_cam_t_np.ndim > 1:
-                    pred_cam_t_np = pred_cam_t_np.flatten()[:3]
-                cam_t_list = pred_cam_t_np.tolist()
-                print(f"[IntrinsicsFromSAM3DBody] pred_cam_t: [{pred_cam_t_np[0]:.3f}, {pred_cam_t_np[1]:.3f}, {pred_cam_t_np[2]:.3f}]")
-        
-        # Convert to mm
-        focal_length_mm = focal_length_px * sensor_width_mm / W
-        
-        # Compute FOV
-        fov_x_deg = 2 * np.degrees(np.arctan(W / (2 * focal_length_px)))
-        fov_y_deg = 2 * np.degrees(np.arctan(H / (2 * focal_length_px)))
-        
-        # Build INTRINSICS output
-        intrinsics = {
-            "focal_px": float(focal_length_px),
-            "focal_mm": float(focal_length_mm),
-            "sensor_width_mm": float(sensor_width_mm),
-            "cx": float(W / 2),
-            "cy": float(H / 2),
-            "width": int(W),
-            "height": int(H),
-            "fov_x_deg": float(fov_x_deg),
-            "fov_y_deg": float(fov_y_deg),
-            "aspect_ratio": float(W / H),
-            "source": "sam3dbody",
-            "confidence": 0.85,
-            "k_matrix": [
-                [focal_length_px, 0.0, W / 2],
-                [0.0, focal_length_px, H / 2],
-                [0.0, 0.0, 1.0]
-            ],
-            "pred_cam_t": cam_t_list,
-            "reference_frame": frame_idx,
-            "per_frame": None,
-            "is_variable": False,
-        }
-        
-        # Generate debug overlay
-        debug_overlay = self._generate_overlay(
-            images, frame_idx, mesh_data, focal_length_px, pred_cam_t_np,
-            W, H, overlay_opacity, show_skeleton, show_mesh,
-            mask, show_mask_outline
-        )
-        
-        status = f"SAM3DBody: {focal_length_mm:.1f}mm ({fov_x_deg:.1f}° FOV)"
-        print(f"[IntrinsicsFromSAM3DBody] {status}")
-        
-        return (intrinsics, debug_overlay, focal_length_mm, status)
+                if hasattr(focal_length_px, 'item'):
+                    focal_length_px = float(focal_length_px.item())
+                elif hasattr(focal_length_px, 'cpu'):
+                    focal_length_px = float(focal_length_px.cpu().numpy())
+                else:
+                    focal_length_px = float(focal_length_px)
+            
+            print(f"[IntrinsicsFromSAM3DBody] Focal length: {focal_length_px:.1f}px")
+            
+            # Extract camera translation
+            pred_cam_t = mesh_data.get("camera")
+            if pred_cam_t is None:
+                pred_cam_t = mesh_data.get("pred_cam_t")
+            
+            cam_t_list = None
+            pred_cam_t_np = None
+            if pred_cam_t is not None:
+                pred_cam_t_np = to_numpy(pred_cam_t)
+                if pred_cam_t_np is not None:
+                    if pred_cam_t_np.ndim > 1:
+                        pred_cam_t_np = pred_cam_t_np.flatten()[:3]
+                    cam_t_list = pred_cam_t_np.tolist()
+                    print(f"[IntrinsicsFromSAM3DBody] pred_cam_t: [{pred_cam_t_np[0]:.3f}, {pred_cam_t_np[1]:.3f}, {pred_cam_t_np[2]:.3f}]")
+            
+            # Convert to mm
+            focal_length_mm = focal_length_px * sensor_width_mm / W
+            
+            # Compute FOV
+            fov_x_deg = 2 * np.degrees(np.arctan(W / (2 * focal_length_px)))
+            fov_y_deg = 2 * np.degrees(np.arctan(H / (2 * focal_length_px)))
+            
+            # Build INTRINSICS output
+            intrinsics = {
+                "focal_px": float(focal_length_px),
+                "focal_mm": float(focal_length_mm),
+                "sensor_width_mm": float(sensor_width_mm),
+                "cx": float(W / 2),
+                "cy": float(H / 2),
+                "width": int(W),
+                "height": int(H),
+                "fov_x_deg": float(fov_x_deg),
+                "fov_y_deg": float(fov_y_deg),
+                "aspect_ratio": float(W / H),
+                "source": "sam3dbody",
+                "confidence": 0.85,
+                "k_matrix": [
+                    [focal_length_px, 0.0, W / 2],
+                    [0.0, focal_length_px, H / 2],
+                    [0.0, 0.0, 1.0]
+                ],
+                "pred_cam_t": cam_t_list,
+                "reference_frame": frame_idx,
+                "per_frame": None,
+                "is_variable": False,
+            }
+            
+            # Generate debug overlay
+            debug_overlay = self._generate_overlay(
+                images, frame_idx, mesh_data, focal_length_px, pred_cam_t_np,
+                W, H, overlay_opacity, show_skeleton, show_mesh,
+                mask, show_mask_outline
+            )
+            
+            status = f"SAM3DBody: {focal_length_mm:.1f}mm ({fov_x_deg:.1f}° FOV)"
+            print(f"[IntrinsicsFromSAM3DBody] {status}")
+            
+            return (intrinsics, debug_overlay, float(focal_length_mm), status)
+            
+        except Exception as e:
+            print(f"[IntrinsicsFromSAM3DBody] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return fallback values
+            H, W = images.shape[1], images.shape[2]
+            focal_length_px = float(W)
+            focal_length_mm = focal_length_px * sensor_width_mm / W
+            
+            intrinsics = {
+                "focal_px": focal_length_px,
+                "focal_mm": focal_length_mm,
+                "sensor_width_mm": float(sensor_width_mm),
+                "cx": float(W / 2),
+                "cy": float(H / 2),
+                "width": int(W),
+                "height": int(H),
+                "fov_x_deg": 53.0,
+                "fov_y_deg": 30.0,
+                "aspect_ratio": float(W / H),
+                "source": "fallback",
+                "confidence": 0.0,
+                "k_matrix": [[focal_length_px, 0.0, W/2], [0.0, focal_length_px, H/2], [0.0, 0.0, 1.0]],
+                "pred_cam_t": None,
+                "reference_frame": 0,
+                "per_frame": None,
+                "is_variable": False,
+            }
+            
+            # Return first frame as fallback overlay
+            debug_overlay = images[0:1].clone()
+            
+            return (intrinsics, debug_overlay, float(focal_length_mm), f"ERROR: {str(e)}")
     
     def _generate_overlay(
         self,
@@ -298,7 +334,10 @@ class IntrinsicsFromSAM3DBody:
             vertices = vertices[0]
         
         # Get joints
-        joints = to_numpy(mesh_data.get("joint_coords") or mesh_data.get("joints"))
+        joints = mesh_data.get("joint_coords")
+        if joints is None:
+            joints = mesh_data.get("joints")
+        joints = to_numpy(joints)
         if joints is not None and joints.ndim == 3:
             joints = joints[0]
         
