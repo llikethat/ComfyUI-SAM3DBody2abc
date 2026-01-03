@@ -43,14 +43,16 @@ from enum import Enum
 
 # Check for TAPIR availability
 TAPIR_AVAILABLE = False
+TAPIR_IMPORT_ERROR = None
 try:
     from tapnet.torch import tapir_model
     from tapnet.utils import transforms as tapir_transforms
     TAPIR_AVAILABLE = True
-    print("[CameraSolverV2] TAPIR available")
-except ImportError:
-    print("[CameraSolverV2] TAPIR not installed. Install with:")
-    print("  pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
+    print("[CameraSolverV2] ✅ TAPIR module imported successfully")
+except ImportError as e:
+    TAPIR_IMPORT_ERROR = str(e)
+    print(f"[CameraSolverV2] ❌ TAPIR import failed: {e}")
+    print("[CameraSolverV2] Install with: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
 
 
 class ShotType(Enum):
@@ -189,42 +191,55 @@ class CameraSolverV2:
     
     def _load_tapir(self, checkpoint_path: str = "") -> bool:
         """Load TAPIR model."""
+        print(f"[CameraSolverV2] _load_tapir called, TAPIR_AVAILABLE={TAPIR_AVAILABLE}")
+        
         if not TAPIR_AVAILABLE:
+            print("[CameraSolverV2] TAPIR module not available, cannot load")
             return False
         
         if self.tapir_model is not None and self._checkpoint_loaded == checkpoint_path:
+            print(f"[CameraSolverV2] TAPIR already loaded from: {self._checkpoint_loaded}")
             return True
         
         # Resolve checkpoint path
         if not checkpoint_path:
-            # Get ComfyUI base path (go up from custom_nodes/SAM3DBody2abc/nodes/)
-            current_dir = os.path.dirname(__file__)
-            custom_nodes_dir = os.path.dirname(os.path.dirname(current_dir))
-            comfyui_dir = os.path.dirname(custom_nodes_dir)
+            # Get paths relative to this file
+            current_dir = os.path.dirname(os.path.abspath(__file__))  # nodes/
+            extension_dir = os.path.dirname(current_dir)  # ComfyUI-SAM3DBody2abc/
+            custom_nodes_dir = os.path.dirname(extension_dir)  # custom_nodes/
+            comfyui_dir = os.path.dirname(custom_nodes_dir)  # ComfyUI/
+            
+            print(f"[CameraSolverV2] Path resolution:")
+            print(f"[CameraSolverV2]   current_dir: {current_dir}")
+            print(f"[CameraSolverV2]   extension_dir: {extension_dir}")
+            print(f"[CameraSolverV2]   custom_nodes_dir: {custom_nodes_dir}")
+            print(f"[CameraSolverV2]   comfyui_dir: {comfyui_dir}")
             
             # Search order:
             # 1. ComfyUI/models/tapir/ (standard ComfyUI convention)
-            # 2. SAM3DBody2abc/models/tapir/ (self-contained fallback)
+            # 2. ComfyUI-SAM3DBody2abc/models/tapir/ (self-contained)
             # 3. ~/.cache/tapir/ (user cache)
             # 4. Current working directory
             possible_paths = [
                 # Standard ComfyUI models path
                 os.path.join(comfyui_dir, "models", "tapir", "bootstapir_checkpoint_v2.pt"),
-                # Self-contained in extension
-                os.path.join(os.path.dirname(current_dir), "models", "tapir", "bootstapir_checkpoint_v2.pt"),
+                # Self-contained in extension (FIXED PATH)
+                os.path.join(extension_dir, "models", "tapir", "bootstapir_checkpoint_v2.pt"),
                 # User cache
                 os.path.expanduser("~/.cache/tapir/bootstapir_checkpoint_v2.pt"),
                 # Current directory
                 "bootstapir_checkpoint_v2.pt",
             ]
-            for path in possible_paths:
-                if os.path.exists(path):
+            
+            print(f"[CameraSolverV2] Searching for checkpoint in:")
+            for i, path in enumerate(possible_paths, 1):
+                exists = os.path.exists(path)
+                print(f"[CameraSolverV2]   {i}. {path} -> {'FOUND' if exists else 'not found'}")
+                if exists and not checkpoint_path:
                     checkpoint_path = path
-                    print(f"[CameraSolverV2] Found checkpoint at: {path}")
-                    break
         
         if not checkpoint_path or not os.path.exists(checkpoint_path):
-            print(f"[CameraSolverV2] TAPIR checkpoint not found!")
+            print(f"[CameraSolverV2] ❌ TAPIR checkpoint not found!")
             print(f"[CameraSolverV2] Download from: https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt")
             print(f"[CameraSolverV2] Place in one of these locations:")
             print(f"[CameraSolverV2]   1. ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt (recommended)")
@@ -234,14 +249,18 @@ class CameraSolverV2:
         try:
             print(f"[CameraSolverV2] Loading TAPIR from {checkpoint_path}...")
             self.tapir_model = tapir_model.TAPIR(pyramid_level=1)
+            print(f"[CameraSolverV2] TAPIR model created, loading weights...")
             self.tapir_model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
+            print(f"[CameraSolverV2] Weights loaded, moving to {self.device}...")
             self.tapir_model = self.tapir_model.to(self.device)
             self.tapir_model.eval()
             self._checkpoint_loaded = checkpoint_path
-            print(f"[CameraSolverV2] TAPIR loaded on {self.device}")
+            print(f"[CameraSolverV2] ✅ TAPIR loaded successfully on {self.device}")
             return True
         except Exception as e:
-            print(f"[CameraSolverV2] Failed to load TAPIR: {e}")
+            print(f"[CameraSolverV2] ❌ Failed to load TAPIR: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def solve(
@@ -274,11 +293,17 @@ class CameraSolverV2:
         print(f"\n{'='*60}")
         print(f"[CameraSolverV2] Processing {num_frames} frames ({W}x{H})")
         print(f"[CameraSolverV2] Quality: {quality}, Grid: {grid_size}x{grid_size}")
+        print(f"[CameraSolverV2] TAPIR_AVAILABLE: {TAPIR_AVAILABLE}")
+        print(f"[CameraSolverV2] debug_visualization: {debug_visualization}")
         print(f"{'='*60}")
         
         # Check TAPIR availability
+        print(f"[CameraSolverV2] Calling _load_tapir...")
         if not self._load_tapir(checkpoint_path):
+            print(f"[CameraSolverV2] _load_tapir returned False, using fallback")
             return self._fallback_static(images, intrinsics)
+        
+        print(f"[CameraSolverV2] TAPIR loaded, generating query points...")
         
         # Step 1: Generate query points on background
         query_points = self._generate_query_points(
@@ -286,16 +311,19 @@ class CameraSolverV2:
         )
         
         if query_points is None or len(query_points) < 10:
-            print("[CameraSolverV2] Not enough valid query points, falling back to static")
+            print(f"[CameraSolverV2] Not enough valid query points ({query_points.shape if query_points is not None else 'None'}), falling back to static")
             return self._fallback_static(images, intrinsics)
         
-        print(f"[CameraSolverV2] Tracking {len(query_points)} points...")
+        print(f"[CameraSolverV2] Generated {len(query_points)} query points, running TAPIR tracking...")
         
         # Step 2: Run TAPIR tracking
         tracks, visibles = self._run_tapir(images, query_points)
         
         if tracks is None:
+            print(f"[CameraSolverV2] TAPIR tracking failed, using fallback")
             return self._fallback_static(images, intrinsics)
+        
+        print(f"[CameraSolverV2] TAPIR tracking complete: tracks shape {tracks.shape}")
         
         # Step 3: Classify shot type
         shot_classification = self._classify_shot(
@@ -306,15 +334,18 @@ class CameraSolverV2:
               f"(confidence: {shot_classification.confidence:.2f})")
         
         # Step 4: Solve camera based on shot type
+        print(f"[CameraSolverV2] Solving camera motion...")
         camera_matrices = self._solve_camera(
             tracks, visibles, intrinsics, shot_classification, smoothing_window
         )
         
         # Step 5: Generate debug visualization
         if debug_visualization:
+            print(f"[CameraSolverV2] Generating rainbow trail visualization...")
             debug_vis = self._render_rainbow_trails(
                 images, tracks, visibles, trail_length
             )
+            print(f"[CameraSolverV2] Debug visualization complete: {debug_vis.shape}")
         else:
             debug_vis = images.clone()
         
@@ -340,6 +371,8 @@ class CameraSolverV2:
         status = (f"{shot_classification.shot_type.value.capitalize()}: "
                  f"{len(query_points)} points, "
                  f"confidence {shot_classification.confidence:.0%}")
+        
+        print(f"[CameraSolverV2] ✅ Complete: {status}")
         
         return (matrices_output, debug_vis, shot_info, status)
     

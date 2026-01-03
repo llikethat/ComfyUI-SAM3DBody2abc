@@ -16,6 +16,30 @@ ultralytics
 scipy
 
 # ============================================
+# v5.0 TAPIR POINT TRACKING (Recommended)
+# ============================================
+# TAPIR provides temporally-consistent point tracking
+# Required for CameraSolverV2
+
+# pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'
+# 
+# Download checkpoint (~250MB):
+# mkdir -p ComfyUI/models/tapir
+# wget -P ComfyUI/models/tapir https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt
+
+# ============================================
+# MESH RENDERING (Optional - Recommended)
+# ============================================
+# pyrender provides high-quality mesh rendering for overlays
+# Without it, falls back to OpenCV-based rendering
+
+# pip install pyrender trimesh PyOpenGL
+#
+# For headless rendering (servers without display):
+# apt-get install libosmesa6-dev freeglut3-dev
+# OR set: export PYOPENGL_PLATFORM=egl
+
+# ============================================
 # FEATURE MATCHING (Optional - Recommended)
 # ============================================
 # Auto-downloads models on first use
