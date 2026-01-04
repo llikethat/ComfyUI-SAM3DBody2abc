@@ -50,9 +50,9 @@ class VideoStabilizer:
     CATEGORY = "SAM3DBody2abc/Camera"
     FUNCTION = "stabilize"
     
-    BORDER_MODES = ["crop", "replicate", "reflect", "constant"]
+    BORDER_MODES = ["replicate", "reflect", "constant", "crop"]
     OUTPUT_SIZES = ["same", "expanded", "crop_valid"]
-    REFERENCE_FRAMES = ["first", "middle", "last", "smoothed"]
+    REFERENCE_FRAMES = ["first", "middle", "last", "custom"]
     
     RETURN_TYPES = ("IMAGE", "IMAGE", "STABILIZE_INFO")
     RETURN_NAMES = ("stabilized", "comparison", "stabilize_info")
@@ -80,7 +80,7 @@ class VideoStabilizer:
                 "custom_reference": ("INT", {
                     "default": 0,
                     "min": 0,
-                    "tooltip": "Custom reference frame index (if reference_frame not used)"
+                    "tooltip": "Custom reference frame index (used when reference_frame='custom')"
                 }),
                 
                 # === Border Handling ===
@@ -126,22 +126,6 @@ class VideoStabilizer:
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
         """
         Stabilize video by applying inverse camera transforms.
-        
-        Args:
-            images: Input frames [N, H, W, 3]
-            camera_matrices: Dict with 'matrices' list of per-frame transforms
-            intrinsics: Camera intrinsics with K matrix
-            reference_frame: Which frame to stabilize to
-            custom_reference: Custom reference frame index
-            border_mode: How to handle borders
-            output_size: Output frame size mode
-            smoothing: Blend factor (0=full stabilization, 1=original)
-            generate_comparison: Create side-by-side output
-            
-        Returns:
-            stabilized: Stabilized video frames
-            comparison: Side-by-side comparison (original | stabilized)
-            stabilize_info: Dict with stabilization metadata
         """
         
         log_info(f"{'='*60}")
@@ -152,17 +136,48 @@ class VideoStabilizer:
         N, H, W, C = images.shape
         device = images.device
         
+        # Safety check - ensure valid dimensions
+        if H <= 0 or W <= 0 or N <= 0:
+            log_error(f"Invalid image dimensions: {images.shape}")
+            return (images, images, {"error": "Invalid dimensions"})
+        
         # Extract camera matrices
         matrices = camera_matrices.get("matrices", [])
+        if len(matrices) == 0:
+            log_error("No camera matrices provided")
+            return (images, images, {"error": "No matrices"})
+            
         if len(matrices) != N:
             log_warning(f"Matrix count ({len(matrices)}) != frame count ({N})")
             matrices = self._interpolate_matrices(matrices, N)
         
         # Get intrinsics matrix K
-        K = self._get_intrinsics_matrix(intrinsics, W, H)
-        K_inv = np.linalg.inv(K)
-        
-        log_info(f"K matrix:\n{K}")
+        try:
+            K = self._get_intrinsics_matrix(intrinsics, W, H)
+            
+            # Ensure K is float64 and check for validity
+            K = np.array(K, dtype=np.float64)
+            
+            # Check K is valid
+            if np.any(np.isnan(K)) or np.any(np.isinf(K)):
+                log_error("K matrix contains NaN or Inf")
+                return (images, images, {"error": "Invalid K matrix"})
+            
+            # Check K is invertible
+            det_K = np.linalg.det(K)
+            if abs(det_K) < 1e-10:
+                log_error(f"K matrix is singular (det={det_K})")
+                return (images, images, {"error": "Singular K matrix"})
+            
+            K_inv = np.linalg.inv(K)
+            log_info(f"K matrix:\n{K}")
+            log_info(f"K determinant: {det_K:.6f}")
+            
+        except Exception as e:
+            log_error(f"Failed to compute K matrix: {e}")
+            import traceback
+            traceback.print_exc()
+            return (images, images, {"error": f"K matrix error: {e}"})
         
         # Determine reference frame index
         ref_idx = self._get_reference_index(reference_frame, custom_reference, N)
@@ -170,48 +185,102 @@ class VideoStabilizer:
         
         # Get reference rotation matrix
         R_ref = self._extract_rotation(matrices[ref_idx])
+        log_info(f"R_ref det: {np.linalg.det(R_ref):.6f}")
         
         # Process each frame
         stabilized_frames = []
         homographies = []
         
+        # Convert all images to numpy first
+        log_info("Converting images to numpy...")
+        try:
+            images_np = (images.cpu().numpy() * 255).astype(np.uint8)
+            log_info(f"Images numpy shape: {images_np.shape}, dtype: {images_np.dtype}")
+        except Exception as e:
+            log_error(f"Failed to convert images: {e}")
+            return (images, images, {"error": f"Image conversion error: {e}"})
+        
         for i in range(N):
-            # Get current frame's rotation
-            R_curr = self._extract_rotation(matrices[i])
-            
-            # Compute relative rotation (current → reference)
-            # R_rel = R_ref @ R_curr.T  (rotate from current to reference)
-            R_rel = R_ref @ R_curr.T
-            
-            # Convert rotation to homography: H = K @ R @ K^-1
-            H = K @ R_rel @ K_inv
-            
-            # Normalize homography
-            H = H / H[2, 2]
-            
-            homographies.append(H)
-            
-            # Apply homography to frame
-            frame_np = (images[i].cpu().numpy() * 255).astype(np.uint8)
-            
-            # Apply smoothing (blend between stabilized and original)
-            if smoothing > 0:
-                H_smooth = self._blend_homography(H, np.eye(3), smoothing)
-            else:
-                H_smooth = H
-            
-            # Warp frame
-            warped = self._warp_frame(frame_np, H_smooth, W, H, border_mode)
-            
-            stabilized_frames.append(warped)
-            
-            if i % 10 == 0:
-                log_info(f"Frame {i}/{N}: R_rel angle = {self._rotation_angle(R_rel):.2f}°")
+            try:
+                # Get current frame's rotation
+                R_curr = self._extract_rotation(matrices[i])
+                
+                # Compute relative rotation (current → reference)
+                R_rel = R_ref @ R_curr.T
+                
+                # Verify R_rel is valid rotation matrix
+                det_R = np.linalg.det(R_rel)
+                if abs(det_R - 1.0) > 0.1:
+                    log_warning(f"Frame {i}: R_rel not orthonormal (det={det_R:.6f})")
+                    # Re-orthonormalize using SVD
+                    U, _, Vt = np.linalg.svd(R_rel)
+                    R_rel = U @ Vt
+                
+                # Convert rotation to homography: H = K @ R @ K^-1
+                H = K @ R_rel @ K_inv
+                
+                # Normalize homography
+                if abs(H[2, 2]) < 1e-10:
+                    log_warning(f"Frame {i}: H[2,2] near zero, using identity")
+                    H = np.eye(3, dtype=np.float64)
+                else:
+                    H = H / H[2, 2]
+                
+                # Check for degenerate homography
+                det_H = np.linalg.det(H)
+                if abs(det_H) < 1e-6 or abs(det_H) > 1e6:
+                    log_warning(f"Frame {i}: Degenerate homography (det={det_H:.6f}), using identity")
+                    H = np.eye(3, dtype=np.float64)
+                
+                # Check for NaN/Inf
+                if np.any(np.isnan(H)) or np.any(np.isinf(H)):
+                    log_warning(f"Frame {i}: H contains NaN/Inf, using identity")
+                    H = np.eye(3, dtype=np.float64)
+                
+                homographies.append(H.copy())
+                
+                # Get frame - ensure contiguous
+                frame_np = np.ascontiguousarray(images_np[i])
+                
+                # Apply smoothing
+                if smoothing > 0:
+                    H_final = self._blend_homography(H, np.eye(3, dtype=np.float64), smoothing)
+                else:
+                    H_final = H
+                
+                # Ensure H is float64 for OpenCV
+                H_final = np.ascontiguousarray(H_final.astype(np.float64))
+                
+                # Warp frame with error handling
+                warped = self._warp_frame_safe(frame_np, H_final, W, H, border_mode)
+                
+                if warped is None:
+                    log_warning(f"Frame {i}: Warp failed, using original")
+                    warped = frame_np.copy()
+                
+                stabilized_frames.append(warped)
+                
+                if i % 10 == 0:
+                    angle = self._rotation_angle(R_rel)
+                    log_info(f"Frame {i}/{N}: R_rel angle = {angle:.2f}°, H det = {det_H:.4f}")
+                    
+            except Exception as e:
+                log_error(f"Frame {i}: Error - {e}")
+                import traceback
+                traceback.print_exc()
+                # Use original frame on error
+                stabilized_frames.append(images_np[i].copy())
         
         # Stack frames
-        stabilized = np.stack(stabilized_frames, axis=0)
-        stabilized = torch.from_numpy(stabilized).float() / 255.0
-        stabilized = stabilized.to(device)
+        log_info("Stacking stabilized frames...")
+        try:
+            stabilized = np.stack(stabilized_frames, axis=0)
+            stabilized = torch.from_numpy(stabilized).float() / 255.0
+            stabilized = stabilized.to(device)
+            log_info(f"Stabilized shape: {stabilized.shape}")
+        except Exception as e:
+            log_error(f"Failed to stack frames: {e}")
+            return (images, images, {"error": f"Stack error: {e}"})
         
         # Generate comparison if requested
         if generate_comparison:
@@ -227,12 +296,12 @@ class VideoStabilizer:
             "output_size": output_size,
             "smoothing": smoothing,
             "total_rotation_deg": self._total_rotation(matrices),
-            "max_homography_scale": max(np.linalg.norm(H[:2, :2]) for H in homographies),
+            "max_homography_scale": max(np.linalg.norm(H[:2, :2]) for H in homographies) if homographies else 1.0,
             "intrinsics_used": {
-                "fx": K[0, 0],
-                "fy": K[1, 1],
-                "cx": K[0, 2],
-                "cy": K[1, 2],
+                "fx": float(K[0, 0]),
+                "fy": float(K[1, 1]),
+                "cx": float(K[0, 2]),
+                "cy": float(K[1, 2]),
             },
         }
         
@@ -245,7 +314,7 @@ class VideoStabilizer:
         """Extract or build K matrix from intrinsics."""
         
         if "k_matrix" in intrinsics:
-            return np.array(intrinsics["k_matrix"])
+            return np.array(intrinsics["k_matrix"], dtype=np.float64)
         
         fx = intrinsics.get("focal_px", W)
         fy = intrinsics.get("focal_px", W)  # Assume square pixels
@@ -269,20 +338,33 @@ class VideoStabilizer:
             return N // 2
         elif mode == "last":
             return N - 1
-        else:  # custom or smoothed
-            return min(custom, N - 1)
+        elif mode == "custom":
+            return min(max(0, custom), N - 1)
+        else:
+            return 0
     
     def _extract_rotation(self, matrix_data: Dict) -> np.ndarray:
         """Extract 3x3 rotation matrix from camera matrix data."""
         
         if "rotation" in matrix_data:
-            return np.array(matrix_data["rotation"])
+            R = np.array(matrix_data["rotation"], dtype=np.float64)
         elif "matrix" in matrix_data:
-            M = np.array(matrix_data["matrix"])
-            return M[:3, :3]
+            M = np.array(matrix_data["matrix"], dtype=np.float64)
+            R = M[:3, :3]
         else:
             log_warning("No rotation found in matrix data, using identity")
-            return np.eye(3)
+            R = np.eye(3, dtype=np.float64)
+        
+        # Ensure it's a valid rotation matrix (orthonormal)
+        # Use SVD to find closest orthonormal matrix
+        U, _, Vt = np.linalg.svd(R)
+        R = U @ Vt
+        
+        # Ensure proper rotation (det = +1, not -1)
+        if np.linalg.det(R) < 0:
+            R = -R
+        
+        return R
     
     def _rotation_angle(self, R: np.ndarray) -> float:
         """Get rotation angle in degrees from rotation matrix."""
@@ -309,41 +391,67 @@ class VideoStabilizer:
     def _blend_homography(self, H1: np.ndarray, H2: np.ndarray, alpha: float) -> np.ndarray:
         """Blend two homographies. alpha=0 gives H1, alpha=1 gives H2."""
         
-        # Simple linear blend (not geometrically correct but works for small differences)
+        # Simple linear blend
         H_blend = (1 - alpha) * H1 + alpha * H2
-        return H_blend / H_blend[2, 2]
+        if abs(H_blend[2, 2]) > 1e-10:
+            H_blend = H_blend / H_blend[2, 2]
+        return H_blend
     
-    def _warp_frame(
+    def _warp_frame_safe(
         self,
         frame: np.ndarray,
         H: np.ndarray,
         W: int,
         H_img: int,
         border_mode: str,
-    ) -> np.ndarray:
-        """Apply homography to frame with specified border handling."""
+    ) -> Optional[np.ndarray]:
+        """Apply homography to frame with safety checks."""
         
-        # Border mode mapping
-        border_map = {
-            "crop": cv2.BORDER_CONSTANT,
-            "constant": cv2.BORDER_CONSTANT,
-            "replicate": cv2.BORDER_REPLICATE,
-            "reflect": cv2.BORDER_REFLECT,
-        }
-        
-        border_value = border_map.get(border_mode, cv2.BORDER_REPLICATE)
-        
-        # Apply warp
-        warped = cv2.warpPerspective(
-            frame,
-            H,
-            (W, H_img),
-            flags=cv2.INTER_LINEAR,
-            borderMode=border_value,
-            borderValue=(0, 0, 0),
-        )
-        
-        return warped
+        try:
+            # Validate inputs
+            if frame is None or frame.size == 0:
+                log_warning("Empty frame")
+                return None
+            
+            if H is None:
+                log_warning("Null homography")
+                return None
+            
+            # Ensure frame is correct format
+            if frame.dtype != np.uint8:
+                frame = frame.astype(np.uint8)
+            
+            if not frame.flags['C_CONTIGUOUS']:
+                frame = np.ascontiguousarray(frame)
+            
+            # Ensure H is correct format
+            H = np.ascontiguousarray(H.astype(np.float64))
+            
+            # Border mode mapping
+            border_map = {
+                "crop": cv2.BORDER_CONSTANT,
+                "constant": cv2.BORDER_CONSTANT,
+                "replicate": cv2.BORDER_REPLICATE,
+                "reflect": cv2.BORDER_REFLECT,
+            }
+            
+            border_value = border_map.get(border_mode, cv2.BORDER_REPLICATE)
+            
+            # Apply warp
+            warped = cv2.warpPerspective(
+                frame,
+                H,
+                (W, H_img),
+                flags=cv2.INTER_LINEAR,
+                borderMode=border_value,
+                borderValue=(0, 0, 0),
+            )
+            
+            return warped
+            
+        except Exception as e:
+            log_error(f"Warp error: {e}")
+            return None
     
     def _generate_comparison(
         self,
