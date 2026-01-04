@@ -174,6 +174,17 @@ if _intrinsics_from_sam3dbody:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsFromSAM3DBody"] = "📷 Intrinsics from SAM3DBody"
 
+# Register v5.0 SAM3DBody processor (float32 wrapper)
+_sam3dbody_process = _load_module("sam3d2abc_sam3dbody_process", os.path.join(_nodes, "sam3dbody_process.py"))
+if _sam3dbody_process:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SAM3DBodyContext"] = _sam3dbody_process.SAM3DBodyProcess
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SAM3DBodyFloat32Patch"] = _sam3dbody_process.SAM3DBodyFloat32Patch
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SAM3DBodyConfigHelper"] = _sam3dbody_process.SAM3DBodyConfigHelper
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SAM3DBodyContext"] = "🦴 SAM3DBody Context (Float32)"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SAM3DBodyFloat32Patch"] = "🦴 SAM3DBody Float32 Patch"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SAM3DBodyConfigHelper"] = "🦴 SAM3DBody BFloat16 Fix Help"
+
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
 for name in NODE_CLASS_MAPPINGS:

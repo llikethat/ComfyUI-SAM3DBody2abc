@@ -464,6 +464,29 @@ class CameraSolverV2:
         x_coords = np.linspace(margin, width - margin, grid_size)
         
         query_points = []
+        masked_count = 0
+        
+        # Debug mask info
+        if foreground_mask is not None:
+            log_info(f"Foreground mask shape: {foreground_mask.shape}, dtype: {foreground_mask.dtype}")
+            log_info(f"Mask value range: [{foreground_mask.min():.3f}, {foreground_mask.max():.3f}]")
+            log_info(f"Mask unique values: {torch.unique(foreground_mask).tolist()[:10]}...")
+            
+            # Handle multi-frame mask - use first frame or union
+            if foreground_mask.dim() == 4:  # [N, C, H, W] or [N, H, W, C]
+                mask_2d = foreground_mask[0]
+                if mask_2d.dim() == 3:
+                    mask_2d = mask_2d.max(dim=0)[0]  # Take max across channels
+            elif foreground_mask.dim() == 3:  # [N, H, W] - multiple frames
+                # Use union of all frames (any frame with foreground = masked)
+                mask_2d = foreground_mask.max(dim=0)[0]  # Union across frames
+            else:
+                mask_2d = foreground_mask
+            
+            log_info(f"Using mask shape: {mask_2d.shape}")
+        else:
+            mask_2d = None
+            log_info("No foreground mask provided - tracking all points")
         
         # All points start at frame 0
         for y in y_coords:
@@ -471,28 +494,33 @@ class CameraSolverV2:
                 yi, xi = int(y), int(x)
                 
                 # Check if point is on background (not masked)
-                if foreground_mask is not None:
-                    # Mask is [N, H, W] or [H, W]
-                    if foreground_mask.dim() == 3:
-                        mask_val = foreground_mask[0, yi, xi].item()
-                    else:
-                        mask_val = foreground_mask[yi, xi].item()
+                if mask_2d is not None:
+                    # Ensure indices are within bounds
+                    yi_safe = min(yi, mask_2d.shape[0] - 1)
+                    xi_safe = min(xi, mask_2d.shape[1] - 1)
                     
-                    # Skip if in foreground (mask > 0.5)
-                    if mask_val > 0.5:
+                    mask_val = mask_2d[yi_safe, xi_safe].item()
+                    
+                    # Skip if in foreground (any non-zero value = foreground)
+                    # SAM3 multi-object mask has object IDs (0, 1, 2, 3...)
+                    # Background is 0, any other value is foreground
+                    if mask_val > 0.01:  # Small threshold to handle float masks
+                        masked_count += 1
                         continue
                 
                 # TAPIR query format: [t, y, x]
                 query_points.append([0, yi, xi])
         
+        log_info(f"Generated {len(query_points)} query points ({masked_count} masked out)")
+        
         if len(query_points) < 10:
-            print(f"[CameraSolverV2] Warning: Only {len(query_points)} background points found")
+            log_warning(f"Only {len(query_points)} background points found - mask may be too large")
             # Add some points anyway if mask is too aggressive
             for y in y_coords[::2]:
                 for x in x_coords[::2]:
                     query_points.append([0, int(y), int(x)])
+            log_info(f"Added fallback points, total: {len(query_points)}")
         
-        print(f"[CameraSolverV2] Generated {len(query_points)} query points")
         return np.array(query_points, dtype=np.int32)
     
     def _run_tapir(
