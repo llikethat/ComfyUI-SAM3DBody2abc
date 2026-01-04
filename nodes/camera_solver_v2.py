@@ -755,7 +755,14 @@ class CameraSolverV2:
         classification: ShotClassification,
         smoothing_window: int,
     ) -> List[Dict]:
-        """Solve camera matrices based on shot type."""
+        """
+        Solve camera matrices based on shot type.
+        
+        Uses INCREMENTAL homography computation:
+        - Compute H between consecutive frames (small motion = accurate)
+        - Compose to get cumulative rotation from frame 0
+        - This avoids error amplification from large frame gaps
+        """
         
         num_frames = tracks.shape[1]
         matrices = []
@@ -766,6 +773,7 @@ class CameraSolverV2:
                 matrices.append({
                     "frame": t,
                     "matrix": np.eye(4).tolist(),
+                    "rotation": np.eye(3).tolist(),
                     "pan": 0.0,
                     "tilt": 0.0,
                     "roll": 0.0,
@@ -785,51 +793,90 @@ class CameraSolverV2:
         ], dtype=np.float64)
         K_inv = np.linalg.inv(K)
         
-        # Reference frame is frame 0
-        ref_frame = 0
+        print(f"[CameraSolverV2] Using INCREMENTAL homography computation")
         
-        all_rotations = []
+        # Step 1: Compute incremental rotations (frame t-1 to frame t)
+        incremental_rotations = []
         
         for t in range(num_frames):
-            if t == ref_frame:
-                R = np.eye(3)
+            if t == 0:
+                # First frame: identity (no rotation from itself)
+                R_inc = np.eye(3)
             else:
-                # Get visible points in both frames
-                vis_both = visibles[:, ref_frame] & visibles[:, t]
-                if np.sum(vis_both) < 8:
-                    # Not enough points, use identity
-                    R = np.eye(3)
+                # Get visible points in consecutive frames
+                vis_both = visibles[:, t-1] & visibles[:, t]
+                num_visible = np.sum(vis_both)
+                
+                if num_visible < 8:
+                    # Not enough points, assume no rotation
+                    print(f"[CameraSolverV2] Frame {t}: Only {num_visible} points, using identity")
+                    R_inc = np.eye(3)
                 else:
-                    pts0 = tracks[vis_both, ref_frame, :].astype(np.float64)
-                    pts1 = tracks[vis_both, t, :].astype(np.float64)
+                    pts_prev = tracks[vis_both, t-1, :].astype(np.float64)
+                    pts_curr = tracks[vis_both, t, :].astype(np.float64)
                     
-                    # Find homography
-                    H, mask = cv2.findHomography(pts0, pts1, cv2.RANSAC, 3.0)
+                    # Find homography between consecutive frames
+                    H, mask = cv2.findHomography(pts_prev, pts_curr, cv2.RANSAC, 2.0)
                     
                     if H is not None:
                         # Decompose homography to get rotation
                         # For pure rotation: H = K * R * K^-1
                         # Therefore: R = K^-1 * H * K
-                        R = K_inv @ H @ K
+                        R_inc = K_inv @ H @ K
                         
                         # Ensure R is a proper rotation matrix via SVD
-                        U, _, Vt = np.linalg.svd(R)
-                        R = U @ Vt
+                        U, _, Vt = np.linalg.svd(R_inc)
+                        R_inc = U @ Vt
                         
-                        # Ensure det(R) = 1
-                        if np.linalg.det(R) < 0:
-                            R = -R
+                        # Ensure det(R) = 1 (proper rotation, not reflection)
+                        if np.linalg.det(R_inc) < 0:
+                            R_inc = -R_inc
+                        
+                        # Sanity check: incremental rotation should be small
+                        angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
+                        angle_deg = np.degrees(angle)
+                        
+                        if angle_deg > 10:
+                            # Suspiciously large rotation for consecutive frames
+                            print(f"[CameraSolverV2] Frame {t}: Large rotation {angle_deg:.1f}°, clamping")
+                            # Scale down the rotation
+                            axis_angle = self._rotation_to_axis_angle(R_inc)
+                            max_angle = np.radians(5)  # Max 5° per frame
+                            if np.linalg.norm(axis_angle) > max_angle:
+                                axis_angle = axis_angle / np.linalg.norm(axis_angle) * max_angle
+                            R_inc = self._axis_angle_to_rotation(axis_angle)
                     else:
-                        R = np.eye(3)
+                        print(f"[CameraSolverV2] Frame {t}: Homography failed, using identity")
+                        R_inc = np.eye(3)
             
-            all_rotations.append(R)
+            incremental_rotations.append(R_inc)
         
-        # Smooth rotations if requested
-        if smoothing_window > 0 and len(all_rotations) > smoothing_window:
-            all_rotations = self._smooth_rotations(all_rotations, smoothing_window)
+        # Step 2: Compose incremental rotations to get cumulative rotation from frame 0
+        # R_0_to_t = R_(t-1)_to_t @ R_(t-2)_to_(t-1) @ ... @ R_0_to_1
+        cumulative_rotations = []
+        R_cumulative = np.eye(3)
         
-        # Convert to 4x4 matrices and extract Euler angles
-        for t, R in enumerate(all_rotations):
+        for t in range(num_frames):
+            if t == 0:
+                R_cumulative = np.eye(3)
+            else:
+                # Compose: new cumulative = incremental @ previous cumulative
+                R_cumulative = incremental_rotations[t] @ R_cumulative
+                
+                # Re-orthonormalize periodically to prevent drift
+                if t % 10 == 0:
+                    U, _, Vt = np.linalg.svd(R_cumulative)
+                    R_cumulative = U @ Vt
+            
+            cumulative_rotations.append(R_cumulative.copy())
+        
+        # Step 3: Apply temporal smoothing if requested
+        if smoothing_window > 0 and len(cumulative_rotations) > smoothing_window:
+            print(f"[CameraSolverV2] Applying rotation smoothing (window={smoothing_window})")
+            cumulative_rotations = self._smooth_rotations(cumulative_rotations, smoothing_window)
+        
+        # Step 4: Convert to output format
+        for t, R in enumerate(cumulative_rotations):
             # Build 4x4 matrix (rotation only, no translation for rotation shots)
             M = np.eye(4)
             M[:3, :3] = R
@@ -846,7 +893,23 @@ class CameraSolverV2:
                 "roll": float(np.degrees(roll)),
             })
         
+        # Log total rotation
+        if len(cumulative_rotations) > 1:
+            R_total = cumulative_rotations[-1]
+            total_angle = np.degrees(np.arccos(np.clip((np.trace(R_total) - 1) / 2, -1, 1)))
+            print(f"[CameraSolverV2] Total camera rotation: {total_angle:.1f}°")
+        
         return matrices
+    
+    def _rotation_to_axis_angle(self, R: np.ndarray) -> np.ndarray:
+        """Convert rotation matrix to axis-angle representation."""
+        from scipy.spatial.transform import Rotation
+        return Rotation.from_matrix(R).as_rotvec()
+    
+    def _axis_angle_to_rotation(self, axis_angle: np.ndarray) -> np.ndarray:
+        """Convert axis-angle to rotation matrix."""
+        from scipy.spatial.transform import Rotation
+        return Rotation.from_rotvec(axis_angle).as_matrix()
     
     def _smooth_rotations(
         self,

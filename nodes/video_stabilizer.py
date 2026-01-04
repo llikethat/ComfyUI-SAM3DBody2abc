@@ -1,15 +1,23 @@
 """
 Video Stabilizer Node - Phase 2 of v5.0 Pipeline
 
-Uses PyTorch grid_sample for warping (avoids OpenCV/tcmalloc segfault).
-All operations stay on GPU in float32 for stability and performance.
+Uses PyTorch grid_sample for warping with temporal smoothing filters
+to produce smooth, jitter-free stabilization.
 
-Version: 5.0.0
+Smoothing Options:
+- Gaussian: Simple blur, good for general smoothing
+- Savitzky-Golay: Preserves motion details while removing noise
+- Butterworth: Frequency-domain filter, removes high-frequency jitter
+
+Version: 5.0.1
 """
 
 import torch
 import torch.nn.functional as F
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter, butter, filtfilt
+from scipy.spatial.transform import Rotation, Slerp
 from typing import Dict, Tuple, Any, Optional, List
 
 def log_info(msg: str):
@@ -25,7 +33,7 @@ def log_error(msg: str):
 class VideoStabilizer:
     """
     Apply inverse camera transform to create stabilized footage.
-    Uses PyTorch grid_sample for GPU-accelerated warping.
+    Uses PyTorch grid_sample with temporal smoothing for jitter-free results.
     """
     
     CATEGORY = "SAM3DBody2abc/Camera"
@@ -33,6 +41,7 @@ class VideoStabilizer:
     
     BORDER_MODES = ["replicate", "reflect", "zeros", "crop"]
     REFERENCE_FRAMES = ["first", "middle", "last", "custom"]
+    SMOOTHING_FILTERS = ["none", "gaussian", "savgol", "butterworth"]
     
     RETURN_TYPES = ("IMAGE", "IMAGE", "STABILIZE_INFO")
     RETURN_NAMES = ("stabilized", "comparison", "stabilize_info")
@@ -65,13 +74,20 @@ class VideoStabilizer:
                     "default": "replicate",
                     "tooltip": "How to fill areas outside original frame"
                 }),
-                "smoothing": ("FLOAT", {
-                    "default": 0.0,
+                
+                # === Temporal Smoothing ===
+                "smoothing_filter": (cls.SMOOTHING_FILTERS, {
+                    "default": "gaussian",
+                    "tooltip": "Filter type for temporal smoothing of camera motion"
+                }),
+                "smoothing_strength": ("FLOAT", {
+                    "default": 0.5,
                     "min": 0.0,
                     "max": 1.0,
-                    "step": 0.1,
-                    "tooltip": "Blend between full stabilization (0) and original (1)"
+                    "step": 0.05,
+                    "tooltip": "Smoothing strength: 0=no smoothing, 1=maximum smoothing"
                 }),
+                
                 "generate_comparison": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Generate side-by-side comparison video"
@@ -87,17 +103,19 @@ class VideoStabilizer:
         reference_frame: str = "first",
         custom_reference: int = 0,
         border_mode: str = "replicate",
-        smoothing: float = 0.0,
+        smoothing_filter: str = "gaussian",
+        smoothing_strength: float = 0.5,
         generate_comparison: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
-        """Stabilize video by applying inverse camera transforms."""
+        """Stabilize video by applying inverse camera transforms with temporal smoothing."""
         
         log_info(f"{'='*60}")
         log_info(f"Stabilizing {images.shape[0]} frames")
         log_info(f"Reference: {reference_frame}, Border: {border_mode}")
+        log_info(f"Smoothing: {smoothing_filter} (strength={smoothing_strength:.2f})")
         log_info(f"{'='*60}")
         
-        # Get dimensions as Python ints (critical for torch functions!)
+        # Get dimensions as Python ints
         N = int(images.shape[0])
         H = int(images.shape[1])
         W = int(images.shape[2])
@@ -134,110 +152,93 @@ class VideoStabilizer:
         ref_idx = self._get_reference_index(reference_frame, custom_reference, N)
         log_info(f"Reference frame: {ref_idx}")
         
+        # Extract all rotations
+        log_info("Extracting rotations...")
+        rotations = []
+        for i in range(N):
+            R = self._extract_rotation(matrices[i])
+            rotations.append(R)
+        
         # Get reference rotation
-        R_ref = self._extract_rotation(matrices[ref_idx])
+        R_ref = rotations[ref_idx]
         
-        # Convert images to NCHW format early (stay in float32 on GPU)
-        # ComfyUI images are already float32 [0,1] in NHWC format
-        images_nchw = images.permute(0, 3, 1, 2).contiguous()  # [N, C, H, W]
-        log_info(f"Images NCHW: {images_nchw.shape}, dtype={images_nchw.dtype}")
+        # Compute relative rotations (current -> reference)
+        log_info("Computing relative rotations...")
+        relative_rotations = []
+        for i in range(N):
+            R_rel = R_ref @ rotations[i].T
+            relative_rotations.append(R_rel)
         
-        # Pre-compute base grid (pixel coordinates)
+        # Apply temporal smoothing to rotations
+        if smoothing_filter != "none" and smoothing_strength > 0:
+            log_info(f"Applying {smoothing_filter} smoothing...")
+            relative_rotations = self._smooth_rotations(
+                relative_rotations, 
+                smoothing_filter, 
+                smoothing_strength,
+                N
+            )
+        
+        # Convert images to NCHW format
+        images_nchw = images.permute(0, 3, 1, 2).contiguous()
+        
+        # Pre-compute base grid
         log_info("Creating base sampling grid...")
-        # Grid in pixel coordinates [H, W, 2] where each point is (x, y)
         y_coords = torch.arange(H, dtype=torch.float32, device=device)
         x_coords = torch.arange(W, dtype=torch.float32, device=device)
         yy, xx = torch.meshgrid(y_coords, x_coords, indexing='ij')
-        
-        # Homogeneous coordinates [H, W, 3]
         ones = torch.ones_like(xx)
-        base_coords = torch.stack([xx, yy, ones], dim=-1)  # [H, W, 3]
+        base_coords = torch.stack([xx, yy, ones], dim=-1)
         
-        # Compute all homographies and convert to torch
-        log_info("Computing homographies...")
+        # Compute homographies from smoothed rotations
+        log_info("Computing homographies from smoothed rotations...")
         homographies = []
-        
         for i in range(N):
-            try:
-                R_curr = self._extract_rotation(matrices[i])
-                R_rel = R_ref @ R_curr.T
-                
-                # H = K @ R @ K^-1
-                H_mat = K @ R_rel @ K_inv
-                H_mat = H_mat / (H_mat[2, 2] + 1e-10)
-                
-                # Validate
-                if np.any(np.isnan(H_mat)) or np.any(np.isinf(H_mat)):
-                    H_mat = np.eye(3)
-                
-                # Apply smoothing (blend toward identity)
-                if smoothing > 0:
-                    H_mat = (1 - smoothing) * H_mat + smoothing * np.eye(3)
-                    H_mat = H_mat / (H_mat[2, 2] + 1e-10)
-                
-                # We need inverse homography for grid_sample
-                # (grid_sample asks "where does this output pixel come from?")
-                H_inv = np.linalg.inv(H_mat)
-                
-                homographies.append(torch.from_numpy(H_inv).float().to(device))
-                
-            except Exception as e:
-                log_warning(f"Frame {i}: Error computing H - {e}")
-                homographies.append(torch.eye(3, dtype=torch.float32, device=device))
+            R_rel = relative_rotations[i]
+            H_mat = K @ R_rel @ K_inv
+            H_mat = H_mat / (H_mat[2, 2] + 1e-10)
+            
+            # We need inverse for grid_sample
+            H_inv = np.linalg.inv(H_mat)
+            homographies.append(torch.from_numpy(H_inv).float().to(device))
         
-        log_info(f"Computed {len(homographies)} homographies")
-        
-        # Map border mode to grid_sample padding_mode
+        # Map border mode
         padding_mode_map = {
             "replicate": "border",
             "reflect": "reflection",
             "zeros": "zeros",
-            "crop": "zeros",  # crop uses zeros, we'll handle masking separately if needed
+            "crop": "zeros",
         }
         padding_mode = padding_mode_map.get(border_mode, "border")
         
         # Apply warps
-        log_info("Applying warps with torch grid_sample...")
+        log_info("Applying warps...")
         stabilized_frames = []
         
         for i in range(N):
             try:
-                # Get single frame [1, C, H, W]
                 frame = images_nchw[i:i+1]
                 H_inv = homographies[i]
                 
-                # Apply inverse homography to get source coordinates
-                # coords_flat: [H*W, 3]
-                coords_flat = base_coords.reshape(-1, 3)  # [H*W, 3]
-                
-                # Transform: [3, 3] @ [3, H*W] -> [3, H*W]
-                transformed = (H_inv @ coords_flat.T).T  # [H*W, 3]
-                
-                # Normalize homogeneous coordinates
+                # Apply homography to get source coordinates
+                coords_flat = base_coords.reshape(-1, 3)
+                transformed = (H_inv @ coords_flat.T).T
                 w = transformed[:, 2:3].clamp(min=1e-8)
-                xy = transformed[:, :2] / w  # [H*W, 2]
-                
-                # Reshape to [H, W, 2]
+                xy = transformed[:, :2] / w
                 xy = xy.reshape(H, W, 2)
                 
-                # Normalize to [-1, 1] for grid_sample
-                # x: 0 -> -1, W-1 -> 1
-                # y: 0 -> -1, H-1 -> 1
+                # Normalize to [-1, 1]
                 grid_x = (xy[..., 0] / (W - 1)) * 2 - 1
                 grid_y = (xy[..., 1] / (H - 1)) * 2 - 1
-                
-                # Stack to [1, H, W, 2] - note: grid_sample expects (x, y) order
                 grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)
                 
-                # Apply warp
+                # Warp
                 warped = F.grid_sample(
-                    frame,
-                    grid,
+                    frame, grid,
                     mode='bilinear',
                     padding_mode=padding_mode,
                     align_corners=True
                 )
-                
                 stabilized_frames.append(warped)
                 
                 if i % 10 == 0:
@@ -245,16 +246,11 @@ class VideoStabilizer:
                     
             except Exception as e:
                 log_error(f"Frame {i}: Warp error - {e}")
-                import traceback
-                traceback.print_exc()
                 stabilized_frames.append(images_nchw[i:i+1])
         
         # Stack and convert back to NHWC
-        stabilized = torch.cat(stabilized_frames, dim=0)  # [N, C, H, W]
-        stabilized = stabilized.permute(0, 2, 3, 1)  # [N, H, W, C]
-        
-        # Clamp to valid range
-        stabilized = stabilized.clamp(0, 1)
+        stabilized = torch.cat(stabilized_frames, dim=0)
+        stabilized = stabilized.permute(0, 2, 3, 1).clamp(0, 1)
         
         log_info(f"Stabilized shape: {stabilized.shape}")
         
@@ -270,7 +266,8 @@ class VideoStabilizer:
             "num_frames": N,
             "reference_frame": ref_idx,
             "border_mode": border_mode,
-            "smoothing": smoothing,
+            "smoothing_filter": smoothing_filter,
+            "smoothing_strength": smoothing_strength,
             "total_rotation_deg": total_rotation,
             "intrinsics_used": {
                 "fx": float(K[0, 0]),
@@ -284,6 +281,84 @@ class VideoStabilizer:
         log_info(f"Total camera rotation: {total_rotation:.1f}°")
         
         return (stabilized, comparison, stabilize_info)
+    
+    def _smooth_rotations(
+        self,
+        rotations: List[np.ndarray],
+        filter_type: str,
+        strength: float,
+        N: int,
+    ) -> List[np.ndarray]:
+        """
+        Apply temporal smoothing to rotation sequence.
+        
+        Works in axis-angle space for proper rotation interpolation.
+        """
+        
+        # Convert rotations to axis-angle representation
+        axis_angles = []
+        for R in rotations:
+            r = Rotation.from_matrix(R)
+            axis_angles.append(r.as_rotvec())
+        
+        axis_angles = np.array(axis_angles)  # [N, 3]
+        
+        # Calculate filter parameters based on strength
+        # strength 0 = no smoothing, strength 1 = heavy smoothing
+        
+        if filter_type == "gaussian":
+            # Sigma ranges from 0.5 to 5.0 based on strength
+            sigma = 0.5 + strength * 4.5
+            log_info(f"  Gaussian sigma: {sigma:.2f}")
+            
+            smoothed = np.zeros_like(axis_angles)
+            for i in range(3):
+                smoothed[:, i] = gaussian_filter1d(axis_angles[:, i], sigma, mode='nearest')
+        
+        elif filter_type == "savgol":
+            # Window size: 5 to 21 (must be odd)
+            window = int(5 + strength * 16)
+            if window % 2 == 0:
+                window += 1
+            window = min(window, N - 1)
+            if window % 2 == 0:
+                window -= 1
+            window = max(window, 5)
+            
+            # Polynomial order: 2 or 3
+            polyorder = min(3, window - 1)
+            log_info(f"  Savitzky-Golay window: {window}, order: {polyorder}")
+            
+            smoothed = np.zeros_like(axis_angles)
+            for i in range(3):
+                smoothed[:, i] = savgol_filter(axis_angles[:, i], window, polyorder)
+        
+        elif filter_type == "butterworth":
+            # Cutoff frequency: 0.5 to 0.05 (lower = more smoothing)
+            cutoff = 0.5 - strength * 0.45
+            cutoff = max(cutoff, 0.05)
+            log_info(f"  Butterworth cutoff: {cutoff:.3f}")
+            
+            # Design filter (2nd order)
+            b, a = butter(2, cutoff, btype='low')
+            
+            smoothed = np.zeros_like(axis_angles)
+            for i in range(3):
+                # filtfilt applies filter forward and backward (zero phase)
+                # Pad signal to avoid edge effects
+                padlen = min(3 * max(len(a), len(b)), N - 1)
+                smoothed[:, i] = filtfilt(b, a, axis_angles[:, i], padlen=padlen)
+        
+        else:
+            return rotations
+        
+        # Convert back to rotation matrices
+        smoothed_rotations = []
+        for rotvec in smoothed:
+            R = Rotation.from_rotvec(rotvec).as_matrix()
+            smoothed_rotations.append(R)
+        
+        return smoothed_rotations
     
     def _return_original(
         self,
@@ -375,7 +450,7 @@ class VideoStabilizer:
         comparison = torch.zeros((N, H, W * 2, C), dtype=original.dtype, device=original.device)
         comparison[:, :, :W, :] = original
         comparison[:, :, W:, :] = stabilized
-        comparison[:, :, W-1:W+1, :] = 1.0  # White separator
+        comparison[:, :, W-1:W+1, :] = 1.0
         return comparison
 
 
@@ -403,7 +478,8 @@ class StabilizationInfo:
             f"Frames: {stabilize_info.get('num_frames', 'N/A')}",
             f"Reference frame: {stabilize_info.get('reference_frame', 'N/A')}",
             f"Border mode: {stabilize_info.get('border_mode', 'N/A')}",
-            f"Smoothing: {stabilize_info.get('smoothing', 0):.1%}",
+            f"Smoothing: {stabilize_info.get('smoothing_filter', 'none')} "
+            f"(strength={stabilize_info.get('smoothing_strength', 0):.0%})",
             f"Total rotation: {stabilize_info.get('total_rotation_deg', 0):.1f}°",
             "═" * 50,
         ]
