@@ -134,6 +134,15 @@ if _camera_solver_v2:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolverV2"] = "📷 Camera Solver V2 (TAPIR)"
 
+# Register v5.0 Video Stabilizer (Phase 2)
+_video_stabilizer = _load_module("sam3d2abc_video_stabilizer", os.path.join(_nodes, "video_stabilizer.py"))
+if _video_stabilizer:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_VideoStabilizer"] = _video_stabilizer.VideoStabilizer
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_StabilizationInfo"] = _video_stabilizer.StabilizationInfo
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VideoStabilizer"] = "🎬 Video Stabilizer"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_StabilizationInfo"] = "🎬 Stabilization Info"
+
 # Register COLMAP bridge node
 if _colmap_bridge:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = _colmap_bridge.COLMAPToExtrinsicsBridge
