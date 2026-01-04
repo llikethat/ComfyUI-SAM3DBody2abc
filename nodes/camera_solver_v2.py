@@ -78,24 +78,26 @@ def log_warning(msg):
     print(f"[CameraSolverV2] ⚠️ {msg}")
 
 # -----------------------------------------------------------------------------
-# TensorFlow Blocker (Python 3.12 SAFE)
+# TensorFlow Blocker - DISABLED (TensorFlow is installed)
 # -----------------------------------------------------------------------------
+# Note: If TensorFlow is NOT installed, you can enable the blocker below.
+# However, it's easier to just: pip install tensorflow
 
-import importlib.abc
-
-class TensorFlowBlocker(importlib.abc.MetaPathFinder):
-    """Block TensorFlow import - not needed for TAPIR torch inference."""
-    def find_spec(self, fullname, path, target=None):
-        if fullname == "tensorflow" or fullname.startswith("tensorflow."):
-            raise ImportError("TensorFlow import blocked for TAPIR (intentional)")
-        return None
-
-# Install the blocker before importing TAPIR
-_tf_blocker = TensorFlowBlocker()
-sys.meta_path.insert(0, _tf_blocker)
+# import importlib.abc
+# import importlib.util
+# 
+# class TensorFlowBlocker(importlib.abc.MetaPathFinder):
+#     """Block TensorFlow import - not needed for TAPIR torch inference."""
+#     def find_spec(self, fullname, path, target=None):
+#         if fullname == "tensorflow" or fullname.startswith("tensorflow."):
+#             return None  # Return None to let other finders fail gracefully
+#         return None
+# 
+# _tf_blocker = TensorFlowBlocker()
+# sys.meta_path.insert(0, _tf_blocker)
 
 # -----------------------------------------------------------------------------
-# TAPIR Import (robust across installs)
+# TAPIR Import
 # -----------------------------------------------------------------------------
 
 TAPIR_AVAILABLE = False
@@ -122,8 +124,8 @@ except ImportError as e1:
         log_error("TAPIR import failed")
         log_error(f"  tapnet error: {e1}")
         log_error(f"  tapir error: {e2}")
-        log_info("Install with: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
-        # Note: We don't raise here to allow ComfyUI to load with fallback mode
+        log_info("Install with: pip install tensorflow tapnet")
+        log_info("  Or: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
 
 # -----------------------------------------------------------------------------
 # Shot Type Definitions
