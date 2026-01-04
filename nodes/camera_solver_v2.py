@@ -1,5 +1,6 @@
 """
 Camera Solver V2 for SAM3DBody2abc v5.0
+=======================================
 
 TAPIR-based camera solver with:
 - Temporal point tracking (not frame-pair matching)
@@ -7,7 +8,7 @@ TAPIR-based camera solver with:
 - Rainbow trail debug visualization
 - Background-only tracking (foreground masked)
 
-Key Differences from v4.x CameraSolver:
+Key Differences from v4.x CameraSolver (Legacy):
 1. Uses TAPIR for temporally consistent tracking (vs LoFTR/KLT frame pairs)
 2. Shot classification determines solver type automatically
 3. Debug visualization shows tracked points with rainbow trails
@@ -23,66 +24,110 @@ Installation:
     # TAPIR (required)
     pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'
     
-    # Download checkpoint
-    wget https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt
+    # Download checkpoint (~250MB)
+    mkdir -p ComfyUI/models/tapir
+    wget -P ComfyUI/models/tapir https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt
+
+Fixes in v5.0.0:
+- Python 3.12-compatible TensorFlow blocker (find_spec)
+- Robust TAPIR import (tapnet OR tapir backend)
+- Explicit checkpoint validation with helpful error messages
+- Loud failures (no silent ComfyUI skips)
 
 Version: 5.0.0
 Author: SAM3DBody2abc Project
 License: Apache 2.0 (TAPIR: Apache 2.0)
 """
 
+import os
+import sys
+import math
+import logging
 import numpy as np
 import torch
 import torch.nn.functional as F
 import cv2
-import os
 import colorsys
 from typing import Dict, Tuple, Any, Optional, List, Union
 from dataclasses import dataclass
 from enum import Enum
 
-# Check for TAPIR availability
+# -----------------------------------------------------------------------------
+# Logging Setup (important for ComfyUI debugging)
+# -----------------------------------------------------------------------------
+
+LOGGER_NAME = "CameraSolverV2"
+logger = logging.getLogger(LOGGER_NAME)
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
+    logger.addHandler(handler)
+
+# Also print to console for ComfyUI visibility
+def log_info(msg):
+    logger.info(msg)
+    print(f"[CameraSolverV2] {msg}")
+
+def log_error(msg):
+    logger.error(msg)
+    print(f"[CameraSolverV2] ❌ {msg}")
+
+def log_warning(msg):
+    logger.warning(msg)
+    print(f"[CameraSolverV2] ⚠️ {msg}")
+
+# -----------------------------------------------------------------------------
+# TensorFlow Blocker (Python 3.12 SAFE)
+# -----------------------------------------------------------------------------
+
+import importlib.abc
+
+class TensorFlowBlocker(importlib.abc.MetaPathFinder):
+    """Block TensorFlow import - not needed for TAPIR torch inference."""
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "tensorflow" or fullname.startswith("tensorflow."):
+            raise ImportError("TensorFlow import blocked for TAPIR (intentional)")
+        return None
+
+# Install the blocker before importing TAPIR
+_tf_blocker = TensorFlowBlocker()
+sys.meta_path.insert(0, _tf_blocker)
+
+# -----------------------------------------------------------------------------
+# TAPIR Import (robust across installs)
+# -----------------------------------------------------------------------------
+
 TAPIR_AVAILABLE = False
 TAPIR_IMPORT_ERROR = None
-print("[CameraSolverV2] Attempting to import TAPIR...")
-try:
-    # Import only the torch components we need, avoiding tensorflow dependency
-    import sys
-    
-    # Block tensorflow import to avoid the dependency issue
-    class TensorFlowBlocker:
-        def find_module(self, name, path=None):
-            if name == 'tensorflow' or name.startswith('tensorflow.'):
-                return self
-            return None
-        def load_module(self, name):
-            raise ImportError(f"TensorFlow import blocked - not needed for TAPIR torch inference")
-    
-    # Temporarily block tensorflow
-    tf_blocker = TensorFlowBlocker()
-    sys.meta_path.insert(0, tf_blocker)
-    
-    try:
-        from tapnet.torch import tapir_model
-        from tapnet.utils import transforms as tapir_transforms
-        TAPIR_AVAILABLE = True
-        print("[CameraSolverV2] ✅ TAPIR module imported successfully (TensorFlow blocked)")
-    finally:
-        # Remove the blocker
-        if tf_blocker in sys.meta_path:
-            sys.meta_path.remove(tf_blocker)
-            
-except ImportError as e:
-    TAPIR_IMPORT_ERROR = str(e)
-    print(f"[CameraSolverV2] ❌ TAPIR ImportError: {e}")
-    print("[CameraSolverV2] Try: pip install tensorflow")
-    print("[CameraSolverV2] Or: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
-except Exception as e:
-    TAPIR_IMPORT_ERROR = str(e)
-    print(f"[CameraSolverV2] ❌ TAPIR import failed with unexpected error: {type(e).__name__}: {e}")
-    import traceback
-    traceback.print_exc()
+TAPIR_BACKEND = None
 
+log_info("Attempting to import TAPIR...")
+try:
+    from tapnet.torch import tapir_model
+    from tapnet.utils import transforms as tapir_transforms
+    TAPIR_BACKEND = "tapnet"
+    TAPIR_AVAILABLE = True
+    log_info(f"✅ TAPIR imported successfully ({TAPIR_BACKEND} backend)")
+except ImportError as e1:
+    # Try alternative package name
+    try:
+        from tapir.torch import tapir_model
+        from tapir.utils import transforms as tapir_transforms
+        TAPIR_BACKEND = "tapir"
+        TAPIR_AVAILABLE = True
+        log_info(f"✅ TAPIR imported successfully ({TAPIR_BACKEND} backend)")
+    except ImportError as e2:
+        TAPIR_IMPORT_ERROR = f"tapnet: {e1}, tapir: {e2}"
+        log_error("TAPIR import failed")
+        log_error(f"  tapnet error: {e1}")
+        log_error(f"  tapir error: {e2}")
+        log_info("Install with: pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'")
+        # Note: We don't raise here to allow ComfyUI to load with fallback mode
+
+# -----------------------------------------------------------------------------
+# Shot Type Definitions
+# -----------------------------------------------------------------------------
 
 class ShotType(Enum):
     """Camera motion classification."""
@@ -219,15 +264,15 @@ class CameraSolverV2:
         self._checkpoint_loaded = None
     
     def _load_tapir(self, checkpoint_path: str = "") -> bool:
-        """Load TAPIR model."""
-        print(f"[CameraSolverV2] _load_tapir called, TAPIR_AVAILABLE={TAPIR_AVAILABLE}")
+        """Load TAPIR model with robust path resolution."""
+        log_info(f"_load_tapir called, TAPIR_AVAILABLE={TAPIR_AVAILABLE}")
         
         if not TAPIR_AVAILABLE:
-            print("[CameraSolverV2] TAPIR module not available, cannot load")
+            log_error("TAPIR module not available, cannot load")
             return False
         
         if self.tapir_model is not None and self._checkpoint_loaded == checkpoint_path:
-            print(f"[CameraSolverV2] TAPIR already loaded from: {self._checkpoint_loaded}")
+            log_info(f"TAPIR already loaded from: {self._checkpoint_loaded}")
             return True
         
         # Resolve checkpoint path
@@ -238,21 +283,23 @@ class CameraSolverV2:
             custom_nodes_dir = os.path.dirname(extension_dir)  # custom_nodes/
             comfyui_dir = os.path.dirname(custom_nodes_dir)  # ComfyUI/
             
-            print(f"[CameraSolverV2] Path resolution:")
-            print(f"[CameraSolverV2]   current_dir: {current_dir}")
-            print(f"[CameraSolverV2]   extension_dir: {extension_dir}")
-            print(f"[CameraSolverV2]   custom_nodes_dir: {custom_nodes_dir}")
-            print(f"[CameraSolverV2]   comfyui_dir: {comfyui_dir}")
+            log_info("Path resolution:")
+            log_info(f"  current_dir: {current_dir}")
+            log_info(f"  extension_dir: {extension_dir}")
+            log_info(f"  comfyui_dir: {comfyui_dir}")
             
             # Search order:
+            # 0. Hardcoded /workspace path (for RunPod/cloud environments)
             # 1. ComfyUI/models/tapir/ (standard ComfyUI convention)
             # 2. ComfyUI-SAM3DBody2abc/models/tapir/ (self-contained)
             # 3. ~/.cache/tapir/ (user cache)
             # 4. Current working directory
             possible_paths = [
+                # Hardcoded workspace path (RunPod/cloud)
+                "/workspace/ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt",
                 # Standard ComfyUI models path
                 os.path.join(comfyui_dir, "models", "tapir", "bootstapir_checkpoint_v2.pt"),
-                # Self-contained in extension (FIXED PATH)
+                # Self-contained in extension
                 os.path.join(extension_dir, "models", "tapir", "bootstapir_checkpoint_v2.pt"),
                 # User cache
                 os.path.expanduser("~/.cache/tapir/bootstapir_checkpoint_v2.pt"),
@@ -260,34 +307,35 @@ class CameraSolverV2:
                 "bootstapir_checkpoint_v2.pt",
             ]
             
-            print(f"[CameraSolverV2] Searching for checkpoint in:")
+            log_info("Searching for checkpoint in:")
             for i, path in enumerate(possible_paths, 1):
                 exists = os.path.exists(path)
-                print(f"[CameraSolverV2]   {i}. {path} -> {'FOUND' if exists else 'not found'}")
+                status = "✅ FOUND" if exists else "not found"
+                log_info(f"  {i}. {path} -> {status}")
                 if exists and not checkpoint_path:
                     checkpoint_path = path
         
         if not checkpoint_path or not os.path.exists(checkpoint_path):
-            print(f"[CameraSolverV2] ❌ TAPIR checkpoint not found!")
-            print(f"[CameraSolverV2] Download from: https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt")
-            print(f"[CameraSolverV2] Place in one of these locations:")
-            print(f"[CameraSolverV2]   1. ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt (recommended)")
-            print(f"[CameraSolverV2]   2. ComfyUI-SAM3DBody2abc/models/tapir/bootstapir_checkpoint_v2.pt")
+            log_error("TAPIR checkpoint not found!")
+            log_info("Download from: https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt")
+            log_info("Place in one of these locations:")
+            log_info("  1. ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt (recommended)")
+            log_info("  2. ComfyUI-SAM3DBody2abc/models/tapir/bootstapir_checkpoint_v2.pt")
             return False
         
         try:
-            print(f"[CameraSolverV2] Loading TAPIR from {checkpoint_path}...")
+            log_info(f"🔄 Loading TAPIR from {checkpoint_path}...")
             self.tapir_model = tapir_model.TAPIR(pyramid_level=1)
-            print(f"[CameraSolverV2] TAPIR model created, loading weights...")
+            log_info("TAPIR model created, loading weights...")
             self.tapir_model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
-            print(f"[CameraSolverV2] Weights loaded, moving to {self.device}...")
+            log_info(f"Weights loaded, moving to {self.device}...")
             self.tapir_model = self.tapir_model.to(self.device)
             self.tapir_model.eval()
             self._checkpoint_loaded = checkpoint_path
-            print(f"[CameraSolverV2] ✅ TAPIR loaded successfully on {self.device}")
+            log_info(f"✅ TAPIR loaded successfully on {self.device}")
             return True
         except Exception as e:
-            print(f"[CameraSolverV2] ❌ Failed to load TAPIR: {e}")
+            log_error(f"Failed to load TAPIR: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -320,19 +368,19 @@ class CameraSolverV2:
         H, W = images.shape[1], images.shape[2]
         
         print(f"\n{'='*60}")
-        print(f"[CameraSolverV2] Processing {num_frames} frames ({W}x{H})")
-        print(f"[CameraSolverV2] Quality: {quality}, Grid: {grid_size}x{grid_size}")
-        print(f"[CameraSolverV2] TAPIR_AVAILABLE: {TAPIR_AVAILABLE}")
-        print(f"[CameraSolverV2] debug_visualization: {debug_visualization}")
+        log_info(f"Processing {num_frames} frames ({W}x{H})")
+        log_info(f"Quality: {quality}, Grid: {grid_size}x{grid_size}")
+        log_info(f"TAPIR_AVAILABLE: {TAPIR_AVAILABLE}")
+        log_info(f"debug_visualization: {debug_visualization}")
         print(f"{'='*60}")
         
         # Check TAPIR availability
-        print(f"[CameraSolverV2] Calling _load_tapir...")
+        log_info("Calling _load_tapir...")
         if not self._load_tapir(checkpoint_path):
-            print(f"[CameraSolverV2] _load_tapir returned False, using fallback")
+            log_warning("_load_tapir returned False, using fallback")
             return self._fallback_static(images, intrinsics)
         
-        print(f"[CameraSolverV2] TAPIR loaded, generating query points...")
+        log_info("TAPIR loaded, generating query points...")
         
         # Step 1: Generate query points on background
         query_points = self._generate_query_points(
@@ -340,41 +388,41 @@ class CameraSolverV2:
         )
         
         if query_points is None or len(query_points) < 10:
-            print(f"[CameraSolverV2] Not enough valid query points ({query_points.shape if query_points is not None else 'None'}), falling back to static")
+            log_warning(f"Not enough valid query points ({query_points.shape if query_points is not None else 'None'}), falling back to static")
             return self._fallback_static(images, intrinsics)
         
-        print(f"[CameraSolverV2] Generated {len(query_points)} query points, running TAPIR tracking...")
+        log_info(f"Generated {len(query_points)} query points, running TAPIR tracking...")
         
         # Step 2: Run TAPIR tracking
         tracks, visibles = self._run_tapir(images, query_points)
         
         if tracks is None:
-            print(f"[CameraSolverV2] TAPIR tracking failed, using fallback")
+            log_warning("TAPIR tracking failed, using fallback")
             return self._fallback_static(images, intrinsics)
         
-        print(f"[CameraSolverV2] TAPIR tracking complete: tracks shape {tracks.shape}")
+        log_info(f"TAPIR tracking complete: tracks shape {tracks.shape}")
         
         # Step 3: Classify shot type
         shot_classification = self._classify_shot(
             tracks, visibles, intrinsics, force_shot_type
         )
         
-        print(f"[CameraSolverV2] Shot type: {shot_classification.shot_type.value} "
+        log_info(f"Shot type: {shot_classification.shot_type.value} "
               f"(confidence: {shot_classification.confidence:.2f})")
         
         # Step 4: Solve camera based on shot type
-        print(f"[CameraSolverV2] Solving camera motion...")
+        log_info("Solving camera motion...")
         camera_matrices = self._solve_camera(
             tracks, visibles, intrinsics, shot_classification, smoothing_window
         )
         
         # Step 5: Generate debug visualization
         if debug_visualization:
-            print(f"[CameraSolverV2] Generating rainbow trail visualization...")
+            log_info("Generating rainbow trail visualization...")
             debug_vis = self._render_rainbow_trails(
                 images, tracks, visibles, trail_length
             )
-            print(f"[CameraSolverV2] Debug visualization complete: {debug_vis.shape}")
+            log_info(f"Debug visualization complete: {debug_vis.shape}")
         else:
             debug_vis = images.clone()
         
@@ -401,7 +449,7 @@ class CameraSolverV2:
                  f"{len(query_points)} points, "
                  f"confidence {shot_classification.confidence:.0%}")
         
-        print(f"[CameraSolverV2] ✅ Complete: {status}")
+        log_info(f"✅ Complete: {status}")
         
         return (matrices_output, debug_vis, shot_info, status)
     
