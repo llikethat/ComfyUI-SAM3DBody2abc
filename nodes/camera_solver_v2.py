@@ -42,7 +42,6 @@ License: Apache 2.0 (TAPIR: Apache 2.0)
 import os
 import sys
 import math
-import logging
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -53,28 +52,16 @@ from dataclasses import dataclass
 from enum import Enum
 
 # -----------------------------------------------------------------------------
-# Logging Setup (important for ComfyUI debugging)
+# Logging Setup (single output to avoid duplicates)
 # -----------------------------------------------------------------------------
 
-LOGGER_NAME = "CameraSolverV2"
-logger = logging.getLogger(LOGGER_NAME)
-if not logger.handlers:
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
-    logger.addHandler(handler)
-
-# Also print to console for ComfyUI visibility
 def log_info(msg):
-    logger.info(msg)
     print(f"[CameraSolverV2] {msg}")
 
 def log_error(msg):
-    logger.error(msg)
     print(f"[CameraSolverV2] ❌ {msg}")
 
 def log_warning(msg):
-    logger.warning(msg)
     print(f"[CameraSolverV2] ⚠️ {msg}")
 
 # -----------------------------------------------------------------------------
@@ -513,19 +500,58 @@ class CameraSolverV2:
         images: torch.Tensor,
         query_points: np.ndarray,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Run TAPIR tracking on video frames."""
+        """Run TAPIR tracking on video frames with automatic resolution scaling."""
+        
+        num_frames = images.shape[0]
+        H, W = images.shape[1], images.shape[2]
+        
+        # Calculate if we need to downscale for memory
+        # TAPIR uses roughly: frames * H * W * 4 bytes * ~100 (feature maps)
+        # Safe limit: ~4GB for tracking = ~40M pixels total
+        total_pixels = num_frames * H * W
+        max_pixels = 30_000_000  # Conservative limit
+        
+        scale_factor = 1.0
+        if total_pixels > max_pixels:
+            scale_factor = (max_pixels / total_pixels) ** 0.5
+            scale_factor = max(0.25, scale_factor)  # Don't go below 25%
+            log_info(f"Downscaling to {scale_factor:.0%} for memory ({total_pixels/1e6:.1f}M -> {total_pixels*scale_factor**2/1e6:.1f}M pixels)")
         
         try:
-            # Prepare video: [B, T, H, W, C] normalized to [-1, 1]
-            video = images.float()  # [T, H, W, C]
-            video = video / 255.0 * 2 - 1 if video.max() > 1 else video * 2 - 1
+            # Prepare video: [T, H, W, C] normalized to [-1, 1]
+            video = images.float()
+            if video.max() > 1:
+                video = video / 255.0 * 2 - 1
+            else:
+                video = video * 2 - 1
+            
+            # Downscale if needed
+            if scale_factor < 1.0:
+                new_H = int(H * scale_factor)
+                new_W = int(W * scale_factor)
+                # Resize: [T, H, W, C] -> [T, C, H, W] -> resize -> [T, new_H, new_W, C]
+                video = video.permute(0, 3, 1, 2)  # [T, C, H, W]
+                video = F.interpolate(video, size=(new_H, new_W), mode='bilinear', align_corners=False)
+                video = video.permute(0, 2, 3, 1)  # [T, new_H, new_W, C]
+                
+                # Scale query points
+                query_points = query_points.copy().astype(np.float32)
+                query_points[:, 1] *= scale_factor  # y
+                query_points[:, 2] *= scale_factor  # x
+                
+                log_info(f"Resized to {new_W}x{new_H}")
+            
             video = video.unsqueeze(0).to(self.device)  # [1, T, H, W, C]
             
             # Prepare query points: [B, N, 3]
             query_tensor = torch.tensor(query_points, dtype=torch.float32)
             query_tensor = query_tensor.unsqueeze(0).to(self.device)  # [1, N, 3]
             
-            print(f"[CameraSolverV2] Running TAPIR inference...")
+            log_info(f"Running TAPIR inference ({video.shape[1]} frames, {query_tensor.shape[1]} points)...")
+            
+            # Clear cache before inference
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             with torch.no_grad():
                 outputs = self.tapir_model(video, query_tensor)
@@ -535,16 +561,30 @@ class CameraSolverV2:
             occlusions = outputs['occlusion'][0]  # [N, T]
             expected_dist = outputs['expected_dist'][0]  # [N, T]
             
+            # Scale tracks back to original resolution
+            if scale_factor < 1.0:
+                tracks = tracks / scale_factor
+            
             # Compute visibility
             visibles = (1 - torch.sigmoid(occlusions)) * (1 - torch.sigmoid(expected_dist)) > 0.5
             visibles = visibles.cpu().numpy()  # [N, T]
             
-            print(f"[CameraSolverV2] Tracking complete: {tracks.shape[0]} points x {tracks.shape[1]} frames")
+            log_info(f"Tracking complete: {tracks.shape[0]} points × {tracks.shape[1]} frames")
+            
+            # Clear GPU memory
+            del video, query_tensor, outputs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             return tracks, visibles
             
+        except torch.cuda.OutOfMemoryError:
+            log_error("GPU out of memory! Try reducing grid_size or video resolution")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return None, None
         except Exception as e:
-            print(f"[CameraSolverV2] TAPIR inference error: {e}")
+            log_error(f"TAPIR inference error: {e}")
             import traceback
             traceback.print_exc()
             return None, None

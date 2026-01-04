@@ -53,7 +53,8 @@ pip install torch torchvision
 pip install opencv-python numpy
 pip install ultralytics  # YOLO for person detection
 
-# v5.0 TAPIR (recommended for CameraSolverV2):
+# v5.0 TAPIR dependencies (required for CameraSolverV2):
+pip install tensorflow tensorflow-datasets  # Required by tapnet
 pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'
 
 # Download TAPIR checkpoint (~250MB):
@@ -66,6 +67,34 @@ pip install pyrender trimesh PyOpenGL
 # Optional for legacy solver matching:
 # pip install lightglue   # Apache 2.0 license
 # pip install kornia      # LoFTR - Apache 2.0 license
+```
+
+### Quick Install (Copy-Paste)
+```bash
+# Install all TAPIR dependencies at once
+pip install tensorflow tensorflow-datasets einshape
+pip install 'tapnet[torch] @ git+https://github.com/google-deepmind/tapnet.git'
+
+# Download checkpoint
+mkdir -p ComfyUI/models/tapir && \
+wget -O ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt \
+  https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt
+```
+
+### Verify Installation
+```bash
+# Test TAPIR import
+python -c "from tapnet.torch import tapir_model; print('TAPIR OK')"
+
+# Test checkpoint loading
+python -c "
+import torch
+from tapnet.torch import tapir_model
+model = tapir_model.TAPIR(pyramid_level=1)
+ckpt = torch.load('ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt', map_location='cpu')
+model.load_state_dict(ckpt)
+print('TAPIR checkpoint OK')
+"
 ```
 
 ### For Parallax/Translation Solving
