@@ -758,10 +758,10 @@ class CameraSolverV2:
         """
         Solve camera matrices based on shot type.
         
-        Uses INCREMENTAL homography computation:
+        Uses BIDIRECTIONAL INCREMENTAL homography computation:
         - Compute H between consecutive frames (small motion = accurate)
-        - Compose to get cumulative rotation from frame 0
-        - This avoids error amplification from large frame gaps
+        - Solve both forward and backward
+        - Blend results for robustness at sequence boundaries
         """
         
         num_frames = tracks.shape[1]
@@ -793,90 +793,132 @@ class CameraSolverV2:
         ], dtype=np.float64)
         K_inv = np.linalg.inv(K)
         
-        print(f"[CameraSolverV2] Using INCREMENTAL homography computation")
+        print(f"[CameraSolverV2] Using BIDIRECTIONAL INCREMENTAL homography")
         
-        # Step 1: Compute incremental rotations (frame t-1 to frame t)
-        incremental_rotations = []
-        
-        for t in range(num_frames):
-            if t == 0:
-                # First frame: identity (no rotation from itself)
-                R_inc = np.eye(3)
-            else:
-                # Get visible points in consecutive frames
-                vis_both = visibles[:, t-1] & visibles[:, t]
-                num_visible = np.sum(vis_both)
-                
-                if num_visible < 8:
-                    # Not enough points, assume no rotation
-                    print(f"[CameraSolverV2] Frame {t}: Only {num_visible} points, using identity")
-                    R_inc = np.eye(3)
-                else:
-                    pts_prev = tracks[vis_both, t-1, :].astype(np.float64)
-                    pts_curr = tracks[vis_both, t, :].astype(np.float64)
-                    
-                    # Find homography between consecutive frames
-                    H, mask = cv2.findHomography(pts_prev, pts_curr, cv2.RANSAC, 2.0)
-                    
-                    if H is not None:
-                        # Decompose homography to get rotation
-                        # For pure rotation: H = K * R * K^-1
-                        # Therefore: R = K^-1 * H * K
-                        R_inc = K_inv @ H @ K
-                        
-                        # Ensure R is a proper rotation matrix via SVD
-                        U, _, Vt = np.linalg.svd(R_inc)
-                        R_inc = U @ Vt
-                        
-                        # Ensure det(R) = 1 (proper rotation, not reflection)
-                        if np.linalg.det(R_inc) < 0:
-                            R_inc = -R_inc
-                        
-                        # Sanity check: incremental rotation should be small
-                        angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
-                        angle_deg = np.degrees(angle)
-                        
-                        if angle_deg > 10:
-                            # Suspiciously large rotation for consecutive frames
-                            print(f"[CameraSolverV2] Frame {t}: Large rotation {angle_deg:.1f}°, clamping")
-                            # Scale down the rotation
-                            axis_angle = self._rotation_to_axis_angle(R_inc)
-                            max_angle = np.radians(5)  # Max 5° per frame
-                            if np.linalg.norm(axis_angle) > max_angle:
-                                axis_angle = axis_angle / np.linalg.norm(axis_angle) * max_angle
-                            R_inc = self._axis_angle_to_rotation(axis_angle)
-                    else:
-                        print(f"[CameraSolverV2] Frame {t}: Homography failed, using identity")
-                        R_inc = np.eye(3)
+        # Helper function to compute incremental rotation between two frames
+        def compute_incremental_rotation(t_from, t_to):
+            """Compute rotation from frame t_from to frame t_to."""
+            vis_both = visibles[:, t_from] & visibles[:, t_to]
+            num_visible = np.sum(vis_both)
             
-            incremental_rotations.append(R_inc)
-        
-        # Step 2: Compose incremental rotations to get cumulative rotation from frame 0
-        # R_0_to_t = R_(t-1)_to_t @ R_(t-2)_to_(t-1) @ ... @ R_0_to_1
-        cumulative_rotations = []
-        R_cumulative = np.eye(3)
-        
-        for t in range(num_frames):
-            if t == 0:
-                R_cumulative = np.eye(3)
-            else:
-                # Compose: new cumulative = incremental @ previous cumulative
-                R_cumulative = incremental_rotations[t] @ R_cumulative
-                
-                # Re-orthonormalize periodically to prevent drift
-                if t % 10 == 0:
-                    U, _, Vt = np.linalg.svd(R_cumulative)
-                    R_cumulative = U @ Vt
+            if num_visible < 8:
+                return None, num_visible
             
-            cumulative_rotations.append(R_cumulative.copy())
+            pts_from = tracks[vis_both, t_from, :].astype(np.float64)
+            pts_to = tracks[vis_both, t_to, :].astype(np.float64)
+            
+            H, mask = cv2.findHomography(pts_from, pts_to, cv2.RANSAC, 2.0)
+            
+            if H is None:
+                return None, num_visible
+            
+            # Decompose: R = K^-1 * H * K
+            R = K_inv @ H @ K
+            
+            # Ensure proper rotation matrix via SVD
+            U, _, Vt = np.linalg.svd(R)
+            R = U @ Vt
+            if np.linalg.det(R) < 0:
+                R = -R
+            
+            return R, num_visible
         
-        # Step 3: Apply temporal smoothing if requested
-        if smoothing_window > 0 and len(cumulative_rotations) > smoothing_window:
+        # ========== FORWARD PASS ==========
+        print(f"[CameraSolverV2] Forward pass...")
+        forward_rotations = [np.eye(3)]  # Frame 0 = identity
+        last_valid_R = np.eye(3)
+        forward_valid = [True]
+        
+        for t in range(1, num_frames):
+            R_inc, num_pts = compute_incremental_rotation(t-1, t)
+            
+            if R_inc is not None:
+                # Sanity check: rotation should be small
+                angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
+                if np.degrees(angle) > 5:
+                    # Scale down large rotations
+                    axis_angle = self._rotation_to_axis_angle(R_inc)
+                    axis_angle = axis_angle / np.linalg.norm(axis_angle) * np.radians(3)
+                    R_inc = self._axis_angle_to_rotation(axis_angle)
+                
+                last_valid_R = R_inc
+                forward_rotations.append(R_inc @ forward_rotations[-1])
+                forward_valid.append(True)
+            else:
+                # Use last valid rotation (assume similar motion continues)
+                print(f"[CameraSolverV2] Frame {t}: {num_pts} points, using last valid rotation")
+                forward_rotations.append(last_valid_R @ forward_rotations[-1])
+                forward_valid.append(False)
+        
+        # ========== BACKWARD PASS ==========
+        print(f"[CameraSolverV2] Backward pass...")
+        backward_rotations = [None] * num_frames
+        backward_rotations[-1] = np.eye(3)  # Last frame = identity for backward
+        last_valid_R = np.eye(3)
+        backward_valid = [False] * num_frames
+        backward_valid[-1] = True
+        
+        for t in range(num_frames - 2, -1, -1):
+            R_inc, num_pts = compute_incremental_rotation(t+1, t)
+            
+            if R_inc is not None:
+                angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
+                if np.degrees(angle) > 5:
+                    axis_angle = self._rotation_to_axis_angle(R_inc)
+                    axis_angle = axis_angle / np.linalg.norm(axis_angle) * np.radians(3)
+                    R_inc = self._axis_angle_to_rotation(axis_angle)
+                
+                last_valid_R = R_inc
+                backward_rotations[t] = R_inc @ backward_rotations[t+1]
+                backward_valid[t] = True
+            else:
+                backward_rotations[t] = last_valid_R @ backward_rotations[t+1]
+                backward_valid[t] = False
+        
+        # ========== BLEND FORWARD AND BACKWARD ==========
+        print(f"[CameraSolverV2] Blending forward/backward passes...")
+        
+        # Convert backward rotations to same reference (frame 0)
+        # backward_rotations are relative to last frame, need to align
+        R_last_to_first = forward_rotations[-1]
+        for t in range(num_frames):
+            # backward[t] goes from frame t to last frame
+            # We want: frame 0 to frame t
+            # R_0_to_t = R_last_to_first @ backward[t].T
+            backward_rotations[t] = R_last_to_first @ backward_rotations[t].T
+        
+        # Blend based on validity and position
+        final_rotations = []
+        for t in range(num_frames):
+            # Weight: prefer valid passes, blend at boundaries
+            w_fwd = 1.0 if forward_valid[t] else 0.3
+            w_bwd = 1.0 if backward_valid[t] else 0.3
+            
+            # Position-based weighting: forward more reliable at start, backward at end
+            pos_weight = t / max(num_frames - 1, 1)
+            w_fwd *= (1 - pos_weight * 0.5)
+            w_bwd *= (0.5 + pos_weight * 0.5)
+            
+            # Normalize weights
+            total = w_fwd + w_bwd
+            w_fwd /= total
+            w_bwd /= total
+            
+            # Blend in axis-angle space
+            aa_fwd = self._rotation_to_axis_angle(forward_rotations[t])
+            aa_bwd = self._rotation_to_axis_angle(backward_rotations[t])
+            aa_blend = w_fwd * aa_fwd + w_bwd * aa_bwd
+            
+            R_blend = self._axis_angle_to_rotation(aa_blend)
+            final_rotations.append(R_blend)
+        
+        # Apply temporal smoothing if requested
+        if smoothing_window > 0 and len(final_rotations) > smoothing_window:
             print(f"[CameraSolverV2] Applying rotation smoothing (window={smoothing_window})")
-            cumulative_rotations = self._smooth_rotations(cumulative_rotations, smoothing_window)
+            final_rotations = self._smooth_rotations(final_rotations, smoothing_window)
         
-        # Step 4: Convert to output format
-        for t, R in enumerate(cumulative_rotations):
+        # Convert to output format
+        for t, R in enumerate(final_rotations):
             # Build 4x4 matrix (rotation only, no translation for rotation shots)
             M = np.eye(4)
             M[:3, :3] = R
@@ -894,8 +936,8 @@ class CameraSolverV2:
             })
         
         # Log total rotation
-        if len(cumulative_rotations) > 1:
-            R_total = cumulative_rotations[-1]
+        if len(final_rotations) > 1:
+            R_total = final_rotations[-1]
             total_angle = np.degrees(np.arccos(np.clip((np.trace(R_total) - 1) / 2, -1, 1)))
             print(f"[CameraSolverV2] Total camera rotation: {total_angle:.1f}°")
         
