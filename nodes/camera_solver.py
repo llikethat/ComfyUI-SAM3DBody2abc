@@ -167,6 +167,8 @@ class CameraSolver:
         self.superpoint = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._availability_logged = False
+        self._lightglue_warned = False
+        self._loftr_warned = False
     
     # ==================== Availability Check ====================
     
@@ -257,10 +259,14 @@ class CameraSolver:
             print(f"[CameraSolver] LightGlue loaded on {self.device}")
             return True
         except ImportError:
-            print("[CameraSolver] LightGlue not installed. Install with: pip install lightglue")
+            if not self._lightglue_warned:
+                print("[CameraSolver] LightGlue not installed. Install with: pip install lightglue")
+                self._lightglue_warned = True
             return False
         except Exception as e:
-            print(f"[CameraSolver] LightGlue failed: {e}")
+            if not self._lightglue_warned:
+                print(f"[CameraSolver] LightGlue failed: {e}")
+                self._lightglue_warned = True
             return False
     
     def load_loftr(self):
@@ -368,10 +374,9 @@ class CameraSolver:
     def run_lightglue(self, frame0: np.ndarray, frame1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """LightGlue matching (GPU with CPU fallback)."""
         if not self.load_lightglue():
-            print("[CameraSolver] LightGlue unavailable, trying LoFTR...")
+            # Already warned in load_lightglue, just fallback silently
             if self.load_loftr():
                 return self.run_loftr(frame0, frame1)
-            print("[CameraSolver] LoFTR also unavailable, falling back to ORB")
             return self.run_orb(frame0, frame1)
         
         try:
@@ -575,8 +580,13 @@ class CameraSolver:
         quality: str,
         focal_px: float,
         match_threshold: int
-    ) -> List[Dict]:
-        """Solve rotation-only camera (nodal pan/tilt)."""
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """Solve rotation-only camera (nodal pan/tilt).
+        
+        Returns:
+            rotations: List of rotation dicts per frame
+            track_history: List of tracked point pairs for visualization
+        """
         num_frames = len(frames)
         H, W = frames.shape[1:3]
         
@@ -590,6 +600,9 @@ class CameraSolver:
         rotations = [{"frame": 0, "pan": 0.0, "tilt": 0.0, "roll": 0.0, "tx": 0.0, "ty": 0.0, "tz": 0.0}]
         cumulative_R = np.eye(3)
         
+        # Track history for visualization
+        track_history = []
+        
         for i in range(1, num_frames):
             mask0 = masks[i-1] if masks is not None else None
             
@@ -602,6 +615,14 @@ class CameraSolver:
                     pts0, pts1 = self.run_loftr(frames[i-1], frames[i])
             else:  # Fast
                 pts0, pts1 = self.run_klt(frames[i-1], frames[i], mask0)
+            
+            # Store track data for visualization
+            track_history.append({
+                "frame": i,
+                "pts0": pts0.copy() if len(pts0) > 0 else np.array([]),
+                "pts1": pts1.copy() if len(pts1) > 0 else np.array([]),
+                "num_points": len(pts0)
+            })
             
             if len(pts0) < 20:
                 rotations.append(rotations[-1].copy())
@@ -635,7 +656,7 @@ class CameraSolver:
                 "tz": 0.0,
             })
         
-        return rotations
+        return rotations, track_history
     
     def solve_with_translation(
         self,
@@ -890,13 +911,49 @@ class CameraSolver:
     
     # ==================== Debug Visualization ====================
     
-    def create_debug_vis(self, frames: np.ndarray, rotations: List[Dict], shot_type: str) -> np.ndarray:
-        """Create debug visualization."""
+    def create_debug_vis(self, frames: np.ndarray, rotations: List[Dict], shot_type: str, 
+                          track_history: Optional[List[Dict]] = None, trail_length: int = 25) -> np.ndarray:
+        """Create debug visualization with optional rainbow trails."""
         debug_frames = []
+        num_frames = len(frames)
+        
+        # Build point trails from track history if available
+        # Since KLT tracks frame-to-frame (not persistent IDs), we'll show current frame matches
+        # with color coding based on motion direction
         
         for i, frame in enumerate(frames):
             debug = frame.copy()
             
+            # Draw track points and motion vectors if available
+            if track_history is not None and i > 0 and i <= len(track_history):
+                track_data = track_history[i - 1]  # track_history[0] is frame 0->1
+                pts0 = track_data.get("pts0", np.array([]))
+                pts1 = track_data.get("pts1", np.array([]))
+                
+                if len(pts0) > 0 and len(pts1) > 0:
+                    # Color based on frame position (rainbow over time)
+                    hue = int(180 * i / max(num_frames - 1, 1))
+                    
+                    # Draw motion vectors with rainbow colors
+                    for j in range(min(len(pts0), 200)):  # Limit for performance
+                        p0 = tuple(pts0[j].astype(int))
+                        p1 = tuple(pts1[j].astype(int))
+                        
+                        # Convert HSV to BGR for OpenCV
+                        hsv_color = np.uint8([[[hue, 255, 255]]])
+                        bgr_color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)[0][0]
+                        color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
+                        
+                        # Draw line from previous to current position
+                        cv2.line(debug, p0, p1, color, 1, cv2.LINE_AA)
+                        # Draw current point
+                        cv2.circle(debug, p1, 3, color, -1, cv2.LINE_AA)
+                    
+                    # Show point count
+                    cv2.putText(debug, f"Points: {len(pts0)}", (10, 90),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Draw rotation info
             if i < len(rotations):
                 rot = rotations[i]
                 pan_deg = np.degrees(rot["pan"])
@@ -907,9 +964,9 @@ class CameraSolver:
                 cv2.putText(debug, f"Pan: {pan_deg:.1f} Tilt: {tilt_deg:.1f}", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 
-                if abs(rot["tx"]) > 0.001 or abs(rot["ty"]) > 0.001 or abs(rot["tz"]) > 0.001:
+                if abs(rot.get("tx", 0)) > 0.001 or abs(rot.get("ty", 0)) > 0.001 or abs(rot.get("tz", 0)) > 0.001:
                     cv2.putText(debug, f"T: ({rot['tx']:.2f}, {rot['ty']:.2f}, {rot['tz']:.2f})",
-                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 128, 0), 2)
+                               (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 128, 0), 2)
             
             debug_frames.append(debug)
         
@@ -1009,9 +1066,10 @@ class CameraSolver:
                         for i in range(num_frames)]
             status = "Static: No camera motion"
             solving_method_used = "none"
+            track_history = None
             
         elif shot_type == "Nodal":
-            rotations = self.solve_rotation_only(frames, masks, quality_mode, focal_px, adaptive_threshold)
+            rotations, track_history = self.solve_rotation_only(frames, masks, quality_mode, focal_px, adaptive_threshold)
             status = f"Rotation Only: Homography ({quality_mode})"
             solving_method_used = "rotation_only"
             
@@ -1020,6 +1078,7 @@ class CameraSolver:
             solver_used = "COLMAP" if (COLMAP_AVAILABLE and translation_solver == "COLMAP") else "Essential Matrix"
             status = f"Full 6-DOF: {solver_used} ({quality_mode})"
             solving_method_used = "full_6dof"
+            track_history = None
             
         elif shot_type == "Hybrid":
             if not transitions:
@@ -1027,11 +1086,13 @@ class CameraSolver:
             rotations = self.solve_hybrid(frames, masks, quality_mode, focal_px, adaptive_threshold, transitions, stitch_overlap)
             status = f"Hybrid: Transitions at {transitions}"
             solving_method_used = "hybrid"
+            track_history = None
         else:
             rotations = [{"frame": i, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0}
                         for i in range(num_frames)]
             status = "Unknown"
             solving_method_used = "none"
+            track_history = None
         
         # Smoothing
         if smoothing > 1:
@@ -1121,12 +1182,12 @@ class CameraSolver:
             "parallax_score": 0.0,
             "homography_error": 0.0,
             "motion_magnitude": 0.0,
-            "num_points_tracked": 0,
+            "num_points_tracked": len(track_history) if track_history else 0,
             "details": {"solver": "legacy", "quality_mode": quality_mode},
         }
         
-        # Debug visualization
-        debug_vis = self.create_debug_vis(frames, rotations, shot_type)
+        # Debug visualization with track trails
+        debug_vis = self.create_debug_vis(frames, rotations, shot_type, track_history)
         debug_tensor = torch.from_numpy(debug_vis).float() / 255.0
         
         # Final status

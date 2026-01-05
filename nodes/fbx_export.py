@@ -158,12 +158,9 @@ class ExportAnimatedFBX:
                 }),
             },
             "optional": {
-                # Camera data - separate intrinsics and extrinsics
-                "camera_extrinsics": ("CAMERA_EXTRINSICS", {
-                    "tooltip": "Camera extrinsics (rotation + translation per frame) from Camera Solver or COLMAP Bridge."
-                }),
-                "camera_intrinsics": ("CAMERA_INTRINSICS", {
-                    "tooltip": "Camera intrinsics (focal length) from MoGe2 Intrinsics. Takes precedence over manual sensor_width."
+                # Camera data - unified input from CameraSolver V2 or Legacy
+                "camera_matrices": ("CAMERA_MATRICES", {
+                    "tooltip": "Camera matrices from Camera Solver (V2 or Legacy). Contains rotation/translation per frame + intrinsics."
                 }),
                 
                 # Timing
@@ -196,18 +193,15 @@ class ExportAnimatedFBX:
                     "tooltip": "Rotations: proper bone rotations for retargeting. Positions: exact joint locations."
                 }),
                 
-                # World translation / camera compensation
+                # World translation mode
                 "world_translation": ([
                     "None (Body at Origin)",
                     "Baked into Mesh/Joints",
-                    "Baked into Camera",
-                    "Root Locator + Camera Compensation",
                     "Root Locator",
-                    "Root Locator + Animated Camera",
                     "Separate Track"
                 ], {
                     "default": "None (Body at Origin)",
-                    "tooltip": "How to handle world translation. 'Root Locator + Camera Compensation' bakes inverse camera extrinsics into root for stable exports."
+                    "tooltip": "How to handle world translation from pred_cam_t."
                 }),
                 
                 # Mesh/camera options
@@ -221,43 +215,24 @@ class ExportAnimatedFBX:
                 }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Include camera in export"
+                    "tooltip": "Include animated camera from camera_matrices"
                 }),
                 
-                # Camera motion style (for animated camera modes)
-                "camera_motion": (["Translation (Default)", "Rotation (Pan/Tilt)", "Static"], {
-                    "default": "Translation (Default)",
-                    "tooltip": "How camera follows character when using animated camera modes."
-                }),
-                
-                # Smoothing (extrinsics only)
-                "extrinsics_smoothing": (["Kalman Filter", "Spline Fitting", "Gaussian", "None"], {
-                    "default": "Kalman Filter",
-                    "tooltip": "Smoothing method for camera extrinsics. Kalman: optimal for sequential data. Spline: smooth curves."
-                }),
-                "smoothing_strength": ("FLOAT", {
-                    "default": 0.5,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.1,
-                    "tooltip": "Smoothing strength (0=minimal, 1=maximum). Only applies to extrinsics, not intrinsics."
-                }),
-                
-                # Fallback sensor width (used if no camera_intrinsics provided)
+                # Fallback sensor width (used if no camera_matrices provided)
                 "sensor_width": ("FLOAT", {
                     "default": 36.0,
                     "min": 1.0,
                     "max": 100.0,
                     "step": 0.1,
-                    "tooltip": "Camera sensor width in mm. Only used if camera_intrinsics not provided."
+                    "tooltip": "Camera sensor width in mm. Only used if camera_matrices not provided."
                 }),
                 
-                # Metadata inputs for embedding in FBX
+                # Optional metadata inputs
                 "subject_motion": ("SUBJECT_MOTION", {
-                    "tooltip": "Motion analysis data from Motion Analyzer node (for metadata embedding)"
+                    "tooltip": "Motion analysis data from Motion Analyzer node (optional, for metadata)"
                 }),
                 "scale_info": ("SCALE_INFO", {
-                    "tooltip": "Scale information from Motion Analyzer node (for metadata embedding)"
+                    "tooltip": "Scale information from Motion Analyzer node (optional, for metadata)"
                 }),
                 
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
@@ -289,7 +264,6 @@ class ExportAnimatedFBX:
     def _build_metadata(
         self,
         world_translation: str,
-        camera_motion: str,
         subject_motion: Optional[Dict],
         scale_info: Optional[Dict],
         source_video_fps: float,
@@ -331,7 +305,6 @@ class ExportAnimatedFBX:
             "export_timestamp": timestamp,
             # Export settings
             "world_translation": world_translation,
-            "camera_motion": camera_motion,
             "export_fps": fps,
             "frame_count": frame_count,
         }
@@ -474,8 +447,7 @@ class ExportAnimatedFBX:
         self,
         mesh_sequence: Dict,
         filename: str = "animation",
-        camera_extrinsics: Optional[Dict] = None,
-        camera_intrinsics: Optional[Dict] = None,
+        camera_matrices: Optional[Dict] = None,
         fps: float = 0.0,
         frame_offset: int = 1,
         output_format: str = "FBX",
@@ -485,9 +457,6 @@ class ExportAnimatedFBX:
         flip_x: bool = False,
         include_mesh: bool = True,
         include_camera: bool = True,
-        camera_motion: str = "Translation (Default)",
-        extrinsics_smoothing: str = "Kalman Filter",
-        smoothing_strength: float = 0.5,
         sensor_width: float = 36.0,
         subject_motion: Optional[Dict] = None,
         scale_info: Optional[Dict] = None,
@@ -505,15 +474,16 @@ class ExportAnimatedFBX:
             fps = mesh_sequence.get("fps", 24.0)
             print(f"[Export] Using fps from source: {fps}")
         
-        # Get intrinsics from camera_intrinsics if provided (MoGe2 takes precedence)
-        if camera_intrinsics is not None:
-            intrinsics_focal_px = camera_intrinsics.get("focal_length_px", None)
-            intrinsics_sensor_mm = camera_intrinsics.get("sensor_width_mm", sensor_width)
-            intrinsics_source = camera_intrinsics.get("source", "unknown")
-            intrinsics_cx = camera_intrinsics.get("principal_point_x", None)
-            intrinsics_cy = camera_intrinsics.get("principal_point_y", None)
-            intrinsics_w = camera_intrinsics.get("image_width", None)
-            intrinsics_h = camera_intrinsics.get("image_height", None)
+        # Extract intrinsics from camera_matrices if provided
+        if camera_matrices is not None:
+            cam_intrinsics = camera_matrices.get("intrinsics", {})
+            intrinsics_focal_px = cam_intrinsics.get("focal_px", None)
+            intrinsics_sensor_mm = cam_intrinsics.get("sensor_width_mm", sensor_width)
+            intrinsics_source = cam_intrinsics.get("source", "camera_solver")
+            intrinsics_cx = cam_intrinsics.get("cx", None)
+            intrinsics_cy = cam_intrinsics.get("cy", None)
+            intrinsics_w = cam_intrinsics.get("width", None)
+            intrinsics_h = cam_intrinsics.get("height", None)
             
             if intrinsics_focal_px:
                 print(f"[Export] Using intrinsics from {intrinsics_source}: focal={intrinsics_focal_px:.1f}px")
@@ -521,55 +491,29 @@ class ExportAnimatedFBX:
             # Log principal point (cx, cy)
             if intrinsics_cx is not None and intrinsics_cy is not None:
                 print(f"[Export] Principal point: cx={intrinsics_cx:.2f}px, cy={intrinsics_cy:.2f}px")
-                if intrinsics_w and intrinsics_h:
-                    # Calculate offset from image center
-                    center_x = intrinsics_w / 2.0
-                    center_y = intrinsics_h / 2.0
-                    offset_x = intrinsics_cx - center_x
-                    offset_y = intrinsics_cy - center_y
-                    print(f"[Export] Image center: ({center_x:.1f}, {center_y:.1f})")
-                    print(f"[Export] Principal point offset: dx={offset_x:.2f}px, dy={offset_y:.2f}px")
-                    
-                    # Calculate film offset (normalized)
-                    # Film offset = offset from center / image dimension
-                    film_offset_x = offset_x / intrinsics_w
-                    film_offset_y = offset_y / intrinsics_h
-                    print(f"[Export] Film offset (normalized): X={film_offset_x:.4f}, Y={film_offset_y:.4f}")
         else:
             intrinsics_focal_px = None
             intrinsics_sensor_mm = sensor_width
             intrinsics_source = "manual"
+            cam_intrinsics = {}
         
-        # Check if we have camera extrinsics
-        has_extrinsics = camera_extrinsics is not None and "rotations" in camera_extrinsics
-        if has_extrinsics:
-            extrinsics_source = camera_extrinsics.get("source", "unknown")
-            print(f"[Export] Using camera extrinsics from {extrinsics_source} ({len(camera_extrinsics['rotations'])} frames)")
+        # Check if we have camera matrices (rotation/translation data)
+        has_camera_data = camera_matrices is not None and "matrices" in camera_matrices
+        if has_camera_data:
+            cam_source = camera_matrices.get("source", "CameraSolver")
+            shot_type = camera_matrices.get("shot_type", "unknown")
+            num_cam_frames = len(camera_matrices.get("matrices", []))
+            print(f"[Export] Using camera data from {cam_source}: {num_cam_frames} frames, shot_type={shot_type}")
         
-        # Determine camera behavior based on world_translation mode
-        use_camera_rotation = ("Rotation" in camera_motion)
-        camera_static = (camera_motion == "Static")
-        animate_camera = (world_translation == "Baked into Camera")
-        camera_follow_root = ("Root Locator + Animated Camera" in world_translation)
-        camera_compensation = ("Camera Compensation" in world_translation)
-        
-        # Camera compensation mode: bake inverse extrinsics into root locator
-        if camera_compensation and not has_extrinsics:
-            print("[Export] Warning: 'Root Locator + Camera Compensation' requires camera_extrinsics input. Falling back to 'Root Locator'.")
-            world_translation = "Root Locator"
-            camera_compensation = False
+        # Simplified camera behavior
+        # If camera_matrices provided and include_camera=True, export animated camera
+        animate_camera = has_camera_data and include_camera
         
         if include_camera:
-            if camera_compensation:
-                print(f"[Export] Camera Compensation mode: inverse extrinsics baked into root, static camera exported")
-            elif animate_camera:
-                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
-                print(f"[Export] Camera animated with {mode_str}")
-            elif camera_follow_root:
-                mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
-                print(f"[Export] Camera follows root with {mode_str}")
-            elif not camera_compensation:
-                print(f"[Export] Camera will be static")
+            if has_camera_data:
+                print(f"[Export] Camera will be animated from camera_matrices ({shot_type} shot)")
+            else:
+                print(f"[Export] Camera will be static (no camera_matrices provided)")
         
         frames = mesh_sequence.get("frames", {})
         if not frames:
@@ -594,14 +538,8 @@ class ExportAnimatedFBX:
         
         # Map world_translation option to mode
         translation_mode = "none"
-        if "Camera Compensation" in world_translation:
-            translation_mode = "root_camera_compensation"
-        elif "Baked into Geometry" in world_translation:
-            translation_mode = "bake_to_geometry"
-        elif "Baked into Mesh" in world_translation:
+        if "Baked into Mesh" in world_translation:
             translation_mode = "baked"
-        elif "Baked into Camera" in world_translation:
-            translation_mode = "camera"
         elif "Root" in world_translation:
             translation_mode = "root"
         elif "Separate" in world_translation:
@@ -645,52 +583,41 @@ class ExportAnimatedFBX:
             elif isinstance(joint_parents, list):
                 print(f"[Export] joint_parents length: {len(joint_parents)}")
         
-        print(f"[Export] Camera motion mode: {'Static' if camera_static else ('Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation')}")
+        print(f"[Export] Camera animated: {animate_camera}")
         
-        # Prepare camera extrinsics for Blender
+        # Prepare camera extrinsics for Blender (from camera_matrices)
         solved_rotations = None
-        if has_extrinsics:
+        if has_camera_data:
             solved_rotations = []
-            has_translation = camera_extrinsics.get("has_translation", False)
-            for rot_data in camera_extrinsics["rotations"]:
+            matrices_list = camera_matrices.get("matrices", [])
+            for rot_data in matrices_list:
                 rot_entry = {
                     "frame": rot_data.get("frame", 0),
-                    "pan": rot_data.get("pan", 0.0),
-                    "tilt": rot_data.get("tilt", 0.0),
-                    "roll": rot_data.get("roll", 0.0),
-                    "tx": rot_data.get("tx", 0.0),
-                    "ty": rot_data.get("ty", 0.0),
-                    "tz": rot_data.get("tz", 0.0),
+                    "pan": np.radians(rot_data.get("pan", 0.0)),  # Convert from degrees
+                    "tilt": np.radians(rot_data.get("tilt", 0.0)),
+                    "roll": np.radians(rot_data.get("roll", 0.0)),
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "tz": 0.0,
                 }
                 solved_rotations.append(rot_entry)
             
             final_rot = solved_rotations[-1]
             print(f"[Export] Camera extrinsics: {len(solved_rotations)} frames")
             print(f"[Export]   Final: pan={np.degrees(final_rot['pan']):.2f}°, tilt={np.degrees(final_rot['tilt']):.2f}°")
-            if has_translation:
-                print(f"[Export]   Translation present: tx={final_rot['tx']:.4f}, ty={final_rot['ty']:.4f}, tz={final_rot['tz']:.4f}")
         
-        # Map smoothing method to internal name
-        smoothing_method_map = {
-            "Kalman Filter": "kalman",
-            "Spline Fitting": "spline",
-            "Gaussian": "gaussian",
-            "None": "none",
-        }
-        smoothing_method = smoothing_method_map.get(extrinsics_smoothing, "kalman")
-        
-        # Prepare intrinsics data for export
+        # Prepare intrinsics data for export (from camera_matrices)
         intrinsics_export = None
-        if camera_intrinsics is not None:
+        if cam_intrinsics:
             intrinsics_export = {
-                "focal_length_px": camera_intrinsics.get("focal_length_px"),
-                "focal_length_mm": camera_intrinsics.get("focal_length_mm"),
-                "sensor_width_mm": camera_intrinsics.get("sensor_width_mm", sensor_width),
-                "principal_point_x": camera_intrinsics.get("principal_point_x"),
-                "principal_point_y": camera_intrinsics.get("principal_point_y"),
-                "image_width": camera_intrinsics.get("image_width"),
-                "image_height": camera_intrinsics.get("image_height"),
-                "source": camera_intrinsics.get("source", "MoGe2"),
+                "focal_length_px": cam_intrinsics.get("focal_px"),
+                "focal_length_mm": cam_intrinsics.get("focal_mm"),
+                "sensor_width_mm": cam_intrinsics.get("sensor_width_mm", sensor_width),
+                "principal_point_x": cam_intrinsics.get("cx"),
+                "principal_point_y": cam_intrinsics.get("cy"),
+                "image_width": cam_intrinsics.get("width"),
+                "image_height": cam_intrinsics.get("height"),
+                "source": cam_intrinsics.get("source", "camera_solver"),
             }
         
         export_data = {
@@ -704,29 +631,22 @@ class ExportAnimatedFBX:
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
             "animate_camera": animate_camera,
-            "camera_follow_root": camera_follow_root,
-            "camera_use_rotation": use_camera_rotation,
-            "camera_static": camera_static,
-            "camera_compensation": camera_compensation,  # NEW: bake inverse extrinsics to root
-            "camera_extrinsics": solved_rotations,  # From Camera Solver / COLMAP Bridge / JSON
-            "camera_intrinsics": intrinsics_export,  # From MoGe2 Intrinsics
-            "extrinsics_smoothing_method": smoothing_method,
-            "extrinsics_smoothing_strength": smoothing_strength,
+            "camera_follow_root": False,  # Simplified - no longer using this mode
+            "camera_use_rotation": True,   # Always use rotation for camera animation
+            "camera_static": not animate_camera,
+            "camera_compensation": False,  # Simplified - no longer using this mode
+            "camera_extrinsics": solved_rotations,  # From Camera Solver
+            "camera_intrinsics": intrinsics_export,
+            "extrinsics_smoothing_method": "none",  # Smoothing already done in solver
+            "extrinsics_smoothing_strength": 0.0,
             "frames": [],
-            # Body world trajectory for animated locator (COMPENSATED - camera effects removed)
-            # Uses body_world_3d_compensated if available, falls back to raw body_world_3d
-            "body_world_trajectory": (
-                subject_motion.get("body_world_3d_compensated") or 
-                subject_motion.get("body_world_3d", [])
-            ) if subject_motion else [],
-            # Explicitly pass compensated trajectory for WorldPosition locator (v4.6.7)
+            # Body world trajectory for animated locator
+            "body_world_trajectory": subject_motion.get("body_world_3d", []) if subject_motion else [],
             "body_world_trajectory_compensated": subject_motion.get("body_world_3d_compensated", []) if subject_motion else [],
-            # Also include raw trajectory for reference
             "body_world_trajectory_raw": subject_motion.get("body_world_3d_raw", []) if subject_motion else [],
             # Metadata for embedding in FBX
             "metadata": self._build_metadata(
                 world_translation=world_translation,
-                camera_motion=camera_motion,
                 subject_motion=subject_motion,
                 scale_info=scale_info,
                 source_video_fps=source_video_fps,
@@ -770,6 +690,95 @@ class ExportAnimatedFBX:
                     print(f"[Export DEBUG]   screen_y = {screen_y:.1f}px")
                     print(f"[Export DEBUG]   (Image center: {cx:.0f}, {cy:.0f})")
                 print(f"[Export DEBUG] ================================================================\n")
+        
+        # ============================================================
+        # DEPTH/SCALE ANALYSIS - Track subject distance across frames
+        # ============================================================
+        # This captures subject movement toward/away from camera
+        # Even with nodal/rotation camera, subject can translate in depth
+        # ============================================================
+        
+        print(f"\n[Export] ============== DEPTH/SCALE ANALYSIS ==============")
+        
+        tz_values = []
+        tx_values = []
+        ty_values = []
+        focal_values = []
+        
+        for idx in sorted_indices:
+            frame = frames[idx]
+            pred_cam_t = frame.get("pred_cam_t")
+            if pred_cam_t is None:
+                pred_cam_t = frame.get("camera")
+            
+            if pred_cam_t is not None:
+                cam_t = to_list(pred_cam_t)
+                if len(cam_t) >= 3:
+                    tx_values.append(cam_t[0])
+                    ty_values.append(cam_t[1])
+                    tz_values.append(cam_t[2])
+            
+            focal = frame.get("focal_length")
+            if focal is not None:
+                if hasattr(focal, 'item'):
+                    focal = focal.item()
+                focal_values.append(float(focal))
+        
+        if tz_values:
+            tz_arr = np.array(tz_values)
+            tx_arr = np.array(tx_values)
+            ty_arr = np.array(ty_values)
+            
+            # Depth statistics
+            tz_min, tz_max = tz_arr.min(), tz_arr.max()
+            tz_range = tz_max - tz_min
+            tz_first, tz_last = tz_arr[0], tz_arr[-1]
+            tz_change = tz_last - tz_first
+            
+            # Scale change (inverse of depth - closer = larger)
+            scale_first = 1.0 / tz_first if tz_first != 0 else 0
+            scale_last = 1.0 / tz_last if tz_last != 0 else 0
+            scale_change_pct = ((scale_last / scale_first) - 1) * 100 if scale_first != 0 else 0
+            
+            print(f"[Export] pred_cam_t depth (tz) analysis:")
+            print(f"[Export]   Frame 0:   tz = {tz_first:.3f}")
+            print(f"[Export]   Frame {len(tz_arr)-1}:  tz = {tz_last:.3f}")
+            print(f"[Export]   Change:    Δtz = {tz_change:+.3f} ({'closer' if tz_change < 0 else 'farther' if tz_change > 0 else 'same'})")
+            print(f"[Export]   Range:     {tz_min:.3f} to {tz_max:.3f} (spread: {tz_range:.3f})")
+            print(f"[Export]   Scale change: {scale_change_pct:+.1f}% ({'larger' if scale_change_pct > 0 else 'smaller' if scale_change_pct < 0 else 'same'})")
+            
+            # Sample tz values at key frames
+            sample_frames = [0, len(tz_arr)//4, len(tz_arr)//2, 3*len(tz_arr)//4, len(tz_arr)-1]
+            sample_frames = sorted(set([min(f, len(tz_arr)-1) for f in sample_frames]))
+            print(f"[Export]   Sample tz values:")
+            for f in sample_frames:
+                rel_scale = (1.0/tz_arr[f]) / scale_first * 100 if scale_first != 0 and tz_arr[f] != 0 else 100
+                print(f"[Export]     Frame {f:3d}: tz={tz_arr[f]:.3f}, scale={rel_scale:.1f}%")
+            
+            # Horizontal/Vertical movement
+            tx_change = tx_arr[-1] - tx_arr[0]
+            ty_change = ty_arr[-1] - ty_arr[0]
+            print(f"[Export]   Horizontal movement (tx): {tx_arr[0]:.3f} → {tx_arr[-1]:.3f} (Δ={tx_change:+.3f})")
+            print(f"[Export]   Vertical movement (ty):   {ty_arr[0]:.3f} → {ty_arr[-1]:.3f} (Δ={ty_change:+.3f})")
+            
+            # Detect if this looks like subject approaching camera
+            if abs(tz_change) > 0.5:
+                if tz_change < 0:
+                    print(f"[Export]   ⚠️  Subject appears to be APPROACHING camera (tz decreasing)")
+                    print(f"[Export]      This creates scaling effect similar to zoom/dolly")
+                else:
+                    print(f"[Export]   ⚠️  Subject appears to be RECEDING from camera (tz increasing)")
+            
+            # Check focal length consistency
+            if focal_values:
+                focal_arr = np.array(focal_values)
+                focal_std = focal_arr.std()
+                if focal_std > 1.0:
+                    print(f"[Export]   ⚠️  Focal length varies: {focal_arr.min():.1f} to {focal_arr.max():.1f} (std={focal_std:.2f})")
+                else:
+                    print(f"[Export]   Focal length: {focal_arr.mean():.1f}px (consistent)")
+        
+        print(f"[Export] =========================================================\n")
         
         for idx in sorted_indices:
             frame = frames[idx]
