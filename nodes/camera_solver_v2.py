@@ -875,6 +875,24 @@ class CameraSolverV2:
             print(f"[CameraSolverV2]   Mean: {np.mean(debug_incremental_angles):.3f}°/frame")
             print(f"[CameraSolverV2]   Max: {max(debug_incremental_angles):.3f}°")
         
+        # DEBUG: Check axis consistency - are all rotations around same axis?
+        debug_axes = []
+        for t in range(1, min(10, num_frames)):  # Check first 10 frames
+            R = forward_rotations[t]
+            aa = self._rotation_to_axis_angle(R)
+            if np.linalg.norm(aa) > 0.001:
+                axis = aa / np.linalg.norm(aa)
+                debug_axes.append(axis)
+        
+        if len(debug_axes) > 1:
+            # Check if axes are consistent (all pointing same direction)
+            first_axis = debug_axes[0]
+            consistencies = [np.dot(first_axis, ax) for ax in debug_axes]
+            print(f"[CameraSolverV2] DEBUG: Axis consistency (first 10 frames):")
+            print(f"[CameraSolverV2]   First axis: [{first_axis[0]:.3f}, {first_axis[1]:.3f}, {first_axis[2]:.3f}]")
+            print(f"[CameraSolverV2]   Dot products: {[f'{c:.3f}' for c in consistencies]}")
+            print(f"[CameraSolverV2]   (1.0 = same direction, -1.0 = opposite, 0 = perpendicular)")
+        
         # ========== BACKWARD PASS ==========
         print(f"[CameraSolverV2] Backward pass...")
         backward_rotations = [None] * num_frames
