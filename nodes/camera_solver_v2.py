@@ -807,130 +807,70 @@ class CameraSolverV2:
             print(f"[CameraSolverV2]   Mean Y motion: {np.mean(motion[:, 1]):.1f}px")
             print(f"[CameraSolverV2]   Expected rotation (from X): {np.degrees(np.arctan(np.mean(motion[:, 0]) / focal_px)):.2f}°")
         
-        # Helper function to compute incremental rotation between two frames
-        def compute_incremental_rotation(t_from, t_to):
-            """Compute rotation from frame t_from to frame t_to."""
-            vis_both = visibles[:, t_from] & visibles[:, t_to]
-            num_visible = np.sum(vis_both)
-            
-            if num_visible < 8:
-                return None, num_visible
-            
-            pts_from = tracks[vis_both, t_from, :].astype(np.float64)
-            pts_to = tracks[vis_both, t_to, :].astype(np.float64)
-            
-            H, mask = cv2.findHomography(pts_from, pts_to, cv2.RANSAC, 2.0)
-            
-            if H is None:
-                return None, num_visible
-            
-            # Decompose: R = K^-1 * H * K
-            R = K_inv @ H @ K
-            
-            # Ensure proper rotation matrix via SVD
-            U, _, Vt = np.linalg.svd(R)
-            R = U @ Vt
-            if np.linalg.det(R) < 0:
-                R = -R
-            
-            return R, num_visible
+        # ========== DIRECT PAN/TILT ESTIMATION ==========
+        # Instead of decomposing homography (which gives inconsistent axes),
+        # compute pan/tilt directly from average pixel motion
+        print(f"[CameraSolverV2] Using DIRECT PAN/TILT estimation")
         
-        # ========== FORWARD PASS ==========
-        print(f"[CameraSolverV2] Forward pass...")
-        forward_rotations = [np.eye(3)]  # Frame 0 = identity
-        last_valid_R = np.eye(3)
-        forward_valid = [True]
-        
-        # DEBUG: Track sum of incremental angles
-        debug_incremental_angles = []
+        direct_rotations = [np.eye(3)]
         
         for t in range(1, num_frames):
-            R_inc, num_pts = compute_incremental_rotation(t-1, t)
+            # Get visible points in both frames
+            vis_both = visibles[:, t-1] & visibles[:, t]
+            num_visible = np.sum(vis_both)
             
-            if R_inc is not None:
-                # Sanity check: rotation should be small
-                angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
-                debug_incremental_angles.append(np.degrees(angle))
-                
-                if np.degrees(angle) > 5:
-                    # Scale down large rotations
-                    axis_angle = self._rotation_to_axis_angle(R_inc)
-                    axis_angle = axis_angle / np.linalg.norm(axis_angle) * np.radians(3)
-                    R_inc = self._axis_angle_to_rotation(axis_angle)
-                
-                last_valid_R = R_inc
-                forward_rotations.append(R_inc @ forward_rotations[-1])
-                forward_valid.append(True)
-            else:
-                # Use last valid rotation (assume similar motion continues)
-                print(f"[CameraSolverV2] Frame {t}: {num_pts} points, using last valid rotation")
-                forward_rotations.append(last_valid_R @ forward_rotations[-1])
-                forward_valid.append(False)
-                debug_incremental_angles.append(0)
-        
-        # DEBUG: Show incremental angle stats
-        if debug_incremental_angles:
-            print(f"[CameraSolverV2] DEBUG: Incremental angles (forward):")
-            print(f"[CameraSolverV2]   Sum: {sum(debug_incremental_angles):.2f}°")
-            print(f"[CameraSolverV2]   Mean: {np.mean(debug_incremental_angles):.3f}°/frame")
-            print(f"[CameraSolverV2]   Max: {max(debug_incremental_angles):.3f}°")
-        
-        # DEBUG: Check axis consistency - are all rotations around same axis?
-        debug_axes = []
-        for t in range(1, min(10, num_frames)):  # Check first 10 frames
-            R = forward_rotations[t]
-            aa = self._rotation_to_axis_angle(R)
-            if np.linalg.norm(aa) > 0.001:
-                axis = aa / np.linalg.norm(aa)
-                debug_axes.append(axis)
-        
-        if len(debug_axes) > 1:
-            # Check if axes are consistent (all pointing same direction)
-            first_axis = debug_axes[0]
-            consistencies = [np.dot(first_axis, ax) for ax in debug_axes]
-            print(f"[CameraSolverV2] DEBUG: Axis consistency (first 10 frames):")
-            print(f"[CameraSolverV2]   First axis: [{first_axis[0]:.3f}, {first_axis[1]:.3f}, {first_axis[2]:.3f}]")
-            print(f"[CameraSolverV2]   Dot products: {[f'{c:.3f}' for c in consistencies]}")
-            print(f"[CameraSolverV2]   (1.0 = same direction, -1.0 = opposite, 0 = perpendicular)")
-        
-        # ========== BACKWARD PASS ==========
-        print(f"[CameraSolverV2] Backward pass...")
-        backward_rotations = [None] * num_frames
-        backward_rotations[-1] = np.eye(3)  # Last frame = identity for backward
-        last_valid_R = np.eye(3)
-        backward_valid = [False] * num_frames
-        backward_valid[-1] = True
-        
-        for t in range(num_frames - 2, -1, -1):
-            R_inc, num_pts = compute_incremental_rotation(t+1, t)
+            if num_visible < 4:
+                # Use previous rotation
+                direct_rotations.append(direct_rotations[-1].copy())
+                continue
             
-            if R_inc is not None:
-                angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
-                if np.degrees(angle) > 5:
-                    axis_angle = self._rotation_to_axis_angle(R_inc)
-                    axis_angle = axis_angle / np.linalg.norm(axis_angle) * np.radians(3)
-                    R_inc = self._axis_angle_to_rotation(axis_angle)
-                
-                last_valid_R = R_inc
-                backward_rotations[t] = R_inc @ backward_rotations[t+1]
-                backward_valid[t] = True
-            else:
-                backward_rotations[t] = last_valid_R @ backward_rotations[t+1]
-                backward_valid[t] = False
+            pts_prev = tracks[vis_both, t-1, :]
+            pts_curr = tracks[vis_both, t, :]
+            
+            # Compute average motion (pan = X motion, tilt = Y motion)
+            motion = pts_curr - pts_prev
+            mean_dx = np.median(motion[:, 0])  # Use median for robustness
+            mean_dy = np.median(motion[:, 1])
+            
+            # Convert pixel motion to angle
+            # pan = arctan(dx / focal), tilt = arctan(dy / focal)
+            pan_angle = np.arctan(mean_dx / focal_px)
+            tilt_angle = np.arctan(mean_dy / focal_px)
+            
+            # Create rotation matrix: R = Ry(pan) @ Rx(tilt)
+            # Pan is rotation around Y axis (vertical)
+            # Tilt is rotation around X axis (horizontal)
+            cp, sp = np.cos(pan_angle), np.sin(pan_angle)
+            ct, st = np.cos(tilt_angle), np.sin(tilt_angle)
+            
+            # R_pan (around Y)
+            R_pan = np.array([
+                [cp, 0, sp],
+                [0, 1, 0],
+                [-sp, 0, cp]
+            ])
+            
+            # R_tilt (around X)
+            R_tilt = np.array([
+                [1, 0, 0],
+                [0, ct, -st],
+                [0, st, ct]
+            ])
+            
+            # Combined incremental rotation
+            R_inc = R_pan @ R_tilt
+            
+            # Accumulate
+            R_cumulative = R_inc @ direct_rotations[-1]
+            direct_rotations.append(R_cumulative)
         
-        # ========== BLEND FORWARD AND BACKWARD ==========
-        print(f"[CameraSolverV2] Blending forward/backward passes...")
+        # Use direct rotations instead of homography-based
+        final_rotations = direct_rotations
         
-        # DEBUG: For now, just use forward pass since it's capturing correct rotation
-        # The backward blending math has issues that need to be fixed
-        final_rotations = forward_rotations.copy()
-        
-        print(f"[CameraSolverV2] DEBUG: Using forward pass only (blending disabled)")
-        
-        # Log forward pass final angle
-        R_final_fwd = forward_rotations[-1]
-        fwd_angle = np.degrees(np.arccos(np.clip((np.trace(R_final_fwd) - 1) / 2, -1, 1)))
-        print(f"[CameraSolverV2] DEBUG: Forward pass total: {fwd_angle:.1f}°")
+        # Log total rotation
+        R_final = final_rotations[-1]
+        total_angle = np.degrees(np.arccos(np.clip((np.trace(R_final) - 1) / 2, -1, 1)))
+        print(f"[CameraSolverV2] Direct estimation total: {total_angle:.1f}°")
         
         # Apply temporal smoothing if requested
         if smoothing_window > 0 and len(final_rotations) > smoothing_window:
@@ -956,10 +896,7 @@ class CameraSolverV2:
             })
         
         # Log total rotation
-        if len(final_rotations) > 1:
-            R_total = final_rotations[-1]
-            total_angle = np.degrees(np.arccos(np.clip((np.trace(R_total) - 1) / 2, -1, 1)))
-            print(f"[CameraSolverV2] Total camera rotation: {total_angle:.1f}°")
+        print(f"[CameraSolverV2] Total camera rotation: {total_angle:.1f}°")
         
         return matrices
     
