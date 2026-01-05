@@ -818,45 +818,33 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
     """
     Get offset to apply to body mesh/skeleton for correct camera alignment.
     
-    pred_cam_t from SAM3DBody:
-    - tx: horizontal offset (positive = body right of center)
-    - ty: vertical offset (positive = body above center IN IMAGE SPACE)
-    - tz: depth (camera distance)
+    pred_cam_t from SAM3DBody (weak-perspective camera parameters):
+    - tx: horizontal offset (positive = right in image)
+    - ty: vertical offset (positive = up in IMAGE space, but down in world Y)
+    - tz: depth/scale factor (used for camera distance, NOT for scaling tx/ty)
     
-    IMPORTANT: ty must be NEGATED because:
-    1. SAM3DBody: ty positive = body above image center
-    2. Maya camera is rotated -90° around X
-    3. After axis conversion + camera rotation, the sign is flipped
-    4. So we negate ty to compensate: -ty in code → +ty in Maya camera view
+    The mesh is placed at (tx, -ty, 0) in world space:
+    - tx directly maps to world X (horizontal)
+    - ty is NEGATED because image Y is inverted from world Y
+    - Camera is placed at (0, 0, tz) looking at origin
     
-    For Maya with camera rotated -90° around X:
-    - Maya X = horizontal in camera view
-    - Maya Z = vertical in camera view (after camera rotation)
-    - Maya Y = depth
-    
-    Blender Y-up export mapping:
-    - Blender X → Maya X
-    - Blender Y → Maya Z  
-    - Blender Z → Maya Y
+    This makes the mesh project to the correct screen position.
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
     
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
-    # Apply based on up_axis
-    # NOTE: ty is NEGATED to match camera view convention
+    # NO scaling by tz - tx/ty are already in the right units
+    # ty is NEGATED because image Y increases downward, world Y increases upward
     if up_axis == "Y":
-        # For Maya: tx→horizontal, -ty→vertical in camera view
-        # Blender (X, Y, Z) → Maya (X, Z, Y)
         return Vector((tx, -ty, 0))
     elif up_axis == "Z":
-        # Blender native Z-up
         return Vector((tx, 0, -ty))
     elif up_axis == "-Y":
-        return Vector((tx, ty, 0))  # Double negative = positive
+        return Vector((tx, ty, 0))
     elif up_axis == "-Z":
-        return Vector((tx, 0, ty))  # Double negative = positive
+        return Vector((tx, 0, ty))
     else:
         return Vector((tx, -ty, 0))
 
@@ -2639,8 +2627,10 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         
         tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
         ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
+        # Note: tz is NOT used for scaling - only for camera distance
         
         # Compute body offset for this frame
+        # ty is NEGATED because image Y is inverted from world Y
         if up_axis == "Y":
             offset = Vector((tx, -ty, 0))
         elif up_axis == "Z":
@@ -3020,8 +3010,17 @@ def main():
     
     # Apply PER-FRAME body offset (fixes drift issue)
     # This overwrites the static offset with animated keyframes
+    # BUT: Only do this when camera is STATIC - if camera is animated, body should stay fixed
+    #      and camera animation tracks it (avoids double movement)
     if world_translation_mode == "root" and root_locator:
-        apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset)
+        if camera_static or not animate_camera:
+            # Static camera: body needs per-frame positioning for screen alignment
+            apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset)
+            print(f"[Blender] Per-frame body offset applied (camera is static)")
+        else:
+            # Animated camera: body stays at initial position, camera tracks it
+            print(f"[Blender] Per-frame body offset SKIPPED (camera is animated)")
+            print(f"[Blender] Body at initial offset: {body_offset}")
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

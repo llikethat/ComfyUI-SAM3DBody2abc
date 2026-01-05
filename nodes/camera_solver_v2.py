@@ -943,22 +943,36 @@ class CameraSolverV2:
         return smoothed_rotations
     
     def _rotation_to_euler_zxy(self, R: np.ndarray) -> Tuple[float, float, float]:
-        """Extract ZXY Euler angles from rotation matrix (camera convention)."""
-        # ZXY decomposition for camera: Z=roll, X=tilt, Y=pan
-        # This matches Maya's camera rotation order
+        """Extract pan/tilt/roll from rotation matrix.
         
-        # Clamp to avoid numerical issues
-        sy = np.clip(R[0, 2], -1.0, 1.0)
+        We build rotations as R = R_pan(Y) @ R_tilt(X), so we need to decompose
+        in the same order.
         
-        if abs(sy) < 0.99999:
-            tilt = np.arcsin(sy)
-            pan = np.arctan2(-R[0, 1], R[0, 0])
-            roll = np.arctan2(-R[1, 2], R[2, 2])
+        For a Y-X decomposition:
+        R = Ry(pan) @ Rx(tilt)
+        
+        Returns:
+            (pan, tilt, roll) in radians
+        """
+        # For Ry(p) @ Rx(t):
+        # R = [[cos(p), sin(p)*sin(t), sin(p)*cos(t)],
+        #      [0,      cos(t),        -sin(t)      ],
+        #      [-sin(p), cos(p)*sin(t), cos(p)*cos(t)]]
+        
+        # Extract tilt from R[1,2] = -sin(tilt)
+        tilt = np.arcsin(np.clip(-R[1, 2], -1.0, 1.0))
+        
+        # Extract pan from R[0,2] and R[2,2]
+        # R[0,2] = sin(pan)*cos(tilt)
+        # R[2,2] = cos(pan)*cos(tilt)
+        ct = np.cos(tilt)
+        if abs(ct) > 1e-6:
+            pan = np.arctan2(R[0, 2], R[2, 2])
         else:
-            # Gimbal lock
-            tilt = np.pi / 2 * np.sign(sy)
-            pan = np.arctan2(R[1, 0], R[1, 1])
-            roll = 0
+            # Gimbal lock - pan and roll are coupled
+            pan = 0
+        
+        roll = 0  # We don't compute roll for now
         
         return pan, tilt, roll
     

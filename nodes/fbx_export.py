@@ -788,13 +788,28 @@ class ExportAnimatedFBX:
             if pred_cam_t is None:
                 pred_cam_t = frame.get("camera")
             
+            # Get focal_length and convert to float if needed
+            focal = frame.get("focal_length")
+            if focal is not None:
+                if hasattr(focal, 'item'):
+                    focal = float(focal.item())
+                elif isinstance(focal, np.ndarray):
+                    focal = float(focal.flat[0])
+                else:
+                    focal = float(focal)
+            
+            # Get image_size and ensure it's a list
+            img_size = frame.get("image_size")
+            if img_size is not None:
+                img_size = to_list(img_size)
+            
             frame_data = {
-                "frame_index": idx,
+                "frame_index": int(idx),
                 "joint_coords": to_list(frame.get("joint_coords")),
                 "pred_cam_t": to_list(pred_cam_t),
-                "focal_length": frame.get("focal_length"),
+                "focal_length": focal,
                 "bbox": to_list(frame.get("bbox")),  # For camera alignment
-                "image_size": frame.get("image_size"),  # (width, height)
+                "image_size": img_size,  # (width, height)
                 "keypoints_2d": to_list(frame.get("keypoints_2d")),  # For apparent height
                 "keypoints_3d": to_list(frame.get("keypoints_3d")),  # 18-joint 3D keypoints
             }
