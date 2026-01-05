@@ -795,6 +795,18 @@ class CameraSolverV2:
         
         print(f"[CameraSolverV2] Using BIDIRECTIONAL INCREMENTAL homography")
         
+        # DEBUG: Check actual track motion
+        vis_first_last = visibles[:, 0] & visibles[:, num_frames-1]
+        if np.sum(vis_first_last) > 0:
+            pts_first = tracks[vis_first_last, 0, :]
+            pts_last = tracks[vis_first_last, num_frames-1, :]
+            motion = pts_last - pts_first
+            print(f"[CameraSolverV2] DEBUG: Track motion frame 0→{num_frames-1}:")
+            print(f"[CameraSolverV2]   Points visible in both: {np.sum(vis_first_last)}")
+            print(f"[CameraSolverV2]   Mean X motion: {np.mean(motion[:, 0]):.1f}px")
+            print(f"[CameraSolverV2]   Mean Y motion: {np.mean(motion[:, 1]):.1f}px")
+            print(f"[CameraSolverV2]   Expected rotation (from X): {np.degrees(np.arctan(np.mean(motion[:, 0]) / focal_px)):.2f}°")
+        
         # Helper function to compute incremental rotation between two frames
         def compute_incremental_rotation(t_from, t_to):
             """Compute rotation from frame t_from to frame t_to."""
@@ -829,12 +841,17 @@ class CameraSolverV2:
         last_valid_R = np.eye(3)
         forward_valid = [True]
         
+        # DEBUG: Track sum of incremental angles
+        debug_incremental_angles = []
+        
         for t in range(1, num_frames):
             R_inc, num_pts = compute_incremental_rotation(t-1, t)
             
             if R_inc is not None:
                 # Sanity check: rotation should be small
                 angle = np.arccos(np.clip((np.trace(R_inc) - 1) / 2, -1, 1))
+                debug_incremental_angles.append(np.degrees(angle))
+                
                 if np.degrees(angle) > 5:
                     # Scale down large rotations
                     axis_angle = self._rotation_to_axis_angle(R_inc)
@@ -849,6 +866,14 @@ class CameraSolverV2:
                 print(f"[CameraSolverV2] Frame {t}: {num_pts} points, using last valid rotation")
                 forward_rotations.append(last_valid_R @ forward_rotations[-1])
                 forward_valid.append(False)
+                debug_incremental_angles.append(0)
+        
+        # DEBUG: Show incremental angle stats
+        if debug_incremental_angles:
+            print(f"[CameraSolverV2] DEBUG: Incremental angles (forward):")
+            print(f"[CameraSolverV2]   Sum: {sum(debug_incremental_angles):.2f}°")
+            print(f"[CameraSolverV2]   Mean: {np.mean(debug_incremental_angles):.3f}°/frame")
+            print(f"[CameraSolverV2]   Max: {max(debug_incremental_angles):.3f}°")
         
         # ========== BACKWARD PASS ==========
         print(f"[CameraSolverV2] Backward pass...")
