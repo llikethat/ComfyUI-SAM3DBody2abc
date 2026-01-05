@@ -903,39 +903,16 @@ class CameraSolverV2:
         # ========== BLEND FORWARD AND BACKWARD ==========
         print(f"[CameraSolverV2] Blending forward/backward passes...")
         
-        # Convert backward rotations to same reference (frame 0)
-        # backward_rotations are relative to last frame, need to align
-        R_last_to_first = forward_rotations[-1]
-        for t in range(num_frames):
-            # backward[t] goes from frame t to last frame
-            # We want: frame 0 to frame t
-            # R_0_to_t = R_last_to_first @ backward[t].T
-            backward_rotations[t] = R_last_to_first @ backward_rotations[t].T
+        # DEBUG: For now, just use forward pass since it's capturing correct rotation
+        # The backward blending math has issues that need to be fixed
+        final_rotations = forward_rotations.copy()
         
-        # Blend based on validity and position
-        final_rotations = []
-        for t in range(num_frames):
-            # Weight: prefer valid passes, blend at boundaries
-            w_fwd = 1.0 if forward_valid[t] else 0.3
-            w_bwd = 1.0 if backward_valid[t] else 0.3
-            
-            # Position-based weighting: forward more reliable at start, backward at end
-            pos_weight = t / max(num_frames - 1, 1)
-            w_fwd *= (1 - pos_weight * 0.5)
-            w_bwd *= (0.5 + pos_weight * 0.5)
-            
-            # Normalize weights
-            total = w_fwd + w_bwd
-            w_fwd /= total
-            w_bwd /= total
-            
-            # Blend in axis-angle space
-            aa_fwd = self._rotation_to_axis_angle(forward_rotations[t])
-            aa_bwd = self._rotation_to_axis_angle(backward_rotations[t])
-            aa_blend = w_fwd * aa_fwd + w_bwd * aa_bwd
-            
-            R_blend = self._axis_angle_to_rotation(aa_blend)
-            final_rotations.append(R_blend)
+        print(f"[CameraSolverV2] DEBUG: Using forward pass only (blending disabled)")
+        
+        # Log forward pass final angle
+        R_final_fwd = forward_rotations[-1]
+        fwd_angle = np.degrees(np.arccos(np.clip((np.trace(R_final_fwd) - 1) / 2, -1, 1)))
+        print(f"[CameraSolverV2] DEBUG: Forward pass total: {fwd_angle:.1f}°")
         
         # Apply temporal smoothing if requested
         if smoothing_window > 0 and len(final_rotations) > smoothing_window:
