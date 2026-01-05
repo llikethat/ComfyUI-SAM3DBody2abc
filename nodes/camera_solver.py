@@ -89,6 +89,11 @@ class CameraSolver:
                     "tooltip": "YOLO fallback: auto-detect people if no SAM3 masks provided"
                 }),
                 
+                # === Intrinsics (V2 compatible) ===
+                "intrinsics": ("INTRINSICS", {
+                    "tooltip": "Camera intrinsics from IntrinsicsFromSAM3DBody (preferred over manual focal/sensor)"
+                }),
+                
                 # === Quality ===
                 "quality_mode": (cls.QUALITY_MODES, {
                     "default": "Balanced",
@@ -150,8 +155,8 @@ class CameraSolver:
             }
         }
     
-    RETURN_TYPES = ("CAMERA_EXTRINSICS", "IMAGE", "STRING")
-    RETURN_NAMES = ("camera_extrinsics", "debug_vis", "status")
+    RETURN_TYPES = ("CAMERA_MATRICES", "IMAGE", "SHOT_INFO", "STRING")
+    RETURN_NAMES = ("camera_matrices", "debug_vis", "shot_info", "status")
     FUNCTION = "solve"
     CATEGORY = "SAM3DBody2abc/Camera"
     
@@ -918,6 +923,7 @@ class CameraSolver:
         solving_method: str = "Auto (Recommended)",
         foreground_masks: Optional[torch.Tensor] = None,
         auto_mask_people: bool = True,
+        intrinsics: Optional[Dict] = None,
         quality_mode: str = "Balanced",
         focal_length_mm: float = 35.0,
         sensor_width_mm: float = 36.0,
@@ -927,7 +933,7 @@ class CameraSolver:
         match_threshold: int = 500,
         stitch_overlap: int = 10,
         transition_frames: str = "",
-    ) -> Tuple[Dict, torch.Tensor, str]:
+    ) -> Tuple[Dict, torch.Tensor, Dict, str]:
         """
         Main camera solving entry point.
         
@@ -940,13 +946,18 @@ class CameraSolver:
         # Check and log available matchers (only once)
         self.check_available_matchers()
         
-        print(f"[CameraSolver] Method: {solving_method}, Quality: {quality_mode}")
+        print(f"[CameraSolver Legacy] Method: {solving_method}, Quality: {quality_mode}")
         
         frames = (images.cpu().numpy() * 255).astype(np.uint8)
         num_frames, H, W = frames.shape[:3]
         
-        focal_px = focal_length_mm * W / sensor_width_mm
-        print(f"[CameraSolver] Focal: {focal_length_mm}mm = {focal_px:.1f}px")
+        # Get focal length - prefer intrinsics input if provided
+        if intrinsics is not None:
+            focal_px = intrinsics.get("focal_px", focal_length_mm * W / sensor_width_mm)
+            print(f"[CameraSolver Legacy] Using intrinsics: focal={focal_px:.1f}px")
+        else:
+            focal_px = focal_length_mm * W / sensor_width_mm
+            print(f"[CameraSolver Legacy] Focal: {focal_length_mm}mm = {focal_px:.1f}px")
         
         # Resolution-adaptive threshold
         pixels = W * H
@@ -1039,20 +1050,79 @@ class CameraSolver:
             for r in rotations
         )
         
-        # Build CAMERA_EXTRINSICS output
-        camera_extrinsics = {
+        # Convert rotations to V2-compatible CAMERA_MATRICES format
+        # Each matrix entry needs: frame, matrix (4x4), rotation (3x3), pan, tilt, roll (degrees)
+        camera_matrices_list = []
+        for rot in rotations:
+            frame_idx = rot.get("frame", len(camera_matrices_list))
+            pan = rot.get("pan", 0)  # radians
+            tilt = rot.get("tilt", 0)  # radians
+            roll = rot.get("roll", 0)  # radians
+            
+            # Build rotation matrix from pan/tilt/roll (ZXY order for camera)
+            cp, sp = np.cos(pan), np.sin(pan)
+            ct, st = np.cos(tilt), np.sin(tilt)
+            cr, sr = np.cos(roll), np.sin(roll)
+            
+            # R = Rz(roll) @ Rx(tilt) @ Ry(pan)
+            R_pan = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+            R_tilt = np.array([[1, 0, 0], [0, ct, -st], [0, st, ct]])
+            R_roll = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
+            R = R_roll @ R_tilt @ R_pan
+            
+            # Build 4x4 matrix
+            M = np.eye(4)
+            M[:3, :3] = R
+            if has_translation:
+                M[0, 3] = rot.get("tx", 0)
+                M[1, 3] = rot.get("ty", 0)
+                M[2, 3] = rot.get("tz", 0)
+            
+            camera_matrices_list.append({
+                "frame": frame_idx,
+                "matrix": M.tolist(),
+                "rotation": R.tolist(),
+                "pan": float(np.degrees(pan)),
+                "tilt": float(np.degrees(tilt)),
+                "roll": float(np.degrees(roll)),
+            })
+        
+        # Build intrinsics dict if not provided
+        if intrinsics is None:
+            intrinsics = {
+                "focal_px": focal_px,
+                "focal_mm": focal_length_mm,
+                "sensor_width_mm": sensor_width_mm,
+                "width": W,
+                "height": H,
+                "cx": W / 2,
+                "cy": H / 2,
+                "source": "manual"
+            }
+        
+        # Build V2-compatible CAMERA_MATRICES output
+        camera_matrices = {
+            "matrices": camera_matrices_list,
             "num_frames": num_frames,
-            "image_width": W,
-            "image_height": H,
-            "source": "CameraSolver",
+            "intrinsics": intrinsics,
+            "shot_type": shot_type.lower() if shot_type else "unknown",
+            # Legacy fields for compatibility
+            "source": "CameraSolver_Legacy",
             "solving_method": solving_method_used,
-            "coordinate_system": "Y-up",
-            "units": "radians",
-            "has_translation": has_translation,
             "mask_source": mask_source,
             "quality_mode": quality_mode,
-            "smoothing_applied": smoothing if smoothing > 1 else 0,
-            "rotations": rotations
+        }
+        
+        # Build SHOT_INFO output (V2 compatible)
+        shot_info = {
+            "shot_type": shot_type.lower() if shot_type else "unknown",
+            "confidence": 0.8,  # Legacy solver doesn't compute confidence
+            "flow_coherence": 0.0,
+            "parallax_score": 0.0,
+            "homography_error": 0.0,
+            "motion_magnitude": 0.0,
+            "num_points_tracked": 0,
+            "details": {"solver": "legacy", "quality_mode": quality_mode},
         }
         
         # Debug visualization
@@ -1061,10 +1131,12 @@ class CameraSolver:
         
         # Final status
         final = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0}
-        print(f"[CameraSolver] Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
+        total_rotation = abs(final.get("pan_deg", 0)) + abs(final.get("tilt_deg", 0))
+        print(f"[CameraSolver Legacy] Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
+        print(f"[CameraSolver Legacy] Total camera rotation: {total_rotation:.1f}°")
         status += f" | {num_frames} frames | Masks: {mask_source}"
         
-        return (camera_extrinsics, debug_tensor, status)
+        return (camera_matrices, debug_tensor, shot_info, status)
 
 
 class CameraDataFromJSON:
