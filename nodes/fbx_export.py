@@ -610,23 +610,23 @@ class ExportAnimatedFBX:
         intrinsics_export = None
         if cam_intrinsics:
             intrinsics_export = {
-                "focal_length_px": cam_intrinsics.get("focal_px"),
-                "focal_length_mm": cam_intrinsics.get("focal_mm"),
-                "sensor_width_mm": cam_intrinsics.get("sensor_width_mm", sensor_width),
-                "principal_point_x": cam_intrinsics.get("cx"),
-                "principal_point_y": cam_intrinsics.get("cy"),
-                "image_width": cam_intrinsics.get("width"),
-                "image_height": cam_intrinsics.get("height"),
+                "focal_length_px": to_list(cam_intrinsics.get("focal_px")),
+                "focal_length_mm": to_list(cam_intrinsics.get("focal_mm")),
+                "sensor_width_mm": to_list(cam_intrinsics.get("sensor_width_mm", sensor_width)),
+                "principal_point_x": to_list(cam_intrinsics.get("cx")),
+                "principal_point_y": to_list(cam_intrinsics.get("cy")),
+                "image_width": to_list(cam_intrinsics.get("width")),
+                "image_height": to_list(cam_intrinsics.get("height")),
                 "source": cam_intrinsics.get("source", "camera_solver"),
             }
         
         export_data = {
-            "fps": fps,
+            "fps": float(fps),
             "frame_count": len(sorted_indices),
-            "frame_offset": frame_offset,
+            "frame_offset": int(frame_offset),
             "faces": to_list(mesh_sequence.get("faces")),
             "joint_parents": to_list(joint_parents),
-            "sensor_width": sensor_width,
+            "sensor_width": float(sensor_width),
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
@@ -635,15 +635,15 @@ class ExportAnimatedFBX:
             "camera_use_rotation": True,   # Always use rotation for camera animation
             "camera_static": not animate_camera,
             "camera_compensation": False,  # Simplified - no longer using this mode
-            "camera_extrinsics": solved_rotations,  # From Camera Solver
+            "camera_extrinsics": to_list(solved_rotations),  # From Camera Solver
             "camera_intrinsics": intrinsics_export,
             "extrinsics_smoothing_method": "none",  # Smoothing already done in solver
             "extrinsics_smoothing_strength": 0.0,
             "frames": [],
             # Body world trajectory for animated locator
-            "body_world_trajectory": subject_motion.get("body_world_3d", []) if subject_motion else [],
-            "body_world_trajectory_compensated": subject_motion.get("body_world_3d_compensated", []) if subject_motion else [],
-            "body_world_trajectory_raw": subject_motion.get("body_world_3d_raw", []) if subject_motion else [],
+            "body_world_trajectory": to_list(subject_motion.get("body_world_3d", [])) if subject_motion else [],
+            "body_world_trajectory_compensated": to_list(subject_motion.get("body_world_3d_compensated", [])) if subject_motion else [],
+            "body_world_trajectory_raw": to_list(subject_motion.get("body_world_3d_raw", [])) if subject_motion else [],
             # Metadata for embedding in FBX
             "metadata": self._build_metadata(
                 world_translation=world_translation,
