@@ -39,7 +39,7 @@ Legacy v4.x nodes are still available with "(Legacy v4)" suffix.
 Version: 5.0.0
 """
 
-__version__ = "5.0.24"
+__version__ = "5.0.25"
 
 import os
 import sys
