@@ -239,6 +239,15 @@ class CameraSolverV2:
                     "max": 0.9,
                     "tooltip": "Minimum ratio of visible points per frame"
                 }),
+                
+                # === Correction Factors ===
+                "rotation_scale": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.1,
+                    "max": 2.0,
+                    "step": 0.05,
+                    "tooltip": "Scale detected rotation (use <1.0 if pan appears too strong, >1.0 if too weak)"
+                }),
             }
         }
     
@@ -342,6 +351,7 @@ class CameraSolverV2:
         trail_length: int = 20,
         smoothing_window: int = 5,
         min_visible_ratio: float = 0.3,
+        rotation_scale: float = 1.0,
     ) -> Tuple[Dict, torch.Tensor, Dict, str]:
         """
         Solve camera motion from video frames.
@@ -399,10 +409,14 @@ class CameraSolverV2:
         log_info(f"Shot type: {shot_classification.shot_type.value} "
               f"(confidence: {shot_classification.confidence:.2f})")
         
+        # Log rotation_scale if not 1.0
+        if abs(rotation_scale - 1.0) > 0.01:
+            log_info(f"Rotation scale: {rotation_scale:.2f}x (user override)")
+        
         # Step 4: Solve camera based on shot type
         log_info("Solving camera motion...")
         camera_matrices = self._solve_camera(
-            tracks, visibles, intrinsics, shot_classification, smoothing_window
+            tracks, visibles, intrinsics, shot_classification, smoothing_window, rotation_scale
         )
         
         # Step 5: Generate debug visualization
@@ -754,6 +768,7 @@ class CameraSolverV2:
         intrinsics: Dict,
         classification: ShotClassification,
         smoothing_window: int,
+        rotation_scale: float = 1.0,
     ) -> List[Dict]:
         """
         Solve camera matrices based on shot type.
@@ -762,6 +777,9 @@ class CameraSolverV2:
         - Compute H between consecutive frames (small motion = accurate)
         - Solve both forward and backward
         - Blend results for robustness at sequence boundaries
+        
+        Args:
+            rotation_scale: Multiplier for detected rotation (use <1.0 if pan is overestimated)
         """
         
         num_frames = tracks.shape[1]
@@ -806,11 +824,16 @@ class CameraSolverV2:
             print(f"[CameraSolverV2]   Mean X motion: {np.mean(motion[:, 0]):.1f}px")
             print(f"[CameraSolverV2]   Mean Y motion: {np.mean(motion[:, 1]):.1f}px")
             print(f"[CameraSolverV2]   Expected rotation (from X): {np.degrees(np.arctan(np.mean(motion[:, 0]) / focal_px)):.2f}°")
+            if abs(rotation_scale - 1.0) > 0.01:
+                scaled_rotation = np.degrees(np.arctan(np.mean(motion[:, 0]) / focal_px)) * rotation_scale
+                print(f"[CameraSolverV2]   After rotation_scale ({rotation_scale:.2f}x): {scaled_rotation:.2f}°")
         
         # ========== DIRECT PAN/TILT ESTIMATION ==========
         # Instead of decomposing homography (which gives inconsistent axes),
         # compute pan/tilt directly from average pixel motion
         print(f"[CameraSolverV2] Using DIRECT PAN/TILT estimation")
+        if abs(rotation_scale - 1.0) > 0.01:
+            print(f"[CameraSolverV2] Rotation scale: {rotation_scale:.2f}x")
         
         direct_rotations = [np.eye(3)]
         
@@ -834,8 +857,8 @@ class CameraSolverV2:
             
             # Convert pixel motion to angle
             # pan = arctan(dx / focal), tilt = arctan(dy / focal)
-            pan_angle = np.arctan(mean_dx / focal_px)
-            tilt_angle = np.arctan(mean_dy / focal_px)
+            pan_angle = np.arctan(mean_dx / focal_px) * rotation_scale
+            tilt_angle = np.arctan(mean_dy / focal_px) * rotation_scale
             
             # Create rotation matrix: R = Ry(pan) @ Rx(tilt)
             # Pan is rotation around Y axis (vertical)

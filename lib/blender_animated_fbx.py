@@ -1938,9 +1938,10 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             
             print(f"[Blender] Camera TRANSLATES over {len(all_frames)} frames (up_axis={up_axis})")
     
-    elif camera_use_rotation:
+    elif camera_use_rotation and not camera_static:
         # "None" mode with rotation: Camera rotates to show character at correct screen position
         # Body stays at origin, camera pans/tilts to frame it correctly
+        # NOTE: Only runs when camera_static is False (animate based on pred_cam_t)
         camera.location = base_dir * cam_distance  # No target_offset
         
         # Point camera at origin to get base rotation
@@ -2111,74 +2112,60 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 first_cam_t = all_frames[0].get("pred_cam_t", [0, 0, 5])
                 base_depth = abs(first_cam_t[2]) if first_cam_t and len(first_cam_t) > 2 else 5.0
                 
-                # MATRIX-BASED CAMERA ANIMATION
-                # Using matrices avoids Euler angle conversion issues and gimbal lock
+                # CAMERA ROTATION FOR MAYA (after FBX Y-up export)
+                # Based on manual testing, Maya expects:
+                #   rx = -90° (constant - camera looks at scene)
+                #   ry = tilt (animated - vertical camera movement)
+                #   rz = -90° + (-pan) (animated - horizontal camera movement)
                 #
-                # Camera setup:
-                # - Camera at origin (0, 0, 0)
-                # - Looking down -Z axis (Blender default)
-                # - Rotation matrix from solver is applied to rotate the view
+                # In Blender (before FBX export with Y-up):
+                # We need to set values that will result in these Maya values.
+                # FBX Y-up export swaps Y↔Z, so:
+                #   Blender rx → Maya rx
+                #   Blender ry → Maya rz  
+                #   Blender rz → Maya ry
                 #
-                # The solver outputs cumulative rotation: R = R_pan @ R_tilt
-                # We apply this directly to the camera
+                # Therefore in Blender we set:
+                #   Blender rx = -90° (base)
+                #   Blender ry = -90° + (-pan) → becomes Maya rz
+                #   Blender rz = tilt → becomes Maya ry
                 
                 for frame_idx in range(len(all_frames)):
                     if frame_idx < len(solved_camera_rotations):
                         solved_rot = solved_camera_rotations[frame_idx]
                         
-                        # Get the 4x4 matrix if available
-                        matrix_data = solved_rot.get("matrix")
+                        # Get pan and tilt from solver (in degrees)
+                        pan_deg = solved_rot.get("pan", 0.0)
+                        tilt_deg = solved_rot.get("tilt", 0.0)
                         
-                        if matrix_data is not None and len(matrix_data) == 4:
-                            # Convert to Blender Matrix
-                            M = Matrix([
-                                matrix_data[0],
-                                matrix_data[1],
-                                matrix_data[2],
-                                matrix_data[3]
-                            ])
-                            
-                            # Extract rotation from 4x4 matrix
-                            R = M.to_3x3()
-                            
-                            # Apply rotation to camera
-                            # Camera default looks down -Z, rotation tilts/pans the view
-                            camera.rotation_euler = R.to_euler('XYZ')
-                            
-                            if frame_idx == 0 or frame_idx == 24 or frame_idx == 49:
-                                euler = camera.rotation_euler
-                                print(f"[Blender] DEBUG Frame {frame_idx}: Matrix applied, Euler = ({math.degrees(euler.x):.2f}°, {math.degrees(euler.y):.2f}°, {math.degrees(euler.z):.2f}°)")
-                        else:
-                            # Fallback: build rotation from pan/tilt angles
-                            pan_rad = math.radians(solved_rot.get("pan", 0.0))
-                            tilt_rad = math.radians(solved_rot.get("tilt", 0.0))
-                            
-                            if frame_idx == 0 or frame_idx == 24:
-                                print(f"[Blender] DEBUG Frame {frame_idx}: pan={solved_rot.get('pan', 0):.4f}°, tilt={solved_rot.get('tilt', 0):.4f}° (building matrix)")
-                            
-                            # Build rotation: R = Ry(pan) @ Rx(tilt)
-                            cp, sp = math.cos(pan_rad), math.sin(pan_rad)
-                            ct, st = math.cos(tilt_rad), math.sin(tilt_rad)
-                            
-                            # Rotation around Y (pan)
-                            R_pan = Matrix((
-                                (cp, 0, sp),
-                                (0, 1, 0),
-                                (-sp, 0, cp)
-                            ))
-                            
-                            # Rotation around X (tilt)
-                            R_tilt = Matrix((
-                                (1, 0, 0),
-                                (0, ct, -st),
-                                (0, st, ct)
-                            ))
-                            
-                            R = R_pan @ R_tilt
-                            camera.rotation_euler = R.to_euler('XYZ')
+                        # Convert to radians and apply sign convention:
+                        # - Camera pans LEFT = positive pan from solver
+                        # - In Maya, pan LEFT = MORE negative rz (e.g., -90° → -96°)
+                        # - So we NEGATE pan: -90 + (-pan)
+                        # 
+                        # For tilt: Camera tilts UP = positive tilt from solver
+                        # - In Maya, tilt UP = positive ry
+                        # - So we NEGATE tilt (solver says -1.5°, Maya wants +1.5°)
+                        pan_rad = math.radians(-pan_deg)  # Negated
+                        tilt_rad = math.radians(-tilt_deg)  # Negated
+                        
+                        # Set Blender rotation:
+                        # rx = -90° base (camera looks at scene)
+                        # ry = -90° + pan (will become Maya rz)
+                        # rz = tilt (will become Maya ry)
+                        camera.rotation_euler.x = math.radians(-90)
+                        camera.rotation_euler.y = math.radians(-90) + pan_rad
+                        camera.rotation_euler.z = tilt_rad
+                        
+                        if frame_idx == 0 or frame_idx == 24 or frame_idx == 49:
+                            print(f"[Blender] DEBUG Frame {frame_idx}: pan={pan_deg:.2f}°, tilt={tilt_deg:.2f}°")
+                            print(f"[Blender]   Blender Euler: rx={math.degrees(camera.rotation_euler.x):.2f}°, ry={math.degrees(camera.rotation_euler.y):.2f}°, rz={math.degrees(camera.rotation_euler.z):.2f}°")
+                            print(f"[Blender]   Expected Maya: rx=-90°, ry={-tilt_deg:.2f}°, rz={-90 + (-pan_deg):.2f}°")
                     else:
-                        # No rotation data for this frame
-                        camera.rotation_euler = Euler((0, 0, 0), 'XYZ')
+                        # No rotation data for this frame - use base rotation
+                        camera.rotation_euler.x = math.radians(-90)
+                        camera.rotation_euler.y = math.radians(-90)
+                        camera.rotation_euler.z = 0
                     
                     # Camera at origin, body positioned at -tz
                     camera.location = Vector((0, 0, 0))
@@ -2629,10 +2616,14 @@ def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset
 
 def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1):
     """
-    Apply per-frame body offset based on pred_cam_t for each frame.
+    Apply per-frame body offset based on pred_cam_t.
     
-    This fixes the drift issue where static body_offset (from frame 0 only)
-    causes the character to drift relative to video as camera pans.
+    IMPORTANT: When camera is animated with pan/tilt:
+    - tx and ty should be CONSTANT (from frame 1) - camera tracks the subject
+    - tz should ANIMATE - subject moves toward/away from camera
+    
+    This prevents double compensation where both camera rotation AND
+    body tx/ty try to account for the same screen movement.
     
     Args:
         mesh_obj: The mesh object to animate
@@ -2647,27 +2638,36 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     
     print(f"[Blender] Applying per-frame body offset ({len(frames)} frames)...")
     
+    # Get tx, ty from FIRST FRAME only (constant)
+    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
+    tx_constant = first_cam_t[0] if first_cam_t and len(first_cam_t) > 0 else 0
+    ty_constant = first_cam_t[1] if first_cam_t and len(first_cam_t) > 1 else 0
+    
+    print(f"[Blender]   Using CONSTANT tx={tx_constant:.4f}, ty={ty_constant:.4f} from frame 1")
+    print(f"[Blender]   Only tz will animate (subject depth change)")
+    
     for i, frame_data in enumerate(frames):
         frame_num = frame_offset + i
         pred_cam_t = frame_data.get("pred_cam_t", [0, 0, 5])
         
-        tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
-        ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
+        # Only tz comes from each frame (subject moving toward/away from camera)
         tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
         
-        # Compute body offset for this frame
-        # ty is NEGATED because image Y is inverted from world Y
-        # tz is NEGATED because body is in front of camera (negative Z direction)
+        # Compute body offset:
+        # - tx, ty: CONSTANT from frame 1 (camera pan/tilt handles screen position)
+        # - tz: ANIMATED per frame (subject depth change)
+        # - ty is NEGATED because image Y is inverted from world Y
+        # - tz is NEGATED because body is in front of camera (negative Z direction)
         if up_axis == "Y":
-            offset = Vector((tx, -ty, -tz))
+            offset = Vector((tx_constant, -ty_constant, -tz))
         elif up_axis == "Z":
-            offset = Vector((tx, -tz, -ty))
+            offset = Vector((tx_constant, -tz, -ty_constant))
         elif up_axis == "-Y":
-            offset = Vector((tx, ty, tz))
+            offset = Vector((tx_constant, ty_constant, tz))
         elif up_axis == "-Z":
-            offset = Vector((tx, tz, ty))
+            offset = Vector((tx_constant, tz, ty_constant))
         else:
-            offset = Vector((tx, -ty, -tz))
+            offset = Vector((tx_constant, -ty_constant, -tz))
         
         # Apply to mesh
         if mesh_obj:
@@ -2680,14 +2680,13 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             armature_obj.keyframe_insert(data_path="location", frame=frame_num)
     
     # Debug output
-    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
     last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
-    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}")
-    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}")
+    print(f"[Blender]   Frame 0 tz: {first_cam_t[2]:.4f} → Body Z: {-first_cam_t[2]:.4f}")
+    print(f"[Blender]   Frame {len(frames)-1} tz: {last_cam_t[2]:.4f} → Body Z: {-last_cam_t[2]:.4f}")
     if mesh_obj:
-        print(f"[Blender] Mesh animated with {len(frames)} position keyframes")
+        print(f"[Blender] Mesh animated: tx/ty constant, tz animated ({len(frames)} frames)")
     if armature_obj:
-        print(f"[Blender] Skeleton animated with {len(frames)} position keyframes")
+        print(f"[Blender] Skeleton animated: tx/ty constant, tz animated ({len(frames)} frames)")
 
 
 def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset: int = 1):

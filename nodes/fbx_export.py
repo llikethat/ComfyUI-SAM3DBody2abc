@@ -631,7 +631,7 @@ class ExportAnimatedFBX:
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
             "animate_camera": animate_camera,
-            "camera_follow_root": False,  # Simplified - no longer using this mode
+            "camera_follow_root": animate_camera and len(solved_rotations) > 0,  # Enable when we have camera data
             "camera_use_rotation": True,   # Always use rotation for camera animation
             "camera_static": not animate_camera,
             "camera_compensation": False,  # Simplified - no longer using this mode
