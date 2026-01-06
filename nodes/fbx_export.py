@@ -260,6 +260,16 @@ class ExportAnimatedFBX:
                     "tooltip": "Scale information from Motion Analyzer node (for metadata embedding)"
                 }),
                 
+                # Depth handling (v4.6.9)
+                "use_depth_positioning": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Enable depth (Z) animation. Required for videos where character moves toward/away from camera."
+                }),
+                "depth_mode": (["Position (Z Movement)", "Scale", "Both (Z + Scale)", "Off (Legacy)"], {
+                    "default": "Position (Z Movement)",
+                    "tooltip": "Position: character moves in Z. Scale: character scales with depth. Both: combined."
+                }),
+                
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
                 "source_video_fps": ("FLOAT", {
                     "default": 0.0,
@@ -491,6 +501,8 @@ class ExportAnimatedFBX:
         sensor_width: float = 36.0,
         subject_motion: Optional[Dict] = None,
         scale_info: Optional[Dict] = None,
+        use_depth_positioning: bool = True,
+        depth_mode: str = "Position (Z-axis)",
         source_video_fps: float = 0.0,
         skip_first_frames: int = 0,
         output_dir: str = "",
@@ -712,6 +724,14 @@ class ExportAnimatedFBX:
             "camera_intrinsics": intrinsics_export,  # From MoGe2 Intrinsics
             "extrinsics_smoothing_method": smoothing_method,
             "extrinsics_smoothing_strength": smoothing_strength,
+            # Depth positioning (v4.6.9 fix)
+            "use_depth_positioning": use_depth_positioning,
+            "depth_mode": {
+                "Position (Z Movement)": "position",
+                "Scale": "scale",
+                "Both (Z + Scale)": "both",
+                "Off (Legacy)": "off"
+            }.get(depth_mode, "position"),
             "frames": [],
             # Body world trajectory for animated locator (COMPENSATED - camera effects removed)
             # Uses body_world_3d_compensated if available, falls back to raw body_world_3d

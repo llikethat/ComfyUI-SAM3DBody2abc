@@ -2613,12 +2613,19 @@ def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset
     return loc_obj
 
 
-def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1):
+def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1, 
+                                 use_depth: bool = True, depth_mode: str = "position"):
     """
     Apply per-frame body offset based on pred_cam_t for each frame.
     
-    This fixes the drift issue where static body_offset (from frame 0 only)
-    causes the character to drift relative to video as camera pans.
+    FIXED in v4.6.9: Now properly handles depth (Z) movement.
+    
+    When character moves toward/away from camera:
+    - tx, ty give screen position (works correctly)
+    - tz gives depth - character should MOVE IN Z to match
+    
+    The camera is STATIC at reference depth (frame 0's tz).
+    So the body must move in Z: closer = negative Z (toward camera)
     
     Args:
         mesh_obj: The mesh object to animate
@@ -2626,12 +2633,29 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         frames: List of frame data with pred_cam_t
         up_axis: Up axis for coordinate system
         frame_offset: Starting frame number
+        use_depth: If True, animate Z position based on depth.
+                   If False, Z stays at 0 (legacy behavior).
+        depth_mode: How to handle depth changes:
+                   - "position": Character moves in Z axis (RECOMMENDED)
+                   - "scale": Character scales with depth (closer = larger)
+                   - "both": Both Z movement AND scaling
     """
     if not frames:
         print("[Blender] No frames for per-frame body offset")
         return
     
     print(f"[Blender] Applying per-frame body offset ({len(frames)} frames)...")
+    print(f"[Blender]   use_depth={use_depth}, depth_mode='{depth_mode}' (v4.6.9)")
+    
+    # Get reference depth from first frame (camera is positioned at this distance)
+    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
+    ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
+    
+    print(f"[Blender]   Reference depth (frame 0): {ref_depth:.3f}m")
+    
+    # Track depth range for debug
+    min_depth = ref_depth
+    max_depth = ref_depth
     
     for i, frame_data in enumerate(frames):
         frame_num = frame_offset + i
@@ -2639,34 +2663,87 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         
         tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
         ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
+        tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
+        
+        # Current frame depth
+        frame_depth = abs(tz) if abs(tz) > 0.1 else ref_depth
+        min_depth = min(min_depth, frame_depth)
+        max_depth = max(max_depth, frame_depth)
+        
+        # Screen position (tx, ty) - these are correct as-is
+        world_x = tx
+        world_y = ty
+        
+        # Z position: how much closer/farther than reference frame
+        # Positive depth_delta = farther from camera = positive Z (away)
+        # Negative depth_delta = closer to camera = negative Z (toward)
+        if use_depth and depth_mode in ["position", "both"]:
+            depth_delta = frame_depth - ref_depth  # Negative when closer
+            world_z = depth_delta
+        else:
+            world_z = 0
+        
+        # Scale factor for mesh (closer = larger on screen)
+        if use_depth and depth_mode in ["scale", "both"]:
+            # When closer (frame_depth < ref_depth), scale up
+            scale_factor = ref_depth / frame_depth if frame_depth > 0 else 1.0
+        else:
+            scale_factor = 1.0
         
         # Compute body offset for this frame
+        # ty is negated for camera convention (image Y is flipped)
+        # Z convention: negative = toward camera in Maya Y-up
         if up_axis == "Y":
-            offset = Vector((tx, -ty, 0))
+            # Maya Y-up: X=right, Y=up, -Z=toward camera
+            offset = Vector((world_x, -world_y, -world_z))
         elif up_axis == "Z":
-            offset = Vector((tx, 0, -ty))
+            # Blender Z-up: X=right, Z=up, -Y=toward camera
+            offset = Vector((world_x, -world_z, -world_y))
         elif up_axis == "-Y":
-            offset = Vector((tx, ty, 0))
+            offset = Vector((world_x, world_y, world_z))
         elif up_axis == "-Z":
-            offset = Vector((tx, 0, ty))
+            offset = Vector((world_x, world_z, world_y))
         else:
-            offset = Vector((tx, -ty, 0))
+            offset = Vector((world_x, -world_y, -world_z))
         
         # Apply to mesh
         if mesh_obj:
             mesh_obj.location = offset
             mesh_obj.keyframe_insert(data_path="location", frame=frame_num)
+            if scale_factor != 1.0:
+                mesh_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
+                mesh_obj.keyframe_insert(data_path="scale", frame=frame_num)
         
         # Apply to armature
         if armature_obj:
             armature_obj.location = offset
             armature_obj.keyframe_insert(data_path="location", frame=frame_num)
+            if scale_factor != 1.0:
+                armature_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
+                armature_obj.keyframe_insert(data_path="scale", frame=frame_num)
     
-    # Debug output
-    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
+    # Debug output with depth info
     last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
-    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}")
-    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}")
+    last_depth = abs(last_cam_t[2]) if len(last_cam_t) > 2 else ref_depth
+    depth_change = last_depth - ref_depth
+    depth_pct = depth_change / ref_depth * 100 if ref_depth > 0 else 0
+    
+    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}, tz={first_cam_t[2]:.3f}")
+    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}, tz={last_cam_t[2]:.3f}")
+    print(f"[Blender]   Depth range: {min_depth:.2f}m to {max_depth:.2f}m")
+    print(f"[Blender]   Depth change (frame 0 to last): {depth_change:.3f}m ({depth_pct:+.1f}%)")
+    
+    if use_depth and depth_mode in ["position", "both"]:
+        print(f"[Blender]   Z movement enabled: character moves {abs(depth_change):.2f}m {'toward' if depth_change < 0 else 'away from'} camera")
+    if use_depth and depth_mode in ["scale", "both"]:
+        scale_range = ref_depth / min_depth if min_depth > 0 else 1.0
+        print(f"[Blender]   Scale enabled: up to {scale_range:.2f}x at closest point")
+    
+    if mesh_obj:
+        print(f"[Blender] Mesh animated with {len(frames)} keyframes")
+    if armature_obj:
+        print(f"[Blender] Skeleton animated with {len(frames)} keyframes")
+    
     if mesh_obj:
         print(f"[Blender] Mesh animated with {len(frames)} position keyframes")
     if armature_obj:
@@ -2863,6 +2940,10 @@ def main():
     camera_static = data.get("camera_static", False)  # Disable all camera animation
     camera_compensation = data.get("camera_compensation", False)  # Bake inverse extrinsics to root
     
+    # Depth handling (v4.6.9 fix)
+    use_depth_positioning = data.get("use_depth_positioning", True)  # Use pred_cam_t.tz for positioning
+    depth_mode = data.get("depth_mode", "position")  # How to show depth: position, scale, or both
+    
     # Camera data - support both old and new field names for backwards compatibility
     camera_extrinsics = data.get("camera_extrinsics") or data.get("solved_camera_rotations")
     camera_intrinsics = data.get("camera_intrinsics")  # From MoGe2
@@ -2874,6 +2955,7 @@ def main():
     print(f"[Blender] {len(frames)} frames at {fps} fps")
     print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
     print(f"[Blender] Sensor width: {sensor_width}mm")
+    print(f"[Blender] Depth positioning: {use_depth_positioning}, mode: {depth_mode} (v4.6.9)")
     print(f"[Blender] World translation mode: {world_translation_mode}")
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
     print(f"[Blender] Flip X: {flip_x}")
@@ -3020,8 +3102,10 @@ def main():
     
     # Apply PER-FRAME body offset (fixes drift issue)
     # This overwrites the static offset with animated keyframes
+    # v4.6.9: Now properly uses depth (tz) for world positioning
     if world_translation_mode == "root" and root_locator:
-        apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset)
+        apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset,
+                                    use_depth=use_depth_positioning, depth_mode=depth_mode)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

@@ -19,10 +19,13 @@ Fixed settings:
 - Scale: 1.0
 - Up axis: Y
 
-Version: 3.1.0
+Version: 4.6.9
+- Fixed depth (tz) handling - now properly uses pred_cam_t.tz for world positioning
+- Added depth_mode option: Position, Scale, Both, Legacy
+- Fixes character scaling issues when moving toward/away from camera
 """
 
-__version__ = "4.6.8"
+__version__ = "4.6.9"
 
 import os
 import sys
