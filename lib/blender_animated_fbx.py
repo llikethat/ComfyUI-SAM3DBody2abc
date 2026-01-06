@@ -2614,18 +2614,21 @@ def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset
 
 
 def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1, 
-                                 use_depth: bool = True, depth_mode: str = "position"):
+                                 use_depth: bool = True, depth_mode: str = "scale"):
     """
     Apply per-frame body offset based on pred_cam_t for each frame.
     
-    FIXED in v4.6.9: Now properly handles depth (Z) movement.
+    FIXED in v4.6.9: Now properly handles depth via SCALING (default).
     
-    When character moves toward/away from camera:
-    - tx, ty give screen position (works correctly)
-    - tz gives depth - character should MOVE IN Z to match
+    When character moves toward/away from camera with a STATIC camera:
+    - tx, ty give correct screen position (use as-is)
+    - tz gives depth - use to SCALE the mesh (closer = smaller mesh in world space)
     
-    The camera is STATIC at reference depth (frame 0's tz).
-    So the body must move in Z: closer = negative Z (toward camera)
+    The key insight: With static camera, we don't move in Z. Instead, we scale
+    the mesh so it appears the correct size when rendered through the camera.
+    
+    If tracked_depth is available (from CharacterTrajectoryTracker), it will be
+    used instead of pred_cam_t.tz for more accurate depth.
     
     Args:
         mesh_obj: The mesh object to animate
@@ -2633,11 +2636,11 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         frames: List of frame data with pred_cam_t
         up_axis: Up axis for coordinate system
         frame_offset: Starting frame number
-        use_depth: If True, animate Z position based on depth.
-                   If False, Z stays at 0 (legacy behavior).
+        use_depth: If True, apply depth-based scaling.
+                   If False, no scaling (legacy behavior).
         depth_mode: How to handle depth changes:
-                   - "position": Character moves in Z axis (RECOMMENDED)
-                   - "scale": Character scales with depth (closer = larger)
+                   - "scale": Mesh scales with depth (RECOMMENDED for static camera)
+                   - "position": Character moves in Z axis
                    - "both": Both Z movement AND scaling
     """
     if not frames:
@@ -2647,9 +2650,18 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     print(f"[Blender] Applying per-frame body offset ({len(frames)} frames)...")
     print(f"[Blender]   use_depth={use_depth}, depth_mode='{depth_mode}' (v4.6.9)")
     
-    # Get reference depth from first frame (camera is positioned at this distance)
-    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
-    ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
+    # Check if tracked depth is available (from CharacterTrajectoryTracker)
+    has_tracked_depth = "tracked_depth" in frames[0] if frames else False
+    if has_tracked_depth:
+        print(f"[Blender]   Using tracked_depth from CharacterTrajectoryTracker (more accurate)")
+    
+    # Get reference depth from first frame
+    first_frame = frames[0]
+    if has_tracked_depth:
+        ref_depth = abs(first_frame.get("tracked_depth", 5.0))
+    else:
+        first_cam_t = first_frame.get("pred_cam_t", [0, 0, 5])
+        ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
     
     print(f"[Blender]   Reference depth (frame 0): {ref_depth:.3f}m")
     
@@ -2663,54 +2675,54 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         
         tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
         ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
-        tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
         
-        # Current frame depth
-        frame_depth = abs(tz) if abs(tz) > 0.1 else ref_depth
+        # Get depth - prefer tracked_depth if available
+        if has_tracked_depth and "tracked_depth" in frame_data:
+            frame_depth = abs(frame_data["tracked_depth"])
+        else:
+            tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
+            frame_depth = abs(tz) if abs(tz) > 0.1 else ref_depth
+        
         min_depth = min(min_depth, frame_depth)
         max_depth = max(max_depth, frame_depth)
         
-        # Screen position (tx, ty) - these are correct as-is
+        # Screen position (tx, ty) - these are correct as-is for static camera
         world_x = tx
         world_y = ty
         
-        # Z position: how much closer/farther than reference frame
-        # Positive depth_delta = farther from camera = positive Z (away)
-        # Negative depth_delta = closer to camera = negative Z (toward)
+        # Z position (only if position mode)
         if use_depth and depth_mode in ["position", "both"]:
-            depth_delta = frame_depth - ref_depth  # Negative when closer
-            world_z = depth_delta
+            depth_delta = frame_depth - ref_depth
+            world_z = -depth_delta  # Negative = toward camera
         else:
             world_z = 0
         
-        # Scale factor for mesh (closer = larger on screen)
+        # Scale factor: closer = smaller mesh (to appear correct size on screen)
+        # scale = frame_depth / ref_depth
+        # When closer (frame_depth < ref_depth), scale < 1 (mesh smaller)
         if use_depth and depth_mode in ["scale", "both"]:
-            # When closer (frame_depth < ref_depth), scale up
-            scale_factor = ref_depth / frame_depth if frame_depth > 0 else 1.0
+            scale_factor = frame_depth / ref_depth if ref_depth > 0 else 1.0
         else:
             scale_factor = 1.0
         
         # Compute body offset for this frame
         # ty is negated for camera convention (image Y is flipped)
-        # Z convention: negative = toward camera in Maya Y-up
         if up_axis == "Y":
-            # Maya Y-up: X=right, Y=up, -Z=toward camera
-            offset = Vector((world_x, -world_y, -world_z))
+            offset = Vector((world_x, -world_y, world_z))
         elif up_axis == "Z":
-            # Blender Z-up: X=right, Z=up, -Y=toward camera
-            offset = Vector((world_x, -world_z, -world_y))
+            offset = Vector((world_x, world_z, -world_y))
         elif up_axis == "-Y":
-            offset = Vector((world_x, world_y, world_z))
+            offset = Vector((world_x, world_y, -world_z))
         elif up_axis == "-Z":
-            offset = Vector((world_x, world_z, world_y))
+            offset = Vector((world_x, -world_z, world_y))
         else:
-            offset = Vector((world_x, -world_y, -world_z))
+            offset = Vector((world_x, -world_y, world_z))
         
         # Apply to mesh
         if mesh_obj:
             mesh_obj.location = offset
             mesh_obj.keyframe_insert(data_path="location", frame=frame_num)
-            if scale_factor != 1.0:
+            if use_depth and depth_mode in ["scale", "both"]:
                 mesh_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
                 mesh_obj.keyframe_insert(data_path="scale", frame=frame_num)
         
@@ -2718,36 +2730,38 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         if armature_obj:
             armature_obj.location = offset
             armature_obj.keyframe_insert(data_path="location", frame=frame_num)
-            if scale_factor != 1.0:
+            if use_depth and depth_mode in ["scale", "both"]:
                 armature_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
                 armature_obj.keyframe_insert(data_path="scale", frame=frame_num)
     
-    # Debug output with depth info
-    last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
-    last_depth = abs(last_cam_t[2]) if len(last_cam_t) > 2 else ref_depth
+    # Debug output
+    last_frame = frames[-1]
+    if has_tracked_depth and "tracked_depth" in last_frame:
+        last_depth = abs(last_frame["tracked_depth"])
+    else:
+        last_cam_t = last_frame.get("pred_cam_t", [0, 0, 5])
+        last_depth = abs(last_cam_t[2]) if len(last_cam_t) > 2 else ref_depth
+    
     depth_change = last_depth - ref_depth
-    depth_pct = depth_change / ref_depth * 100 if ref_depth > 0 else 0
+    depth_pct = (depth_change / ref_depth * 100) if ref_depth > 0 else 0
     
-    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}, tz={first_cam_t[2]:.3f}")
-    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}, tz={last_cam_t[2]:.3f}")
+    first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
+    last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
+    
+    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}, depth={ref_depth:.3f}")
+    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}, depth={last_depth:.3f}")
     print(f"[Blender]   Depth range: {min_depth:.2f}m to {max_depth:.2f}m")
-    print(f"[Blender]   Depth change (frame 0 to last): {depth_change:.3f}m ({depth_pct:+.1f}%)")
+    print(f"[Blender]   Depth change: {depth_change:.3f}m ({depth_pct:+.1f}%)")
     
-    if use_depth and depth_mode in ["position", "both"]:
-        print(f"[Blender]   Z movement enabled: character moves {abs(depth_change):.2f}m {'toward' if depth_change < 0 else 'away from'} camera")
     if use_depth and depth_mode in ["scale", "both"]:
-        scale_range = ref_depth / min_depth if min_depth > 0 else 1.0
-        print(f"[Blender]   Scale enabled: up to {scale_range:.2f}x at closest point")
+        min_scale = min_depth / ref_depth if ref_depth > 0 else 1.0
+        max_scale = max_depth / ref_depth if ref_depth > 0 else 1.0
+        print(f"[Blender]   Scale range: {min_scale:.3f} to {max_scale:.3f}")
     
     if mesh_obj:
         print(f"[Blender] Mesh animated with {len(frames)} keyframes")
     if armature_obj:
         print(f"[Blender] Skeleton animated with {len(frames)} keyframes")
-    
-    if mesh_obj:
-        print(f"[Blender] Mesh animated with {len(frames)} position keyframes")
-    if armature_obj:
-        print(f"[Blender] Skeleton animated with {len(frames)} position keyframes")
 
 
 def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset: int = 1):

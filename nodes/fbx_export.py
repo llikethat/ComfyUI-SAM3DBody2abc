@@ -263,11 +263,11 @@ class ExportAnimatedFBX:
                 # Depth handling (v4.6.9)
                 "use_depth_positioning": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Enable depth (Z) animation. Required for videos where character moves toward/away from camera."
+                    "tooltip": "Enable depth-based scaling. Required for videos where character moves toward/away from camera."
                 }),
-                "depth_mode": (["Position (Z Movement)", "Scale", "Both (Z + Scale)", "Off (Legacy)"], {
-                    "default": "Position (Z Movement)",
-                    "tooltip": "Position: character moves in Z. Scale: character scales with depth. Both: combined."
+                "depth_mode": (["Scale (Recommended)", "Position (Z Movement)", "Both (Scale + Z)", "Off (Legacy)"], {
+                    "default": "Scale (Recommended)",
+                    "tooltip": "Scale: mesh scales with depth (best for static camera). Position: character moves in Z. Both: combined."
                 }),
                 
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
@@ -727,11 +727,11 @@ class ExportAnimatedFBX:
             # Depth positioning (v4.6.9 fix)
             "use_depth_positioning": use_depth_positioning,
             "depth_mode": {
+                "Scale (Recommended)": "scale",
                 "Position (Z Movement)": "position",
-                "Scale": "scale",
-                "Both (Z + Scale)": "both",
+                "Both (Scale + Z)": "both",
                 "Off (Legacy)": "off"
-            }.get(depth_mode, "position"),
+            }.get(depth_mode, "scale"),
             "frames": [],
             # Body world trajectory for animated locator (COMPENSATED - camera effects removed)
             # Uses body_world_3d_compensated if available, falls back to raw body_world_3d

@@ -20,8 +20,9 @@ Fixed settings:
 - Up axis: Y
 
 Version: 4.6.9
-- Fixed depth (tz) handling - now properly uses pred_cam_t.tz for world positioning
-- Added depth_mode option: Position, Scale, Both, Legacy
+- Fixed depth (tz) handling - now properly uses pred_cam_t.tz for scaling
+- Added depth_mode option: Scale (default), Position, Both, Legacy
+- Added CharacterTrajectoryTracker node for TAPIR + Depth Anything V2 fusion
 - Fixes character scaling issues when moving toward/away from camera
 """
 
@@ -62,6 +63,7 @@ _camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "c
 _moge_intrinsics = _load_module("sam3d2abc_moge_intrinsics", os.path.join(_nodes, "moge_intrinsics.py"))
 _colmap_bridge = _load_module("sam3d2abc_colmap_bridge", os.path.join(_nodes, "colmap_bridge.py"))
 _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes, "motion_analyzer.py"))
+_character_trajectory = _load_module("sam3d2abc_character_trajectory", os.path.join(_nodes, "character_trajectory.py"))
 
 # Register accumulator nodes
 if _accumulator:
@@ -128,6 +130,12 @@ if _motion_analyzer:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MotionAnalyzer"] = "📊 Motion Analyzer"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ScaleInfoDisplay"] = "📏 Scale Info Display"
+
+# Register character trajectory tracker
+if _character_trajectory:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CharacterTrajectoryTracker"] = _character_trajectory.CharacterTrajectoryTracker
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CharacterTrajectoryTracker"] = "🏃 Character Trajectory Tracker"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
