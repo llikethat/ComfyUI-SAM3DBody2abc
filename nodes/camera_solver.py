@@ -89,11 +89,6 @@ class CameraSolver:
                     "tooltip": "YOLO fallback: auto-detect people if no SAM3 masks provided"
                 }),
                 
-                # === Intrinsics (V2 compatible) ===
-                "intrinsics": ("INTRINSICS", {
-                    "tooltip": "Camera intrinsics from IntrinsicsFromSAM3DBody (preferred over manual focal/sensor)"
-                }),
-                
                 # === Quality ===
                 "quality_mode": (cls.QUALITY_MODES, {
                     "default": "Balanced",
@@ -155,8 +150,8 @@ class CameraSolver:
             }
         }
     
-    RETURN_TYPES = ("CAMERA_MATRICES", "IMAGE", "SHOT_INFO", "STRING")
-    RETURN_NAMES = ("camera_matrices", "debug_vis", "shot_info", "status")
+    RETURN_TYPES = ("CAMERA_EXTRINSICS", "IMAGE", "STRING")
+    RETURN_NAMES = ("camera_extrinsics", "debug_vis", "status")
     FUNCTION = "solve"
     CATEGORY = "SAM3DBody2abc/Camera"
     
@@ -167,8 +162,6 @@ class CameraSolver:
         self.superpoint = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._availability_logged = False
-        self._lightglue_warned = False
-        self._loftr_warned = False
     
     # ==================== Availability Check ====================
     
@@ -259,14 +252,10 @@ class CameraSolver:
             print(f"[CameraSolver] LightGlue loaded on {self.device}")
             return True
         except ImportError:
-            if not self._lightglue_warned:
-                print("[CameraSolver] LightGlue not installed. Install with: pip install lightglue")
-                self._lightglue_warned = True
+            print("[CameraSolver] LightGlue not installed. Install with: pip install lightglue")
             return False
         except Exception as e:
-            if not self._lightglue_warned:
-                print(f"[CameraSolver] LightGlue failed: {e}")
-                self._lightglue_warned = True
+            print(f"[CameraSolver] LightGlue failed: {e}")
             return False
     
     def load_loftr(self):
@@ -374,9 +363,10 @@ class CameraSolver:
     def run_lightglue(self, frame0: np.ndarray, frame1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """LightGlue matching (GPU with CPU fallback)."""
         if not self.load_lightglue():
-            # Already warned in load_lightglue, just fallback silently
+            print("[CameraSolver] LightGlue unavailable, trying LoFTR...")
             if self.load_loftr():
                 return self.run_loftr(frame0, frame1)
+            print("[CameraSolver] LoFTR also unavailable, falling back to ORB")
             return self.run_orb(frame0, frame1)
         
         try:
@@ -580,13 +570,8 @@ class CameraSolver:
         quality: str,
         focal_px: float,
         match_threshold: int
-    ) -> Tuple[List[Dict], List[Dict]]:
-        """Solve rotation-only camera (nodal pan/tilt).
-        
-        Returns:
-            rotations: List of rotation dicts per frame
-            track_history: List of tracked point pairs for visualization
-        """
+    ) -> List[Dict]:
+        """Solve rotation-only camera (nodal pan/tilt)."""
         num_frames = len(frames)
         H, W = frames.shape[1:3]
         
@@ -600,9 +585,6 @@ class CameraSolver:
         rotations = [{"frame": 0, "pan": 0.0, "tilt": 0.0, "roll": 0.0, "tx": 0.0, "ty": 0.0, "tz": 0.0}]
         cumulative_R = np.eye(3)
         
-        # Track history for visualization
-        track_history = []
-        
         for i in range(1, num_frames):
             mask0 = masks[i-1] if masks is not None else None
             
@@ -615,14 +597,6 @@ class CameraSolver:
                     pts0, pts1 = self.run_loftr(frames[i-1], frames[i])
             else:  # Fast
                 pts0, pts1 = self.run_klt(frames[i-1], frames[i], mask0)
-            
-            # Store track data for visualization
-            track_history.append({
-                "frame": i,
-                "pts0": pts0.copy() if len(pts0) > 0 else np.array([]),
-                "pts1": pts1.copy() if len(pts1) > 0 else np.array([]),
-                "num_points": len(pts0)
-            })
             
             if len(pts0) < 20:
                 rotations.append(rotations[-1].copy())
@@ -656,7 +630,7 @@ class CameraSolver:
                 "tz": 0.0,
             })
         
-        return rotations, track_history
+        return rotations
     
     def solve_with_translation(
         self,
@@ -911,49 +885,13 @@ class CameraSolver:
     
     # ==================== Debug Visualization ====================
     
-    def create_debug_vis(self, frames: np.ndarray, rotations: List[Dict], shot_type: str, 
-                          track_history: Optional[List[Dict]] = None, trail_length: int = 25) -> np.ndarray:
-        """Create debug visualization with optional rainbow trails."""
+    def create_debug_vis(self, frames: np.ndarray, rotations: List[Dict], shot_type: str) -> np.ndarray:
+        """Create debug visualization."""
         debug_frames = []
-        num_frames = len(frames)
-        
-        # Build point trails from track history if available
-        # Since KLT tracks frame-to-frame (not persistent IDs), we'll show current frame matches
-        # with color coding based on motion direction
         
         for i, frame in enumerate(frames):
             debug = frame.copy()
             
-            # Draw track points and motion vectors if available
-            if track_history is not None and i > 0 and i <= len(track_history):
-                track_data = track_history[i - 1]  # track_history[0] is frame 0->1
-                pts0 = track_data.get("pts0", np.array([]))
-                pts1 = track_data.get("pts1", np.array([]))
-                
-                if len(pts0) > 0 and len(pts1) > 0:
-                    # Color based on frame position (rainbow over time)
-                    hue = int(180 * i / max(num_frames - 1, 1))
-                    
-                    # Draw motion vectors with rainbow colors
-                    for j in range(min(len(pts0), 200)):  # Limit for performance
-                        p0 = tuple(pts0[j].astype(int))
-                        p1 = tuple(pts1[j].astype(int))
-                        
-                        # Convert HSV to BGR for OpenCV
-                        hsv_color = np.uint8([[[hue, 255, 255]]])
-                        bgr_color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)[0][0]
-                        color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
-                        
-                        # Draw line from previous to current position
-                        cv2.line(debug, p0, p1, color, 1, cv2.LINE_AA)
-                        # Draw current point
-                        cv2.circle(debug, p1, 3, color, -1, cv2.LINE_AA)
-                    
-                    # Show point count
-                    cv2.putText(debug, f"Points: {len(pts0)}", (10, 90),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            # Draw rotation info
             if i < len(rotations):
                 rot = rotations[i]
                 pan_deg = np.degrees(rot["pan"])
@@ -964,9 +902,9 @@ class CameraSolver:
                 cv2.putText(debug, f"Pan: {pan_deg:.1f} Tilt: {tilt_deg:.1f}", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 
-                if abs(rot.get("tx", 0)) > 0.001 or abs(rot.get("ty", 0)) > 0.001 or abs(rot.get("tz", 0)) > 0.001:
+                if abs(rot["tx"]) > 0.001 or abs(rot["ty"]) > 0.001 or abs(rot["tz"]) > 0.001:
                     cv2.putText(debug, f"T: ({rot['tx']:.2f}, {rot['ty']:.2f}, {rot['tz']:.2f})",
-                               (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 128, 0), 2)
+                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 128, 0), 2)
             
             debug_frames.append(debug)
         
@@ -980,7 +918,6 @@ class CameraSolver:
         solving_method: str = "Auto (Recommended)",
         foreground_masks: Optional[torch.Tensor] = None,
         auto_mask_people: bool = True,
-        intrinsics: Optional[Dict] = None,
         quality_mode: str = "Balanced",
         focal_length_mm: float = 35.0,
         sensor_width_mm: float = 36.0,
@@ -990,7 +927,7 @@ class CameraSolver:
         match_threshold: int = 500,
         stitch_overlap: int = 10,
         transition_frames: str = "",
-    ) -> Tuple[Dict, torch.Tensor, Dict, str]:
+    ) -> Tuple[Dict, torch.Tensor, str]:
         """
         Main camera solving entry point.
         
@@ -1003,18 +940,13 @@ class CameraSolver:
         # Check and log available matchers (only once)
         self.check_available_matchers()
         
-        print(f"[CameraSolver Legacy] Method: {solving_method}, Quality: {quality_mode}")
+        print(f"[CameraSolver] Method: {solving_method}, Quality: {quality_mode}")
         
         frames = (images.cpu().numpy() * 255).astype(np.uint8)
         num_frames, H, W = frames.shape[:3]
         
-        # Get focal length - prefer intrinsics input if provided
-        if intrinsics is not None:
-            focal_px = intrinsics.get("focal_px", focal_length_mm * W / sensor_width_mm)
-            print(f"[CameraSolver Legacy] Using intrinsics: focal={focal_px:.1f}px")
-        else:
-            focal_px = focal_length_mm * W / sensor_width_mm
-            print(f"[CameraSolver Legacy] Focal: {focal_length_mm}mm = {focal_px:.1f}px")
+        focal_px = focal_length_mm * W / sensor_width_mm
+        print(f"[CameraSolver] Focal: {focal_length_mm}mm = {focal_px:.1f}px")
         
         # Resolution-adaptive threshold
         pixels = W * H
@@ -1066,10 +998,9 @@ class CameraSolver:
                         for i in range(num_frames)]
             status = "Static: No camera motion"
             solving_method_used = "none"
-            track_history = None
             
         elif shot_type == "Nodal":
-            rotations, track_history = self.solve_rotation_only(frames, masks, quality_mode, focal_px, adaptive_threshold)
+            rotations = self.solve_rotation_only(frames, masks, quality_mode, focal_px, adaptive_threshold)
             status = f"Rotation Only: Homography ({quality_mode})"
             solving_method_used = "rotation_only"
             
@@ -1078,7 +1009,6 @@ class CameraSolver:
             solver_used = "COLMAP" if (COLMAP_AVAILABLE and translation_solver == "COLMAP") else "Essential Matrix"
             status = f"Full 6-DOF: {solver_used} ({quality_mode})"
             solving_method_used = "full_6dof"
-            track_history = None
             
         elif shot_type == "Hybrid":
             if not transitions:
@@ -1086,13 +1016,11 @@ class CameraSolver:
             rotations = self.solve_hybrid(frames, masks, quality_mode, focal_px, adaptive_threshold, transitions, stitch_overlap)
             status = f"Hybrid: Transitions at {transitions}"
             solving_method_used = "hybrid"
-            track_history = None
         else:
             rotations = [{"frame": i, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0}
                         for i in range(num_frames)]
             status = "Unknown"
             solving_method_used = "none"
-            track_history = None
         
         # Smoothing
         if smoothing > 1:
@@ -1111,93 +1039,32 @@ class CameraSolver:
             for r in rotations
         )
         
-        # Convert rotations to V2-compatible CAMERA_MATRICES format
-        # Each matrix entry needs: frame, matrix (4x4), rotation (3x3), pan, tilt, roll (degrees)
-        camera_matrices_list = []
-        for rot in rotations:
-            frame_idx = rot.get("frame", len(camera_matrices_list))
-            pan = rot.get("pan", 0)  # radians
-            tilt = rot.get("tilt", 0)  # radians
-            roll = rot.get("roll", 0)  # radians
-            
-            # Build rotation matrix from pan/tilt/roll (ZXY order for camera)
-            cp, sp = np.cos(pan), np.sin(pan)
-            ct, st = np.cos(tilt), np.sin(tilt)
-            cr, sr = np.cos(roll), np.sin(roll)
-            
-            # R = Rz(roll) @ Rx(tilt) @ Ry(pan)
-            R_pan = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
-            R_tilt = np.array([[1, 0, 0], [0, ct, -st], [0, st, ct]])
-            R_roll = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]])
-            R = R_roll @ R_tilt @ R_pan
-            
-            # Build 4x4 matrix
-            M = np.eye(4)
-            M[:3, :3] = R
-            if has_translation:
-                M[0, 3] = rot.get("tx", 0)
-                M[1, 3] = rot.get("ty", 0)
-                M[2, 3] = rot.get("tz", 0)
-            
-            camera_matrices_list.append({
-                "frame": frame_idx,
-                "matrix": M.tolist(),
-                "rotation": R.tolist(),
-                "pan": float(np.degrees(pan)),
-                "tilt": float(np.degrees(tilt)),
-                "roll": float(np.degrees(roll)),
-            })
-        
-        # Build intrinsics dict if not provided
-        if intrinsics is None:
-            intrinsics = {
-                "focal_px": focal_px,
-                "focal_mm": focal_length_mm,
-                "sensor_width_mm": sensor_width_mm,
-                "width": W,
-                "height": H,
-                "cx": W / 2,
-                "cy": H / 2,
-                "source": "manual"
-            }
-        
-        # Build V2-compatible CAMERA_MATRICES output
-        camera_matrices = {
-            "matrices": camera_matrices_list,
+        # Build CAMERA_EXTRINSICS output
+        camera_extrinsics = {
             "num_frames": num_frames,
-            "intrinsics": intrinsics,
-            "shot_type": shot_type.lower() if shot_type else "unknown",
-            # Legacy fields for compatibility
-            "source": "CameraSolver_Legacy",
+            "image_width": W,
+            "image_height": H,
+            "source": "CameraSolver",
             "solving_method": solving_method_used,
+            "coordinate_system": "Y-up",
+            "units": "radians",
+            "has_translation": has_translation,
             "mask_source": mask_source,
             "quality_mode": quality_mode,
+            "smoothing_applied": smoothing if smoothing > 1 else 0,
+            "rotations": rotations
         }
         
-        # Build SHOT_INFO output (V2 compatible)
-        shot_info = {
-            "shot_type": shot_type.lower() if shot_type else "unknown",
-            "confidence": 0.8,  # Legacy solver doesn't compute confidence
-            "flow_coherence": 0.0,
-            "parallax_score": 0.0,
-            "homography_error": 0.0,
-            "motion_magnitude": 0.0,
-            "num_points_tracked": len(track_history) if track_history else 0,
-            "details": {"solver": "legacy", "quality_mode": quality_mode},
-        }
-        
-        # Debug visualization with track trails
-        debug_vis = self.create_debug_vis(frames, rotations, shot_type, track_history)
+        # Debug visualization
+        debug_vis = self.create_debug_vis(frames, rotations, shot_type)
         debug_tensor = torch.from_numpy(debug_vis).float() / 255.0
         
         # Final status
         final = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0}
-        total_rotation = abs(final.get("pan_deg", 0)) + abs(final.get("tilt_deg", 0))
-        print(f"[CameraSolver Legacy] Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
-        print(f"[CameraSolver Legacy] Total camera rotation: {total_rotation:.1f}°")
+        print(f"[CameraSolver] Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
         status += f" | {num_frames} frames | Masks: {mask_source}"
         
-        return (camera_matrices, debug_tensor, shot_info, status)
+        return (camera_extrinsics, debug_tensor, status)
 
 
 class CameraDataFromJSON:
