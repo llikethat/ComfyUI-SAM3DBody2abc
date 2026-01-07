@@ -808,6 +808,10 @@ class ExportAnimatedFBX:
                 "image_size": frame.get("image_size"),  # (width, height)
                 "keypoints_2d": to_list(frame.get("keypoints_2d")),  # For apparent height
                 "keypoints_3d": to_list(frame.get("keypoints_3d")),  # 18-joint 3D keypoints
+                # Tracked depth from CharacterTrajectoryTracker (v4.6.9)
+                "tracked_depth": frame.get("tracked_depth"),
+                "tracked_position_2d": to_list(frame.get("tracked_position_2d")),
+                "tracked_position_3d": to_list(frame.get("tracked_position_3d")),
             }
             if include_mesh:
                 frame_data["vertices"] = to_list(frame.get("vertices"))
