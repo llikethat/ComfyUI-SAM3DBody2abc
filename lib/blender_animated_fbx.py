@@ -2948,6 +2948,7 @@ def main():
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     flip_x = data.get("flip_x", False)  # Mirror on X axis
     frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
+    include_skeleton = data.get("include_skeleton", True)  # v4.6.10: Option to exclude skeleton
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
@@ -2972,6 +2973,7 @@ def main():
     print(f"[Blender] Depth positioning: {use_depth_positioning}, mode: {depth_mode} (v4.6.9)")
     print(f"[Blender] World translation mode: {world_translation_mode}")
     print(f"[Blender] Skeleton mode: {skeleton_mode}")
+    print(f"[Blender] Include skeleton: {include_skeleton}")
     print(f"[Blender] Flip X: {flip_x}")
     print(f"[Blender] Animate camera: {animate_camera}")
     print(f"[Blender] Camera follow root: {camera_follow_root}")
@@ -3105,19 +3107,23 @@ def main():
     # Create skeleton (armature with bones and hierarchy)
     # Pass camera_extrinsics to compensate body orientation for camera motion
     # BUT NOT when in bake_to_geometry mode or camera_compensation mode (transforms already applied)
-    skeleton_camera_rots = None
-    if not bake_to_geometry_mode and not root_camera_compensation_mode:
-        skeleton_camera_rots = camera_extrinsics
-    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
-    
-    # Apply body offset to skeleton as well (initial position)
-    if world_translation_mode == "root" and root_locator and armature_obj:
-        armature_obj.location = body_offset
+    armature_obj = None
+    if include_skeleton:
+        skeleton_camera_rots = None
+        if not bake_to_geometry_mode and not root_camera_compensation_mode:
+            skeleton_camera_rots = camera_extrinsics
+        armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
+        
+        # Apply body offset to skeleton as well (initial position)
+        if world_translation_mode == "root" and root_locator and armature_obj:
+            armature_obj.location = body_offset
+    else:
+        print("[Blender] Skeleton excluded (camera-only export)")
     
     # Apply PER-FRAME body offset (fixes drift issue)
     # This overwrites the static offset with animated keyframes
     # v4.6.9: Now properly uses depth (tz) for world positioning
-    if world_translation_mode == "root" and root_locator:
+    if world_translation_mode == "root" and root_locator and (mesh_obj or armature_obj):
         apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset,
                                     use_depth=use_depth_positioning, depth_mode=depth_mode)
     

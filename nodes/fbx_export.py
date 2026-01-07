@@ -219,6 +219,10 @@ class ExportAnimatedFBX:
                     "default": True,
                     "tooltip": "Include mesh with animation"
                 }),
+                "include_skeleton": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include skeleton/armature. Disable for camera-only export."
+                }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include camera in export"
@@ -494,6 +498,7 @@ class ExportAnimatedFBX:
         world_translation: str = "None (Body at Origin)",
         flip_x: bool = False,
         include_mesh: bool = True,
+        include_skeleton: bool = True,
         include_camera: bool = True,
         camera_motion: str = "Translation (Default)",
         extrinsics_smoothing: str = "Kalman Filter",
@@ -715,6 +720,7 @@ class ExportAnimatedFBX:
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
+            "include_skeleton": include_skeleton,  # v4.6.10: Option to exclude skeleton
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
             "camera_use_rotation": use_camera_rotation,
