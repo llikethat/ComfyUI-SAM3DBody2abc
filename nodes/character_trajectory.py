@@ -270,7 +270,7 @@ class CharacterTrajectoryTracker:
         Apply temporal smoothing to trajectory.
         
         Args:
-            trajectory: [N, 3] array of (x, y, z) positions
+            trajectory: [N, D] array of positions (D can be 1, 2, or 3)
             method: Smoothing method
             window: Window size
             
@@ -280,25 +280,40 @@ class CharacterTrajectoryTracker:
         if method == "None" or len(trajectory) < window:
             return trajectory
         
+        # Handle 1D arrays
+        was_1d = False
+        if len(trajectory.shape) == 1:
+            was_1d = True
+            trajectory = trajectory.reshape(-1, 1)
+        
         smoothed = trajectory.copy()
         
         # Ensure odd window
         window = window if window % 2 == 1 else window + 1
         
+        # Make sure window doesn't exceed data length
+        window = min(window, len(trajectory))
+        if window < 3:
+            return trajectory.flatten() if was_1d else trajectory
+        
+        num_dims = trajectory.shape[1]
+        
         if method == "Gaussian":
-            for i in range(3):
+            for i in range(num_dims):
                 smoothed[:, i] = ndimage.gaussian_filter1d(trajectory[:, i], sigma=window/4)
         
         elif method == "Savitzky-Golay":
             poly_order = min(3, window - 1)
-            for i in range(3):
+            for i in range(num_dims):
                 smoothed[:, i] = savgol_filter(trajectory[:, i], window, poly_order)
         
         elif method == "Moving Average":
             kernel = np.ones(window) / window
-            for i in range(3):
+            for i in range(num_dims):
                 smoothed[:, i] = np.convolve(trajectory[:, i], kernel, mode='same')
         
+        if was_1d:
+            return smoothed.flatten()
         return smoothed
     
     def _track_with_optical_flow(self, images: np.ndarray, masks: np.ndarray, 
@@ -726,8 +741,7 @@ class CharacterTrajectoryTracker:
         if smoothing_method != "None":
             print(f"[CharacterTracker] Applying {smoothing_method} smoothing (window={smoothing_window})")
             trajectory_3d = self._smooth_trajectory(trajectory_3d, smoothing_method, smoothing_window)
-            depths_metric = self._smooth_trajectory(depths_metric.reshape(-1, 1), 
-                                                     smoothing_method, smoothing_window).flatten()
+            depths_metric = self._smooth_trajectory(depths_metric, smoothing_method, smoothing_window)
         
         # === Step 7: Create output trajectory dict ===
         trajectory_output = {
