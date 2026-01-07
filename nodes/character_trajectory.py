@@ -83,11 +83,23 @@ class CharacterTrajectoryTracker:
                     "default": "Pelvis (Center)",
                     "tooltip": "Which body part(s) to track for trajectory"
                 }),
-                "num_track_points": ("INT", {
-                    "default": 16,
-                    "min": 4,
-                    "max": 64,
-                    "tooltip": "Number of points to track on character (for internal TAPIR)"
+                
+                # === TAPIR Settings ===
+                "tapir_grid_size": ("INT", {
+                    "default": 4,
+                    "min": 2,
+                    "max": 8,
+                    "tooltip": "Grid NxN points on character. 4=16pts, 6=36pts, 8=64pts. Lower = less VRAM."
+                }),
+                "tapir_batch_frames": ("INT", {
+                    "default": 25,
+                    "min": 5,
+                    "max": 100,
+                    "tooltip": "Process video in batches of N frames. Lower = less VRAM but may lose tracking continuity."
+                }),
+                "use_tapir": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Use TAPIR for tracking. Disable to use optical flow fallback (faster, less VRAM)."
                 }),
                 
                 # === Smoothing ===
@@ -344,92 +356,193 @@ class CharacterTrajectoryTracker:
         return tracks
     
     def _track_with_tapir(self, images: np.ndarray, masks: np.ndarray,
-                          tracking_mode: str, num_points: int) -> np.ndarray:
+                          tracking_mode: str, grid_size: int = 4,
+                          batch_frames: int = 25) -> np.ndarray:
         """
-        Track character using TAPIR.
+        Track character using TAPIR with memory-efficient batch processing.
         
         Args:
             images: [N, H, W, 3] video frames
             masks: [N, H, W] character masks
             tracking_mode: Tracking mode
-            num_points: Number of points to track
+            grid_size: NxN grid for point sampling (4=16pts, 6=36pts, 8=64pts)
+            batch_frames: Process video in batches of N frames
             
         Returns:
             [N, 2] array of (x, y) averaged tracked positions
         """
+        import gc
+        
         N, H, W, _ = images.shape
+        num_points = grid_size * grid_size
+        
+        print(f"[CharacterTracker] TAPIR settings: grid={grid_size}x{grid_size}={num_points}pts, batch_frames={batch_frames}")
         
         # Get initial points from first frame mask
-        init_points = self._sample_points_from_mask(masks[0], tracking_mode, num_points)
+        init_points = self._sample_points_from_mask(masks[0], tracking_mode, grid_size)
+        print(f"[CharacterTracker] Tracking {len(init_points)} points (requested {num_points})")
         
-        # Prepare video for TAPIR: [B, T, H, W, 3], range [-1, 1]
-        video = torch.from_numpy(images).float().permute(0, 1, 2, 3)  # Keep as [T, H, W, C]
-        video = video.unsqueeze(0)  # [1, T, H, W, C]
-        video = (video / 255.0) * 2 - 1  # Normalize to [-1, 1] if not already
-        video = video.to(self.device)
+        # Result array
+        all_tracks = np.zeros((N, 2))
         
-        # Query points: [B, N, 3] where each point is [t, y, x]
-        query_points = torch.zeros((1, len(init_points), 3), dtype=torch.float32, device=self.device)
-        query_points[0, :, 0] = 0  # All points from frame 0
-        query_points[0, :, 1] = torch.from_numpy(init_points[:, 1])  # y
-        query_points[0, :, 2] = torch.from_numpy(init_points[:, 0])  # x
+        # Process in batches to manage VRAM
+        num_batches = (N + batch_frames - 1) // batch_frames
         
-        # Run TAPIR
-        with torch.no_grad():
-            outputs = self.tapir_model(video, query_points)
-        
-        # outputs['tracks']: [B, N, T, 2] - (x, y) positions
-        # outputs['occlusion']: [B, N, T] - occlusion logits
-        tracks = outputs['tracks'][0].cpu().numpy()  # [N, T, 2]
-        occlusion = torch.sigmoid(outputs['occlusion'][0]).cpu().numpy()  # [N, T]
-        
-        # Average visible points per frame
-        result = np.zeros((N, 2))
-        for t in range(N):
-            visible_mask = occlusion[:, t] < 0.5  # Not occluded
-            if visible_mask.sum() > 0:
-                result[t] = tracks[visible_mask, t, :].mean(axis=0)
+        for batch_idx in range(num_batches):
+            start_frame = batch_idx * batch_frames
+            end_frame = min(start_frame + batch_frames, N)
+            batch_size = end_frame - start_frame
+            
+            print(f"[CharacterTracker] Processing batch {batch_idx + 1}/{num_batches} (frames {start_frame}-{end_frame-1})")
+            
+            # Get batch of frames
+            batch_images = images[start_frame:end_frame]
+            
+            # Prepare video for TAPIR: [B, T, H, W, 3], range [-1, 1]
+            video = torch.from_numpy(batch_images).float()
+            if video.max() > 1.0:
+                video = video / 255.0
+            video = video * 2 - 1  # Normalize to [-1, 1]
+            video = video.unsqueeze(0)  # [1, T, H, W, C]
+            video = video.to(self.device)
+            
+            # For subsequent batches, use last known position as starting point
+            if batch_idx == 0:
+                query_frame = 0
+                query_pts = init_points
             else:
-                result[t] = tracks[:, t, :].mean(axis=0)
+                # Re-initialize from mask at start of batch
+                query_frame = 0  # Relative to batch
+                query_pts = self._sample_points_from_mask(masks[start_frame], tracking_mode, grid_size)
+            
+            # Query points: [B, N, 3] where each point is [t, y, x]
+            query_points = torch.zeros((1, len(query_pts), 3), dtype=torch.float32, device=self.device)
+            query_points[0, :, 0] = query_frame
+            query_points[0, :, 1] = torch.from_numpy(query_pts[:, 1].astype(np.float32))  # y
+            query_points[0, :, 2] = torch.from_numpy(query_pts[:, 0].astype(np.float32))  # x
+            
+            # Run TAPIR with memory management
+            try:
+                with torch.no_grad():
+                    with torch.cuda.amp.autocast(enabled=False):  # Disable autocast to avoid BFloat16
+                        outputs = self.tapir_model(video, query_points)
+                
+                # Extract results - convert to float32 explicitly
+                tracks = outputs['tracks'][0].float().cpu().numpy()  # [N_points, T, 2]
+                occlusion_logits = outputs['occlusion'][0].float()
+                occlusion = torch.sigmoid(occlusion_logits).cpu().numpy()  # [N_points, T]
+                
+                # Average visible points per frame in this batch
+                for t in range(batch_size):
+                    visible_mask = occlusion[:, t] < 0.5  # Not occluded
+                    if visible_mask.sum() > 0:
+                        all_tracks[start_frame + t] = tracks[visible_mask, t, :].mean(axis=0)
+                    else:
+                        all_tracks[start_frame + t] = tracks[:, t, :].mean(axis=0)
+                        
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    print(f"[CharacterTracker] WARNING: GPU OOM in batch {batch_idx + 1}. Try reducing:")
+                    print(f"  - tapir_batch_frames (current: {batch_frames})")
+                    print(f"  - tapir_grid_size (current: {grid_size}, points: {num_points})")
+                    # Fall back to optical flow for this batch
+                    print(f"[CharacterTracker] Falling back to optical flow for this batch...")
+                    batch_tracks = self._track_with_optical_flow(
+                        batch_images, masks[start_frame:end_frame], tracking_mode
+                    )
+                    all_tracks[start_frame:end_frame] = batch_tracks
+                else:
+                    raise e
+            finally:
+                # Clean up GPU memory
+                del video, query_points
+                if 'outputs' in locals():
+                    del outputs
+                if 'tracks' in locals():
+                    del tracks
+                if 'occlusion_logits' in locals():
+                    del occlusion_logits
+                torch.cuda.empty_cache()
+                gc.collect()
         
-        return result
+        print(f"[CharacterTracker] TAPIR tracking complete for {N} frames")
+        return all_tracks
     
     def _sample_points_from_mask(self, mask: np.ndarray, tracking_mode: str, 
-                                  num_points: int) -> np.ndarray:
-        """Sample tracking points from mask region."""
+                                  grid_size: int = 4) -> np.ndarray:
+        """
+        Sample tracking points from mask region using a grid pattern.
+        
+        Args:
+            mask: Binary mask [H, W]
+            tracking_mode: Which body region to sample
+            grid_size: NxN grid (e.g., 4 = 16 points, 6 = 36 points)
+            
+        Returns:
+            points: [N, 2] array of (x, y) coordinates
+        """
         H, W = mask.shape
         
         coords = np.where(mask > 0.5)
         if len(coords[0]) == 0:
-            # Return center point
-            return np.array([[W // 2, H // 2]])
+            # Empty mask - return center point
+            return np.array([[W // 2, H // 2]], dtype=np.float32)
         
         y_coords, x_coords = coords
         y_min, y_max = y_coords.min(), y_coords.max()
+        x_min, x_max = x_coords.min(), x_coords.max()
         mask_height = y_max - y_min
+        mask_width = x_max - x_min
         
-        # Filter by tracking mode
+        # Filter by tracking mode to get the region of interest
         if tracking_mode == "Pelvis (Center)":
-            pelvis_y_min = y_min + int(mask_height * 0.35)
-            pelvis_y_max = y_min + int(mask_height * 0.55)
-            valid = (y_coords >= pelvis_y_min) & (y_coords <= pelvis_y_max)
+            # Focus on middle region (pelvis area)
+            roi_y_min = y_min + int(mask_height * 0.35)
+            roi_y_max = y_min + int(mask_height * 0.55)
+            roi_x_min = x_min
+            roi_x_max = x_max
         elif tracking_mode == "Feet (Ground Contact)":
-            feet_y_min = y_min + int(mask_height * 0.85)
-            valid = y_coords >= feet_y_min
-        else:
-            valid = np.ones(len(y_coords), dtype=bool)
+            # Focus on bottom region (feet)
+            roi_y_min = y_min + int(mask_height * 0.85)
+            roi_y_max = y_max
+            roi_x_min = x_min
+            roi_x_max = x_max
+        else:  # Full Body
+            roi_y_min = y_min
+            roi_y_max = y_max
+            roi_x_min = x_min
+            roi_x_max = x_max
         
-        if valid.sum() < num_points:
-            valid = np.ones(len(y_coords), dtype=bool)
+        # Create grid points within the ROI
+        roi_height = roi_y_max - roi_y_min
+        roi_width = roi_x_max - roi_x_min
         
-        valid_x = x_coords[valid]
-        valid_y = y_coords[valid]
+        if roi_height < 2 or roi_width < 2:
+            # ROI too small, use centroid
+            return np.array([[(roi_x_min + roi_x_max) // 2, (roi_y_min + roi_y_max) // 2]], dtype=np.float32)
         
-        # Sample points
-        indices = np.random.choice(len(valid_x), min(num_points, len(valid_x)), replace=False)
+        # Generate grid coordinates
+        grid_y = np.linspace(roi_y_min + roi_height * 0.1, roi_y_max - roi_height * 0.1, grid_size)
+        grid_x = np.linspace(roi_x_min + roi_width * 0.1, roi_x_max - roi_width * 0.1, grid_size)
         
-        points = np.stack([valid_x[indices], valid_y[indices]], axis=1)
-        return points.astype(np.float32)
+        # Create meshgrid
+        xx, yy = np.meshgrid(grid_x, grid_y)
+        grid_points = np.stack([xx.flatten(), yy.flatten()], axis=1)
+        
+        # Filter to keep only points inside the mask
+        valid_points = []
+        for pt in grid_points:
+            x, y = int(pt[0]), int(pt[1])
+            if 0 <= x < W and 0 <= y < H and mask[y, x] > 0.5:
+                valid_points.append(pt)
+        
+        if len(valid_points) == 0:
+            # No valid grid points, fall back to centroid
+            centroid_x = (roi_x_min + roi_x_max) // 2
+            centroid_y = (roi_y_min + roi_y_max) // 2
+            return np.array([[centroid_x, centroid_y]], dtype=np.float32)
+        
+        return np.array(valid_points, dtype=np.float32)
     
     def _create_debug_video(self, images: np.ndarray, masks: np.ndarray,
                             tracks_2d: np.ndarray, depths: np.ndarray,
@@ -479,7 +592,9 @@ class CharacterTrajectoryTracker:
                         depth_is_inverted=False,
                         reference_depth_m=5.0,
                         tracking_mode="Pelvis (Center)",
-                        num_track_points=16,
+                        tapir_grid_size=4,
+                        tapir_batch_frames=25,
+                        use_tapir=True,
                         smoothing_method="Savitzky-Golay",
                         smoothing_window=5,
                         output_debug_video=True):
@@ -518,6 +633,8 @@ class CharacterTrajectoryTracker:
         N = len(images_np)
         H, W = images_np.shape[1:3]
         
+        num_points = tapir_grid_size * tapir_grid_size
+        
         print(f"[CharacterTracker] Processing {N} frames at {W}x{H}")
         print(f"[CharacterTracker] Tracking mode: {tracking_mode}")
         
@@ -537,13 +654,19 @@ class CharacterTrajectoryTracker:
         # === Step 2: Track 2D position ===
         print(f"[CharacterTracker] Tracking 2D position...")
         
-        tapir_loaded = self._load_tapir()
+        tapir_loaded = self._load_tapir() if use_tapir else False
         
-        if tapir_loaded:
+        if tapir_loaded and use_tapir:
             print(f"[CharacterTracker] Using TAPIR for tracking")
-            tracks_2d = self._track_with_tapir(images_np, masks_np, tracking_mode, num_track_points)
+            tracks_2d = self._track_with_tapir(
+                images_np, masks_np, tracking_mode,
+                grid_size=tapir_grid_size, batch_frames=tapir_batch_frames
+            )
         else:
-            print(f"[CharacterTracker] Using optical flow fallback")
+            if not use_tapir:
+                print(f"[CharacterTracker] TAPIR disabled, using optical flow")
+            else:
+                print(f"[CharacterTracker] TAPIR not available, using optical flow fallback")
             tracks_2d = self._track_with_optical_flow(images_np, masks_np, tracking_mode)
         
         # === Step 3: Sample depth at tracked positions ===
@@ -656,11 +779,14 @@ class CharacterTrajectoryTracker:
         depth_change = depths_metric[-1] - depths_metric[0]
         depth_pct = (depth_change / ref_depth) * 100
         
+        tracker_info = "TAPIR" if (tapir_loaded and use_tapir) else "Optical Flow"
+        tapir_settings = f"\n  Grid: {tapir_grid_size}x{tapir_grid_size} = {num_points} points\n  Batch Frames: {tapir_batch_frames}" if (tapir_loaded and use_tapir) else ""
+        
         info = f"""Character Trajectory Tracking Results
 =====================================
 Frames: {N}
 Tracking Mode: {tracking_mode}
-Tracker: {'TAPIR' if tapir_loaded else 'Optical Flow'}
+Tracker: {tracker_info}{tapir_settings}
 Smoothing: {smoothing_method} (window={smoothing_window})
 
 Depth Analysis:
@@ -672,6 +798,11 @@ Depth Analysis:
 3D Trajectory:
   Start: ({trajectory_3d[0, 0]:.2f}, {trajectory_3d[0, 1]:.2f}, {trajectory_3d[0, 2]:.2f})
   End: ({trajectory_3d[-1, 0]:.2f}, {trajectory_3d[-1, 1]:.2f}, {trajectory_3d[-1, 2]:.2f})
+
+Tips for GPU Memory (if OOM):
+  - Reduce tapir_grid_size: 4=16pts, 3=9pts, 2=4pts
+  - Reduce tapir_batch_frames (current: {tapir_batch_frames})
+  - Or disable use_tapir for optical flow fallback
 
 Use the updated mesh_sequence for FBX export with corrected depth values.
 """
