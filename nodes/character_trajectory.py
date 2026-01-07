@@ -767,21 +767,27 @@ class CharacterTrajectoryTracker:
                 # Deep copy to avoid modifying original
                 import copy
                 mesh_sequence_updated = copy.deepcopy(mesh_sequence)
-                frames = mesh_sequence_updated.get("frames", [])
+                frames = mesh_sequence_updated.get("frames", {})
                 
-                for i, frame_data in enumerate(frames):
+                # frames can be a dict (with int keys) or a list
+                if isinstance(frames, dict):
+                    frame_items = list(frames.items())  # [(idx, frame_data), ...]
+                else:
+                    frame_items = list(enumerate(frames))  # [(0, frame_data), (1, frame_data), ...]
+                
+                for frame_idx, frame_data in frame_items:
+                    i = frame_idx if isinstance(frame_idx, int) else int(frame_idx)
                     if i >= N:
                         break
                     
                     # Check if frame_data is a dict
                     if not isinstance(frame_data, dict):
-                        print(f"[CharacterTracker] Warning: frame {i} is not a dict, skipping")
                         continue
                     
                     # Update pred_cam_t with tracked depth
                     if "pred_cam_t" in frame_data and isinstance(frame_data["pred_cam_t"], (list, np.ndarray)):
                         pred_cam_t = frame_data["pred_cam_t"]
-                        if len(pred_cam_t) >= 3:
+                        if hasattr(pred_cam_t, '__len__') and len(pred_cam_t) >= 3:
                             # Save original
                             if isinstance(pred_cam_t, np.ndarray):
                                 frame_data["pred_cam_t_original"] = pred_cam_t.copy().tolist()
@@ -798,8 +804,12 @@ class CharacterTrajectoryTracker:
                     frame_data["tracked_position_3d"] = trajectory_3d[i].tolist()
                     frame_data["tracked_depth"] = float(depths_metric[i])
                     
+                print(f"[CharacterTracker] Updated {len(frame_items)} frames with depth data")
+                    
             except Exception as e:
                 print(f"[CharacterTracker] Warning: Could not update mesh_sequence: {e}")
+                import traceback
+                traceback.print_exc()
                 mesh_sequence_updated = mesh_sequence
         
         # === Step 9: Create debug video ===
