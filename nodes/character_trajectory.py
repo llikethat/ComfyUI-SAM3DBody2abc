@@ -763,22 +763,44 @@ class CharacterTrajectoryTracker:
         # === Step 8: Update mesh_sequence with new depth values ===
         mesh_sequence_updated = mesh_sequence
         if mesh_sequence is not None:
-            mesh_sequence_updated = mesh_sequence.copy() if hasattr(mesh_sequence, 'copy') else dict(mesh_sequence)
-            frames = mesh_sequence_updated.get("frames", [])
-            
-            for i, frame_data in enumerate(frames):
-                if i < N:
+            try:
+                # Deep copy to avoid modifying original
+                import copy
+                mesh_sequence_updated = copy.deepcopy(mesh_sequence)
+                frames = mesh_sequence_updated.get("frames", [])
+                
+                for i, frame_data in enumerate(frames):
+                    if i >= N:
+                        break
+                    
+                    # Check if frame_data is a dict
+                    if not isinstance(frame_data, dict):
+                        print(f"[CharacterTracker] Warning: frame {i} is not a dict, skipping")
+                        continue
+                    
                     # Update pred_cam_t with tracked depth
-                    if "pred_cam_t" in frame_data:
-                        old_tz = frame_data["pred_cam_t"][2]
-                        new_tz = depths_metric[i]
-                        frame_data["pred_cam_t_original"] = frame_data["pred_cam_t"].copy()
-                        frame_data["pred_cam_t"][2] = new_tz
+                    if "pred_cam_t" in frame_data and isinstance(frame_data["pred_cam_t"], (list, np.ndarray)):
+                        pred_cam_t = frame_data["pred_cam_t"]
+                        if len(pred_cam_t) >= 3:
+                            # Save original
+                            if isinstance(pred_cam_t, np.ndarray):
+                                frame_data["pred_cam_t_original"] = pred_cam_t.copy().tolist()
+                                frame_data["pred_cam_t"] = pred_cam_t.copy()
+                                frame_data["pred_cam_t"][2] = float(depths_metric[i])
+                                frame_data["pred_cam_t"] = frame_data["pred_cam_t"].tolist()
+                            else:
+                                frame_data["pred_cam_t_original"] = list(pred_cam_t)
+                                frame_data["pred_cam_t"] = list(pred_cam_t)
+                                frame_data["pred_cam_t"][2] = float(depths_metric[i])
                     
                     # Add tracking data
                     frame_data["tracked_position_2d"] = tracks_2d[i].tolist()
                     frame_data["tracked_position_3d"] = trajectory_3d[i].tolist()
                     frame_data["tracked_depth"] = float(depths_metric[i])
+                    
+            except Exception as e:
+                print(f"[CharacterTracker] Warning: Could not update mesh_sequence: {e}")
+                mesh_sequence_updated = mesh_sequence
         
         # === Step 9: Create debug video ===
         if output_debug_video:
