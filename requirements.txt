@@ -15,6 +15,12 @@ ultralytics
 # Math utilities  
 scipy
 
+# TAPIR point tracking
+einshape
+
+# LoFTR feature matching (detector-free matcher)
+kornia
+
 # ============================================
 # FEATURE MATCHING (Optional - Recommended)
 # ============================================
@@ -22,11 +28,7 @@ scipy
 
 # LightGlue - AI feature matcher (Apache 2.0)
 # Improves parallax shot solving significantly
-# pip install lightglue
-
-# LoFTR - Detector-free matcher via kornia (Apache 2.0)  
-# Fallback for difficult/textureless scenes
-# pip install kornia
+# git clone https://github.com/cvg/LightGlue.git && cd LightGlue && pip install -e .
 
 # ============================================
 # PARALLAX/TRANSLATION SOLVING (Optional)

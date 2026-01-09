@@ -15,16 +15,12 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.7.0
-- Code optimization: Centralized logging system with verbosity levels
-- Node parameter: log_level in Export FBX controls verbosity
-- Timestamps: All log messages include [HH:MM:SS.mmm] timestamps
-- Removed 500+ debug print statements
-- Cleaner console output with progress indicators
-- Removed unused functions and dead code
+Version: 4.7.2
+- Fixed circular reference in fallback loggers (camera_solver, motion_analyzer)
+- All fallback loggers now use print() instead of log.info()
 """
 
-__version__ = "4.7.0"
+__version__ = "4.7.2"
 
 import os
 import sys

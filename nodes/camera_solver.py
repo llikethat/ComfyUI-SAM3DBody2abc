@@ -39,10 +39,10 @@ try:
     set_module("Camera Solver")
 except ImportError:
     class _FallbackLog:
-        def info(self, msg): log.info(f" {msg}")
+        def info(self, msg): print(f"[Camera Solver] {msg}")
         def debug(self, msg): pass
-        def warn(self, msg): log.info(f" WARN: {msg}")
-        def error(self, msg): log.info(f" ERROR: {msg}")
+        def warn(self, msg): print(f"[Camera Solver] WARN: {msg}")
+        def error(self, msg): print(f"[Camera Solver] ERROR: {msg}")
         def progress(self, c, t, task="", interval=10): pass
     log = _FallbackLog()
 

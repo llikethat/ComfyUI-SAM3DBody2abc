@@ -44,28 +44,48 @@ A complete workflow is included: `workflows/SAM3DBody2abc_Video_to_FBX.json`
 
 ## Installation
 
-### Requirements
+### Required ComfyUI Custom Nodes
+
+Install these custom nodes via ComfyUI Manager or manually:
+
+| Custom Node | Purpose | Repository |
+|-------------|---------|------------|
+| **ComfyUI-SAM3DBody** | Core 3D body estimation | [PozzettiAndrea/ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) |
+| **ComfyUI-SAM3** | Video segmentation (person masks) | [PozzettiAndrea/ComfyUI-SAM3](https://github.com/PozzettiAndrea/ComfyUI-SAM3) |
+| **ComfyUI-VideoHelperSuite** | Video loading/saving | [Kosinkadink/ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) |
+| **ComfyUI-DepthAnythingV2** | Depth estimation | [kijai/ComfyUI-DepthAnythingV2](https://github.com/kijai/ComfyUI-DepthAnythingV2) |
+| **ComfyUI-Custom-Scripts** | Utility nodes | [pythongosssss/ComfyUI-Custom-Scripts](https://github.com/pythongosssss/ComfyUI-Custom-Scripts) |
+| **ComfyUI-Crystools** | Utility nodes | [crystian/ComfyUI-Crystools](https://github.com/crystian/ComfyUI-Crystools) |
+
+### Python Requirements
 
 ```bash
 pip install torch torchvision
 pip install opencv-python numpy scipy
 pip install einshape  # For TAPIR
+pip install kornia    # For LoFTR feature matching
 ```
 
-### Dependencies
+### Optional Dependencies (for better camera solving)
 
-This package requires:
-- [ComfyUI-SAM3DBody](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody) - Core body estimation
-- [ComfyUI-SAM3](https://github.com/PozzettiAndrea/ComfyUI-SAM3) - Video segmentation
-- [ComfyUI-DepthAnythingV2](https://github.com/kijai/ComfyUI-DepthAnythingV2) - Depth estimation
-- [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) - Video loading
+```bash
+# LightGlue - Recommended for fast, accurate feature matching
+git clone https://github.com/cvg/LightGlue.git && cd LightGlue && pip install -e .
+
+# LoFTR - Alternative detector-free matching (included in kornia)
+pip install kornia
+```
 
 ### Model Downloads
 
 Models are downloaded automatically on first use:
-- **TAPIR** (BootsTAPIR): ~150MB - Point tracking
-- **Depth Anything V2**: ~350MB - Depth estimation
-- **LightGlue/LoFTR**: ~75MB - Feature matching for camera solve
+
+| Model | Size | Purpose |
+|-------|------|---------|
+| **TAPIR** (BootsTAPIR) | ~150MB | Point tracking for trajectory |
+| **Depth Anything V2** | ~350MB | Depth estimation |
+| **LightGlue + SuperPoint** | ~75MB | Feature matching (camera solve) |
+| **LoFTR** | ~50MB | Detector-free matching (camera solve fallback) |
 
 ## Logging / Verbosity Control
 
@@ -166,6 +186,15 @@ https://github.com/DepthAnything/Depth-Anything-V2
 ```
 
 ## Version History
+
+### v4.7.2 (January 2025)
+- Fixed circular reference in fallback loggers (camera_solver, motion_analyzer)
+- All fallback loggers now properly use print() instead of undefined log reference
+
+### v4.7.1 (January 2025)
+- Updated README with complete ComfyUI custom node dependencies
+- Added LoFTR and kornia to requirements documentation
+- Fixed verify_overlay syntax errors from debug removal
 
 ### v4.7.0 (January 2025)
 - **Code optimization**: Centralized logging system with verbosity levels

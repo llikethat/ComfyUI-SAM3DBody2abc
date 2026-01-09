@@ -35,10 +35,10 @@ try:
     set_module("Motion Analyzer")
 except ImportError:
     class _FallbackLog:
-        def info(self, msg): log.info(f" {msg}")
+        def info(self, msg): print(f"[Motion Analyzer] {msg}")
         def debug(self, msg): pass
-        def warn(self, msg): log.info(f" WARN: {msg}")
-        def error(self, msg): log.info(f" ERROR: {msg}")
+        def warn(self, msg): print(f"[Motion Analyzer] WARN: {msg}")
+        def error(self, msg): print(f"[Motion Analyzer] ERROR: {msg}")
         def progress(self, c, t, task="", interval=10): pass
     log = _FallbackLog()
 
