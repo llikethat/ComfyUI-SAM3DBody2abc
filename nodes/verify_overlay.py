@@ -694,6 +694,7 @@ class VerifyOverlayBatch:
                             kp_3d = kp_3d_raw
                             source_name = f"pred_keypoints_3d ({kp_3d.shape[0]} joints - SAME as ground truth)"
                         else:
+                            log.debug(f"pred_keypoints_3d has unexpected shape: {kp_3d_raw.shape}")
                     
                     if kp_3d is None and joint_coords is not None:
                         kp_3d_raw = np.array(joint_coords)
@@ -718,9 +719,11 @@ class VerifyOverlayBatch:
                         avg_dx, avg_dy = total_dx / num_compare, total_dy / num_compare
                         
                         if abs(avg_dx) < 5 and abs(avg_dy) < 5:
+                            log.debug("Projection formula appears CORRECT!")
                         else:
+                            log.debug(f"Large offset detected: dx={avg_dx:.1f}px, dy={avg_dy:.1f}px")
                     else:
-                    
+                        log.debug("Cannot compare - no 3D keypoints available")
                 
                 if keypoints_2d is not None:
                     # Use 2D keypoints directly
