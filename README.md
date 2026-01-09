@@ -187,6 +187,12 @@ https://github.com/DepthAnything/Depth-Anything-V2
 
 ## Version History
 
+### v4.7.4 (January 2025)
+- Fixed double module names in logs (e.g., `[Motion Analyzer] [Motion Analyzer]`)
+- Added progress logging to Verify Overlay (Sequence) node
+- Added configurable `batch_size` parameter to Video Batch Processor (default: 10)
+- Added "Static (No Motion)" option to Camera Solver - skips all feature detection for static shots
+
 ### v4.7.3 (January 2025)
 - Added traceback to module loading errors for better debugging
 - Removed all leading spaces from log messages

@@ -15,13 +15,14 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.7.3
-- Added traceback to module loading errors for better debugging
-- Removed all leading spaces from log messages
-- Fixed potential import issues
+Version: 4.7.4
+- Fixed double module names in logs (e.g., [Motion Analyzer] [Motion Analyzer])
+- Added progress logging to Verify Overlay (Sequence)
+- Added configurable batch_size parameter to Video Batch Processor (default: 10)
+- Added "Static (No Motion)" option to Camera Solver for known static shots
 """
 
-__version__ = "4.7.3"
+__version__ = "4.7.4"
 
 import os
 import sys

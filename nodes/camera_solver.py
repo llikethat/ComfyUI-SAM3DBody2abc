@@ -73,11 +73,12 @@ class CameraSolver:
     3. No masking if neither provided
     
     Solving Methods:
+    - Static: No camera motion (skip solving, fastest)
     - Rotation Only: Homography decomposition (tripod/nodal shots)
     - Full 6-DOF: COLMAP or Essential Matrix fallback (handheld/dolly)
     """
     
-    SOLVING_METHODS = ["Auto (Recommended)", "Rotation Only (Tripod)", "Full 6-DOF (Handheld)"]
+    SOLVING_METHODS = ["Static (No Motion)", "Auto (Recommended)", "Rotation Only (Tripod)", "Full 6-DOF (Handheld)"]
     QUALITY_MODES = ["Fast", "Balanced", "Best"]
     TRANSLATION_SOLVERS = ["COLMAP", "Essential Matrix"]
     COLMAP_QUALITY = ["Low", "Medium", "High"]
@@ -89,7 +90,7 @@ class CameraSolver:
                 "images": ("IMAGE",),
                 "solving_method": (cls.SOLVING_METHODS, {
                     "default": "Auto (Recommended)",
-                    "tooltip": "Auto: detect shot type automatically. Rotation Only: tripod pan/tilt. Full 6-DOF: handheld with translation."
+                    "tooltip": "Static: no camera motion (fastest). Auto: detect shot type. Rotation Only: tripod pan/tilt. Full 6-DOF: handheld."
                 }),
             },
             "optional": {
@@ -984,10 +985,43 @@ class CameraSolver:
         
         # Map solving method to internal shot types
         shot_type = "Auto"
-        if "Rotation Only" in solving_method:
+        if "Static" in solving_method:
+            shot_type = "Static"
+        elif "Rotation Only" in solving_method:
             shot_type = "Nodal"
         elif "Full 6-DOF" in solving_method:
             shot_type = "Parallax"
+        
+        # For Static mode, skip all the expensive operations
+        if shot_type == "Static":
+            log.info("Static camera mode - skipping feature detection")
+            rotations = [{"frame": i, "pan": 0, "tilt": 0, "roll": 0, "tx": 0, "ty": 0, "tz": 0} 
+                        for i in range(num_frames)]
+            
+            # Build output directly without solving
+            camera_extrinsics = {
+                "num_frames": num_frames,
+                "image_width": W,
+                "image_height": H,
+                "source": "CameraSolver",
+                "solving_method": "static",
+                "coordinate_system": "Y-up",
+                "units": "radians",
+                "has_translation": False,
+                "mask_source": "none",
+                "quality_mode": "N/A",
+                "smoothing_applied": 0,
+                "rotations": rotations
+            }
+            
+            # Simple debug visualization for static
+            debug_vis = self.create_debug_vis(frames, rotations, "Static")
+            debug_tensor = torch.from_numpy(debug_vis).float() / 255.0
+            
+            status = f"Static camera | {num_frames} frames | No solving needed"
+            log.info("Static: pan=0.00°, tilt=0.00°")
+            
+            return (camera_extrinsics, debug_tensor, status)
         
         # Detect shot type if Auto
         transitions = []

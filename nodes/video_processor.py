@@ -99,6 +99,12 @@ class VideoBatchProcessor:
                     "min": 1,
                     "max": 30,
                 }),
+                "batch_size": ("INT", {
+                    "default": 10,
+                    "min": 1,
+                    "max": 50,
+                    "tooltip": "Frames to process per batch. Lower = less VRAM, Higher = faster."
+                }),
             }
         }
     
@@ -176,6 +182,7 @@ class VideoBatchProcessor:
         start_frame: int = 0,
         end_frame: int = -1,
         skip_frames: int = 1,
+        batch_size: int = 10,
     ) -> Tuple[Dict, torch.Tensor, int, str, float]:
         """Process video frames.
         
@@ -485,7 +492,8 @@ class VideoBatchProcessor:
                         frames[frame_idx] = {"vertices": None, "joint_coords": None}
                         debug_images.append(img_tensor)
                     
-                    if (i + 1) % 10 == 0 or (i + 1) == len(frame_indices):
+                    # Progress logging using batch_size as interval
+                    if (i + 1) % batch_size == 0 or (i + 1) == len(frame_indices):
                         log.info(f"Processed {i + 1}/{len(frame_indices)}")
                         
                 except Exception as e:

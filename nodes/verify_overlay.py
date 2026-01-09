@@ -910,6 +910,9 @@ class VerifyOverlayBatch:
             result_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
             result_float = result_rgb.astype(np.float32) / 255.0
             result_frames.append(result_float)
+            
+            # Progress logging
+            log.progress(img_idx, num_images, "Overlay rendering", interval=10)
         
         # Stack all frames
         result_batch = torch.from_numpy(np.stack(result_frames, axis=0))

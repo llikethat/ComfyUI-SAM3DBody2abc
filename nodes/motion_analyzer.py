@@ -853,7 +853,7 @@ class MotionAnalyzer:
         If camera_extrinsics is provided, also computes camera-compensated trajectory
         (removes camera pan/tilt effects from body_world trajectory).
         """
-        log.info("[Motion Analyzer] ========== SUBJECT MOTION ANALYSIS ==========")
+        log.info("========== SUBJECT MOTION ANALYSIS ==========")
         
         # Convert from SAM3DBody2abc format if needed
         mesh_sequence = self._convert_mesh_sequence(mesh_sequence)
@@ -1150,7 +1150,7 @@ class MotionAnalyzer:
         focal_min_mm = focal_min * sensor_width_mm / image_width if image_width > 0 else 0
         focal_max_mm = focal_max * sensor_width_mm / image_width if image_width > 0 else 0
         
-        log.info(f"[Motion Analyzer] ----- CAMERA COMPENSATION -----")
+        log.info(f"----- CAMERA COMPENSATION -----")
         log.info(f"Sensor: {sensor_width_mm}mm, Image width: {image_width}px")
         log.info(f"Focal length (px): ref={ref_focal:.1f}, min={focal_min:.1f}, max={focal_max:.1f}")
         log.info(f"Focal length (mm): ref={ref_focal_mm:.1f}, min={focal_min_mm:.1f}, max={focal_max_mm:.1f}")
@@ -1361,7 +1361,7 @@ class MotionAnalyzer:
         grounded_count = sum(1 for fc in subject_motion["foot_contact"] if fc in ["both", "left", "right"])
         airborne_count = sum(1 for fc in subject_motion["foot_contact"] if fc == "none")
         
-        log.info(f"[Motion Analyzer] ----- MOTION STATISTICS -----")
+        log.info(f"----- MOTION STATISTICS -----")
         log.info(f"Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps")
         log.info(f"Avg 2D velocity: {avg_velocity_2d:.2f} px/frame")
         log.info(f"Max 2D velocity: {max_velocity_2d:.2f} px/frame")
