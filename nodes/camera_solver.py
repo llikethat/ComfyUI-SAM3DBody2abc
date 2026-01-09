@@ -56,11 +56,11 @@ try:
     # Try to import from ComfyUI-COLMAP
     from ComfyUI_COLMAP.colmap_solver import run_colmap_reconstruction
     COLMAP_AVAILABLE = True
-    log.info(" COLMAP integration available")
+    log.info("COLMAP integration available")
 except ImportError:
-    log.info(" COLMAP not found - parallax solving will use Essential Matrix fallback")
+    log.info("COLMAP not found - parallax solving will use Essential Matrix fallback")
 except Exception as e:
-    log.info(f" COLMAP import error: {e}")
+    log.info(f"COLMAP import error: {e}")
 
 
 class CameraSolver:
@@ -184,7 +184,7 @@ class CameraSolver:
             return
         
         log.info("=" * 60)
-        log.info(" Feature Matcher Availability Check")
+        log.info("Feature Matcher Availability Check")
         log.info("=" * 60)
         
         available = []
@@ -194,44 +194,44 @@ class CameraSolver:
         try:
             from lightglue import LightGlue, SuperPoint
             available.append("LightGlue + SuperPoint")
-            log.info("  ✓ LightGlue + SuperPoint - AVAILABLE (recommended)")
+            log.info(" ✓ LightGlue + SuperPoint - AVAILABLE (recommended)")
         except ImportError:
             unavailable.append(("LightGlue", "git clone https://github.com/cvg/LightGlue.git && cd LightGlue && pip install -e ."))
-            log.info("  ✗ LightGlue + SuperPoint - NOT INSTALLED")
+            log.info(" ✗ LightGlue + SuperPoint - NOT INSTALLED")
         
         # Check LoFTR (kornia)
         try:
             from kornia.feature import LoFTR
             available.append("LoFTR")
-            log.info("  ✓ LoFTR (kornia) - AVAILABLE")
+            log.info(" ✓ LoFTR (kornia) - AVAILABLE")
         except ImportError:
             unavailable.append(("LoFTR", "pip install kornia"))
-            log.info("  ✗ LoFTR (kornia) - NOT INSTALLED")
+            log.info(" ✗ LoFTR (kornia) - NOT INSTALLED")
         
         # Check YOLO (for person detection/masking)
         try:
             from ultralytics import YOLO
             available.append("YOLO")
-            log.info("  ✓ YOLO (ultralytics) - AVAILABLE (for person masking)")
+            log.info(" ✓ YOLO (ultralytics) - AVAILABLE (for person masking)")
         except ImportError:
             unavailable.append(("YOLO", "pip install ultralytics"))
-            log.info("  ✗ YOLO (ultralytics) - NOT INSTALLED")
+            log.info(" ✗ YOLO (ultralytics) - NOT INSTALLED")
         
         # ORB is always available (OpenCV built-in)
-        log.info("  ✓ ORB (OpenCV) - AVAILABLE (fallback, always works)")
+        log.info(" ✓ ORB (OpenCV) - AVAILABLE (fallback, always works)")
         available.append("ORB")
         
         log.info("-" * 60)
         
         if len(available) > 1:  # More than just ORB
-            log.info(f" Using best available: {available[0]}")
+            log.info(f"Using best available: {available[0]}")
         else:
-            log.info(" WARNING: Only ORB fallback available (less accurate)")
+            log.info("WARNING: Only ORB fallback available (less accurate)")
         
         if unavailable:
-            log.info(" To install missing matchers:")
+            log.info("To install missing matchers:")
             for name, cmd in unavailable:
-                log.info(f"  {name}: {cmd}")
+                log.info(f" {name}: {cmd}")
         
         log.info("=" * 60)
         
@@ -247,10 +247,10 @@ class CameraSolver:
         try:
             from ultralytics import YOLO
             self.yolo_model = YOLO("yolov8n.pt")
-            log.info(" YOLO loaded")
+            log.info("YOLO loaded")
             return True
         except Exception as e:
-            log.info(f" YOLO failed: {e}")
+            log.info(f"YOLO failed: {e}")
             return False
     
     def load_lightglue(self):
@@ -262,13 +262,13 @@ class CameraSolver:
             
             self.superpoint = SuperPoint(max_num_keypoints=2048).eval().to(self.device)
             self.lightglue_matcher = LightGlue(features='superpoint').eval().to(self.device)
-            log.info(f" LightGlue loaded on {self.device}")
+            log.info(f"LightGlue loaded on {self.device}")
             return True
         except ImportError:
-            log.info(" LightGlue not installed. Install with: pip install lightglue")
+            log.info("LightGlue not installed. Install with: pip install lightglue")
             return False
         except Exception as e:
-            log.info(f" LightGlue failed: {e}")
+            log.info(f"LightGlue failed: {e}")
             return False
     
     def load_loftr(self):
@@ -278,13 +278,13 @@ class CameraSolver:
         try:
             from kornia.feature import LoFTR
             self.loftr_matcher = LoFTR(pretrained='outdoor').eval().to(self.device)
-            log.info(f" LoFTR loaded on {self.device}")
+            log.info(f"LoFTR loaded on {self.device}")
             return True
         except ImportError:
-            log.info(" LoFTR not installed. Install with: pip install kornia")
+            log.info("LoFTR not installed. Install with: pip install kornia")
             return False
         except Exception as e:
-            log.info(f" LoFTR failed: {e}")
+            log.info(f"LoFTR failed: {e}")
             return False
     
     # ==================== Person Detection ====================
@@ -376,10 +376,10 @@ class CameraSolver:
     def run_lightglue(self, frame0: np.ndarray, frame1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """LightGlue matching (GPU with CPU fallback)."""
         if not self.load_lightglue():
-            log.info(" LightGlue unavailable, trying LoFTR...")
+            log.info("LightGlue unavailable, trying LoFTR...")
             if self.load_loftr():
                 return self.run_loftr(frame0, frame1)
-            log.info(" LoFTR also unavailable, falling back to ORB")
+            log.info("LoFTR also unavailable, falling back to ORB")
             return self.run_orb(frame0, frame1)
         
         try:
@@ -423,26 +423,26 @@ class CameraSolver:
                     raise ValueError(f"Unknown matches format: shape={matches.shape}, kpts0={len(kpts0)}, kpts1={len(kpts1)}")
             
             if len(pts0) < 20:
-                log.info(f" LightGlue: only {len(pts0)} matches, falling back")
+                log.info(f"LightGlue: only {len(pts0)} matches, falling back")
                 return self.run_orb(frame0, frame1)
             
             return pts0, pts1
             
         except Exception as e:
-            log.info(f" LightGlue error: {e}")
-            log.info(" Trying LoFTR as fallback...")
+            log.info(f"LightGlue error: {e}")
+            log.info("Trying LoFTR as fallback...")
             if self.load_loftr():
                 try:
                     return self.run_loftr(frame0, frame1)
                 except:
                     pass
-            log.info(" Falling back to ORB")
+            log.info("Falling back to ORB")
             return self.run_orb(frame0, frame1)
     
     def run_loftr(self, frame0: np.ndarray, frame1: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """LoFTR matching (GPU with CPU fallback)."""
         if not self.load_loftr():
-            log.info(" LoFTR unavailable, falling back to ORB")
+            log.info("LoFTR unavailable, falling back to ORB")
             return self.run_orb(frame0, frame1)
         
         try:
@@ -480,7 +480,7 @@ class CameraSolver:
             return pts0, pts1
             
         except Exception as e:
-            log.info(f" LoFTR error: {e}, falling back to ORB")
+            log.info(f"LoFTR error: {e}, falling back to ORB")
             return self.run_orb(frame0, frame1)
     
     # ==================== Shot Type Detection ====================
@@ -521,7 +521,7 @@ class CameraSolver:
         
         # Static detection
         if avg_motion < 2.0:
-            log.info(f" Detected: Static (avg motion: {avg_motion:.2f}px)")
+            log.info(f"Detected: Static (avg motion: {avg_motion:.2f}px)")
             return "Static", []
         
         # Find transitions
@@ -533,13 +533,13 @@ class CameraSolver:
                 transitions.append(frame_indices[i])
         
         if transitions:
-            log.info(f" Detected: Hybrid with transitions at {transitions}")
+            log.info(f"Detected: Hybrid with transitions at {transitions}")
             return "Hybrid", transitions
         elif avg_inlier > 0.85:
-            log.info(f" Detected: Nodal (avg inlier: {avg_inlier:.2f})")
+            log.info(f"Detected: Nodal (avg inlier: {avg_inlier:.2f})")
             return "Nodal", []
         else:
-            log.info(f" Detected: Parallax (avg inlier: {avg_inlier:.2f})")
+            log.info(f"Detected: Parallax (avg inlier: {avg_inlier:.2f})")
             return "Parallax", []
     
     def classify_segment(self, frames: np.ndarray, masks: Optional[np.ndarray] = None) -> str:
@@ -680,12 +680,12 @@ class CameraSolver:
         # Try COLMAP if available
         if COLMAP_AVAILABLE:
             try:
-                log.info(" Running COLMAP reconstruction...")
+                log.info("Running COLMAP reconstruction...")
                 colmap_result = run_colmap_reconstruction(frames, all_matches, focal_px)
                 if colmap_result is not None:
                     return self._convert_colmap_result(colmap_result, num_frames)
             except Exception as e:
-                log.info(f" COLMAP failed: {e}, using Essential Matrix")
+                log.info(f"COLMAP failed: {e}, using Essential Matrix")
         
         # Essential Matrix fallback
         return self._solve_essential_matrix(all_matches, K, num_frames)
@@ -796,7 +796,7 @@ class CameraSolver:
         # Solve each segment
         all_rotations = []
         for seg in segments:
-            log.info(f" Solving {seg['start']}-{seg['end']} as {seg['type']}")
+            log.info(f"Solving {seg['start']}-{seg['end']} as {seg['type']}")
             
             if seg["type"] == "nodal":
                 seg_rots = self.solve_rotation_only(
@@ -953,13 +953,13 @@ class CameraSolver:
         # Check and log available matchers (only once)
         self.check_available_matchers()
         
-        log.info(f" Method: {solving_method}, Quality: {quality_mode}")
+        log.info(f"Method: {solving_method}, Quality: {quality_mode}")
         
         frames = (images.cpu().numpy() * 255).astype(np.uint8)
         num_frames, H, W = frames.shape[:3]
         
         focal_px = focal_length_mm * W / sensor_width_mm
-        log.info(f" Focal: {focal_length_mm}mm = {focal_px:.1f}px")
+        log.info(f"Focal: {focal_length_mm}mm = {focal_px:.1f}px")
         
         # Resolution-adaptive threshold
         pixels = W * H
@@ -971,16 +971,16 @@ class CameraSolver:
         if foreground_masks is not None:
             masks = foreground_masks.cpu().numpy()
             mask_source = "SAM3"
-            log.info(" Using SAM3 masks (recommended)")
+            log.info("Using SAM3 masks (recommended)")
         elif auto_mask_people:
             masks = self.detect_people(frames)
             if masks is not None:
                 mask_source = "YOLO"
-                log.info(" Using YOLO auto-detection (SAM3 masks preferred)")
+                log.info("Using YOLO auto-detection (SAM3 masks preferred)")
             else:
-                log.info(" YOLO failed, no masking")
+                log.info("YOLO failed, no masking")
         else:
-            log.info(" No masking - features may include foreground")
+            log.info("No masking - features may include foreground")
         
         # Map solving method to internal shot types
         shot_type = "Auto"
@@ -1038,7 +1038,7 @@ class CameraSolver:
         # Smoothing
         if smoothing > 1:
             rotations = self.smooth_rotations(rotations, smoothing)
-            log.info(f" Applied Gaussian smoothing (window={smoothing})")
+            log.info(f"Applied Gaussian smoothing (window={smoothing})")
         
         # Add degree values for convenience
         for rot in rotations:
@@ -1074,7 +1074,7 @@ class CameraSolver:
         
         # Final status
         final = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0}
-        log.info(f" Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
+        log.info(f"Final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
         status += f" | {num_frames} frames | Masks: {mask_source}"
         
         return (camera_extrinsics, debug_tensor, status)
@@ -1183,7 +1183,7 @@ class CameraDataFromJSON:
         scale_translation: float = 1.0,
     ) -> Tuple[Dict]:
         
-        log.info(f" Loading camera extrinsics (coord system: {coordinate_system})...")
+        log.info(f"Loading camera extrinsics (coord system: {coordinate_system})...")
         
         data = None
         json_input = json_input.strip()
@@ -1193,9 +1193,9 @@ class CameraDataFromJSON:
             try:
                 with open(json_input, 'r') as f:
                     data = json.load(f)
-                log.info(f" Loaded from file: {json_input}")
+                log.info(f"Loaded from file: {json_input}")
             except Exception as e:
-                log.info(f" File read error: {e}")
+                log.info(f"File read error: {e}")
         
         # Try parsing as JSON string
         if data is None:
@@ -1270,7 +1270,7 @@ class CameraDataFromJSON:
         # Apply smoothing if requested
         if smoothing > 1 and len(rotations) > smoothing:
             rotations = self._smooth(rotations, smoothing)
-            log.info(f" Applied Gaussian smoothing (window={smoothing})")
+            log.info(f"Applied Gaussian smoothing (window={smoothing})")
         
         # Check for translation
         has_trans = any(
@@ -1295,7 +1295,7 @@ class CameraDataFromJSON:
         }
         
         final = rotations[-1] if rotations else {"pan_deg": 0, "tilt_deg": 0}
-        log.info(f" Loaded {len(rotations)} frames, final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
+        log.info(f"Loaded {len(rotations)} frames, final: pan={final['pan_deg']:.2f}°, tilt={final['tilt_deg']:.2f}°")
         
         return (camera_extrinsics,)
     

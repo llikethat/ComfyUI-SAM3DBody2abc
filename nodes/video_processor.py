@@ -194,40 +194,40 @@ class VideoBatchProcessor:
         # Handle masks input - standard MASK type is (N, H, W) tensor
         active_mask = None
         if masks is not None:
-            log.info(f" Received masks, type: {type(masks).__name__}")
+            log.info(f"Received masks, type: {type(masks).__name__}")
             
             if isinstance(masks, torch.Tensor):
-                log.info(f" Mask tensor shape: {masks.shape}, ndim: {masks.ndim}")
+                log.info(f"Mask tensor shape: {masks.shape}, ndim: {masks.ndim}")
                 
                 if masks.ndim == 3:
                     # Standard MASK format: (N, H, W) - one mask per frame
                     active_mask = masks
-                    log.info(f" Using standard MASK format (N, H, W)")
+                    log.info(f"Using standard MASK format (N, H, W)")
                     
                 elif masks.ndim == 4:
                     # Could be (N, 1, H, W) or (N, num_objects, H, W)
                     if masks.shape[1] == 1:
                         # Single object: squeeze to (N, H, W)
                         active_mask = masks.squeeze(1)
-                        log.info(f" Squeezed (N, 1, H, W) to (N, H, W)")
+                        log.info(f"Squeezed (N, 1, H, W) to (N, H, W)")
                     elif object_id < masks.shape[1]:
                         # Multiple objects: select by object_id
                         active_mask = masks[:, object_id, :, :]
-                        log.info(f" Selected object {object_id} from (N, {masks.shape[1]}, H, W)")
+                        log.info(f"Selected object {object_id} from (N, {masks.shape[1]}, H, W)")
                     else:
                         # Fallback to first object
                         active_mask = masks[:, 0, :, :]
-                        log.info(f" object_id {object_id} out of range, using object 0")
+                        log.info(f"object_id {object_id} out of range, using object 0")
                         
                 elif masks.ndim == 2:
                     # Single mask (H, W) - replicate for all frames
                     num_frames = images.shape[0]
                     active_mask = masks.unsqueeze(0).repeat(num_frames, 1, 1)
-                    log.info(f" Replicated single mask to {num_frames} frames")
+                    log.info(f"Replicated single mask to {num_frames} frames")
                     
             elif isinstance(masks, dict):
                 # Legacy dict format support
-                log.info(f" Received dict masks with keys: {list(masks.keys())[:5]}")
+                log.info(f"Received dict masks with keys: {list(masks.keys())[:5]}")
                 # Try to extract frame-indexed masks
                 keys = [k for k in masks.keys() if isinstance(k, int)]
                 if keys:
@@ -242,12 +242,12 @@ class VideoBatchProcessor:
                         frame_masks.append(m)
                     if frame_masks:
                         active_mask = torch.stack(frame_masks, dim=0)
-                        log.info(f" Built mask tensor from dict: {active_mask.shape}")
+                        log.info(f"Built mask tensor from dict: {active_mask.shape}")
             
             if active_mask is not None:
-                log.info(f" Final active_mask shape: {active_mask.shape}")
+                log.info(f"Final active_mask shape: {active_mask.shape}")
         else:
-            log.info(f" No mask provided - will use auto-detection")
+            log.info(f"No mask provided - will use auto-detection")
         
         total_frames = images.shape[0]
         actual_end = total_frames if end_frame == -1 else min(end_frame + 1, total_frames)
@@ -256,10 +256,10 @@ class VideoBatchProcessor:
         if not frame_indices:
             return ({}, images[:1], 0, "Error: No frames")
         
-        log.info(f" Processing {len(frame_indices)} frames...")
+        log.info(f"Processing {len(frame_indices)} frames...")
         if active_mask is not None:
             mask_frames = active_mask.shape[0] if hasattr(active_mask, 'shape') and active_mask.ndim >= 1 else 1
-            log.info(f" Using per-frame masks ({mask_frames} masks available)")
+            log.info(f"Using per-frame masks ({mask_frames} masks available)")
         
         sam_3d_model = model["model"]
         model_cfg = model["model_cfg"]
@@ -318,7 +318,7 @@ class VideoBatchProcessor:
                             frame_mask = mask_np
                             use_mask = True
                             if i == 0:
-                                log.info(f" Frame 0 mask shape: {mask_np.shape}, bbox: {frame_bbox}")
+                                log.info(f"Frame 0 mask shape: {mask_np.shape}, bbox: {frame_bbox}")
                     
                     # Save temp image
                     with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -370,7 +370,7 @@ class VideoBatchProcessor:
                             
                             output = outputs[best_idx]
                             if i == 0 and len(outputs) > 1:
-                                log.info(f" Multiple detections ({len(outputs)}), selected #{best_idx} with mask overlap {best_overlap}")
+                                log.info(f"Multiple detections ({len(outputs)}), selected #{best_idx} with mask overlap {best_overlap}")
                         
                         # Store faces (once)
                         if faces is None:
@@ -385,10 +385,10 @@ class VideoBatchProcessor:
                                         skel = mhr.character_torch.skeleton
                                         if hasattr(skel, 'joint_parents'):
                                             joint_parents = to_numpy(skel.joint_parents)
-                                            log.info(f" Got joint_parents from mhr.character_torch.skeleton: {joint_parents.shape if hasattr(joint_parents, 'shape') else len(joint_parents)} joints")
-                                            log.info(f" First 10 parent indices: {joint_parents[:10] if joint_parents is not None else 'None'}")
+                                            log.info(f"Got joint_parents from mhr.character_torch.skeleton: {joint_parents.shape if hasattr(joint_parents, 'shape') else len(joint_parents)} joints")
+                                            log.info(f"First 10 parent indices: {joint_parents[:10] if joint_parents is not None else 'None'}")
                             except Exception as e:
-                                log.info(f" Error getting joint_parents: {e}")
+                                log.info(f"Error getting joint_parents: {e}")
                         
                         # Store frame data including camera and rotations
                         focal_length = output.get("focal_length")
@@ -397,37 +397,37 @@ class VideoBatchProcessor:
                         
                         # Debug first frame
                         if i == 0:
-                            log.info(f" First frame output keys: {list(output.keys())}")
+                            log.info(f"First frame output keys: {list(output.keys())}")
                             pred_global_rots = output.get("pred_global_rots")
                             if pred_global_rots is not None:
                                 if hasattr(pred_global_rots, 'shape'):
-                                    log.info(f" pred_global_rots shape: {pred_global_rots.shape}")
+                                    log.info(f"pred_global_rots shape: {pred_global_rots.shape}")
                             else:
-                                log.info(f" WARNING: pred_global_rots is None!")
+                                log.info(f"WARNING: pred_global_rots is None!")
                             
                             pred_kp_2d = output.get("pred_keypoints_2d")
                             if pred_kp_2d is not None:
                                 if hasattr(pred_kp_2d, 'shape'):
-                                    log.info(f" pred_keypoints_2d shape: {pred_kp_2d.shape}")
+                                    log.info(f"pred_keypoints_2d shape: {pred_kp_2d.shape}")
                                     # Print first few 2D keypoints to verify they're in image space
                                     kp_np = pred_kp_2d.cpu().numpy() if hasattr(pred_kp_2d, 'cpu') else np.array(pred_kp_2d)
-                                    log.info(f" First 5 2D keypoints: {kp_np[:5]}")
+                                    log.info(f"First 5 2D keypoints: {kp_np[:5]}")
                             else:
-                                log.info(f" WARNING: pred_keypoints_2d is None!")
+                                log.info(f"WARNING: pred_keypoints_2d is None!")
                             
                             # Debug pred_keypoints_3d
                             pred_kp_3d = output.get("pred_keypoints_3d")
                             if pred_kp_3d is not None:
                                 if hasattr(pred_kp_3d, 'shape'):
-                                    log.info(f" pred_keypoints_3d shape: {pred_kp_3d.shape}")
+                                    log.info(f"pred_keypoints_3d shape: {pred_kp_3d.shape}")
                                 else:
-                                    log.info(f" pred_keypoints_3d type: {type(pred_kp_3d)}")
+                                    log.info(f"pred_keypoints_3d type: {type(pred_kp_3d)}")
                             else:
-                                log.info(f" WARNING: pred_keypoints_3d is None! Projection comparison will use joint_coords instead.")
+                                log.info(f"WARNING: pred_keypoints_3d is None! Projection comparison will use joint_coords instead.")
                             
                             bbox = output.get("bbox")
                             if bbox is not None:
-                                log.info(f" Detection bbox: {bbox}")
+                                log.info(f"Detection bbox: {bbox}")
                             
                             # DEBUG: Investigate mesh vs joints 3D center offset
                             pred_verts = output.get("pred_vertices")
@@ -449,23 +449,23 @@ class VideoBatchProcessor:
                                 joints_center_3d = np.mean(joints_np, axis=0)
                                 pelvis_3d = joints_np[0] if len(joints_np) > 0 else np.zeros(3)  # Joint 0 is typically pelvis
                                 
-                                log.info(f" Mesh vertices: {verts_np.shape}")
-                                log.info(f" Skeleton joints: {joints_np.shape}")
-                                log.info(f" Mesh center 3D: X={mesh_center_3d[0]:.4f}, Y={mesh_center_3d[1]:.4f}, Z={mesh_center_3d[2]:.4f}")
-                                log.info(f" Joints center 3D: X={joints_center_3d[0]:.4f}, Y={joints_center_3d[1]:.4f}, Z={joints_center_3d[2]:.4f}")
-                                log.info(f" Pelvis (joint 0) 3D: X={pelvis_3d[0]:.4f}, Y={pelvis_3d[1]:.4f}, Z={pelvis_3d[2]:.4f}")
-                                log.info(f" Mesh vs Joints offset: dX={mesh_center_3d[0]-joints_center_3d[0]:.4f}, dY={mesh_center_3d[1]-joints_center_3d[1]:.4f}, dZ={mesh_center_3d[2]-joints_center_3d[2]:.4f}")
-                                log.info(f" Mesh vs Pelvis offset: dX={mesh_center_3d[0]-pelvis_3d[0]:.4f}, dY={mesh_center_3d[1]-pelvis_3d[1]:.4f}, dZ={mesh_center_3d[2]-pelvis_3d[2]:.4f}")
+                                log.info(f"Mesh vertices: {verts_np.shape}")
+                                log.info(f"Skeleton joints: {joints_np.shape}")
+                                log.info(f"Mesh center 3D: X={mesh_center_3d[0]:.4f}, Y={mesh_center_3d[1]:.4f}, Z={mesh_center_3d[2]:.4f}")
+                                log.info(f"Joints center 3D: X={joints_center_3d[0]:.4f}, Y={joints_center_3d[1]:.4f}, Z={joints_center_3d[2]:.4f}")
+                                log.info(f"Pelvis (joint 0) 3D: X={pelvis_3d[0]:.4f}, Y={pelvis_3d[1]:.4f}, Z={pelvis_3d[2]:.4f}")
+                                log.info(f"Mesh vs Joints offset: dX={mesh_center_3d[0]-joints_center_3d[0]:.4f}, dY={mesh_center_3d[1]-joints_center_3d[1]:.4f}, dZ={mesh_center_3d[2]-joints_center_3d[2]:.4f}")
+                                log.info(f"Mesh vs Pelvis offset: dX={mesh_center_3d[0]-pelvis_3d[0]:.4f}, dY={mesh_center_3d[1]-pelvis_3d[1]:.4f}, dZ={mesh_center_3d[2]-pelvis_3d[2]:.4f}")
                                 
                                 if pred_cam_t is not None:
                                     cam_t_np = pred_cam_t.cpu().numpy() if hasattr(pred_cam_t, 'cpu') else np.array(pred_cam_t)
                                     cam_t_np = cam_t_np.flatten()
-                                    log.info(f" pred_cam_t: tx={cam_t_np[0]:.4f}, ty={cam_t_np[1]:.4f}, tz={cam_t_np[2]:.4f}")
+                                    log.info(f"pred_cam_t: tx={cam_t_np[0]:.4f}, ty={cam_t_np[1]:.4f}, tz={cam_t_np[2]:.4f}")
                                     
                                     # The projection model assumes body at origin, camera at (tx, ty, tz)
                                     # So the body's screen position is determined by tx/tz and ty/tz
                                     # If mesh has an inherent offset from origin, we need to account for it
-                                    log.info(f" ========================================\n")
+                                    log.info(f"========================================\n")
                         
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
@@ -486,16 +486,16 @@ class VideoBatchProcessor:
                         debug_images.append(img_tensor)
                     
                     if (i + 1) % 10 == 0 or (i + 1) == len(frame_indices):
-                        log.info(f" Processed {i + 1}/{len(frame_indices)}")
+                        log.info(f"Processed {i + 1}/{len(frame_indices)}")
                         
                 except Exception as e:
-                    log.info(f" Error frame {frame_idx}: {e}")
+                    log.info(f"Error frame {frame_idx}: {e}")
                     frames[frame_idx] = {"vertices": None, "joint_coords": None}
                     debug_images.append(images[frame_idx])
         
         # Apply smoothing
         if smoothing_strength > 0:
-            log.info(f" Applying smoothing...")
+            log.info(f"Applying smoothing...")
             frames = self._apply_smoothing(frames, smoothing_strength)
         
         # Compute average focal length from all frames
@@ -505,7 +505,7 @@ class VideoBatchProcessor:
                 focal_lengths.append(f["focal_length"])
         
         avg_focal_length = sum(focal_lengths) / len(focal_lengths) if focal_lengths else 1000.0
-        log.info(f" Focal length: {avg_focal_length:.1f}px (from {len(focal_lengths)} frames)")
+        log.info(f"Focal length: {avg_focal_length:.1f}px (from {len(focal_lengths)} frames)")
         
         # Build output - include fps for downstream nodes
         mesh_sequence = {
@@ -525,6 +525,6 @@ class VideoBatchProcessor:
         
         valid = sum(1 for f in frames.values() if f.get("vertices") is not None)
         status = f"Processed {valid}/{len(frame_indices)} frames at {fps} fps"
-        log.info(f" {status}")
+        log.info(f"{status}")
         
         return (mesh_sequence, debug_batch, len(frame_indices), status, fps, avg_focal_length)

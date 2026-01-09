@@ -15,12 +15,13 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.7.2
-- Fixed circular reference in fallback loggers (camera_solver, motion_analyzer)
-- All fallback loggers now use print() instead of log.info()
+Version: 4.7.3
+- Added traceback to module loading errors for better debugging
+- Removed all leading spaces from log messages
+- Fixed potential import issues
 """
 
-__version__ = "4.7.2"
+__version__ = "4.7.3"
 
 import os
 import sys
@@ -40,7 +41,9 @@ def _load_module(name: str, path: str):
             spec.loader.exec_module(module)
             return module
     except Exception as e:
+        import traceback
         print(f"[SAM3DBody2abc] Error loading {name}: {e}")
+        traceback.print_exc()
     return None
 
 

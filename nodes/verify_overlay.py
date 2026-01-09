@@ -290,7 +290,7 @@ class VerifyOverlay:
         overlay = img_bgr.copy()
         
         # Debug: print mesh_data keys
-        log.info(f" mesh_data keys: {list(mesh_data.keys())}")
+        log.info(f"mesh_data keys: {list(mesh_data.keys())}")
         
         # Get projection parameters
         focal_length = mesh_data.get("focal_length")
@@ -300,7 +300,7 @@ class VerifyOverlay:
         keypoints_2d = to_numpy(mesh_data.get("pred_keypoints_2d"))
         
         if keypoints_2d is not None:
-            log.info(f" Using pred_keypoints_2d directly (shape: {keypoints_2d.shape})")
+            log.info(f"Using pred_keypoints_2d directly (shape: {keypoints_2d.shape})")
         
         if focal_length is None or cam_t is None:
             if keypoints_2d is None:
@@ -341,9 +341,9 @@ class VerifyOverlay:
                 info_parts.append(f"Joints3D→2D: {len(joint_coords)}")
                 
                 # Debug: print some joint positions
-                log.info(f" First 5 joints 3D: {joint_coords[:5]}")
-                log.info(f" First 5 joints 2D: {joints_2d[:5]}")
-                log.info(f" cam_t: {cam_t}, focal: {focal_length}")
+                log.info(f"First 5 joints 3D: {joint_coords[:5]}")
+                log.info(f"First 5 joints 2D: {joints_2d[:5]}")
+                log.info(f"cam_t: {cam_t}, focal: {focal_length}")
         
         if joints_2d is not None:
             if show_joints:
@@ -422,7 +422,7 @@ class VerifyOverlay:
         result_tensor = torch.from_numpy(result_float).unsqueeze(0)
         
         info = " | ".join(info_parts)
-        log.info(f" {info}")
+        log.info(f"{info}")
         
         return (result_tensor, info)
 
@@ -527,9 +527,9 @@ class VerifyOverlayBatch:
         # Build skeleton connections from joint_parents
         skeleton_connections = get_skeleton_connections(joint_parents)
         if joint_parents is not None:
-            log.info(f" Using {len(skeleton_connections)} skeleton connections from joint_parents")
+            log.info(f"Using {len(skeleton_connections)} skeleton connections from joint_parents")
         else:
-            log.info(f" Using fallback skeleton connections")
+            log.info(f"Using fallback skeleton connections")
         
         # Get MoGe2 intrinsics if available
         moge_focal = None
@@ -537,7 +537,7 @@ class VerifyOverlayBatch:
         moge_cy = None
         if camera_intrinsics:
             # Debug: print all keys to find the right ones
-            log.info(f" camera_intrinsics keys: {list(camera_intrinsics.keys())}")
+            log.info(f"camera_intrinsics keys: {list(camera_intrinsics.keys())}")
             
             # Try multiple possible key names (different MoGe2 packages use different keys)
             moge_focal = (
@@ -560,9 +560,9 @@ class VerifyOverlayBatch:
             if moge_focal is not None:
                 cx_str = f"{moge_cx:.1f}" if moge_cx is not None else "N/A"
                 cy_str = f"{moge_cy:.1f}" if moge_cy is not None else "N/A"
-                log.info(f" MoGe2 intrinsics: focal={moge_focal:.1f}px, cx={cx_str}, cy={cy_str}")
+                log.info(f"MoGe2 intrinsics: focal={moge_focal:.1f}px, cx={cx_str}, cy={cy_str}")
             else:
-                log.info(f" MoGe2 intrinsics: Connected but focal_length key not found")
+                log.info(f"MoGe2 intrinsics: Connected but focal_length key not found")
         
         # Get colors
         joint_bgr = self._get_color(joint_color)
@@ -582,8 +582,8 @@ class VerifyOverlayBatch:
         num_images = images_np.shape[0]
         h, w = images_np.shape[1], images_np.shape[2]
         
-        log.info(f" Processing {num_images} images, {len(frames)} frames in sequence")
-        log.info(f" Intrinsics source: {intrinsics_source}")
+        log.info(f"Processing {num_images} images, {len(frames)} frames in sequence")
+        log.info(f"Intrinsics source: {intrinsics_source}")
         
         # Get sorted frame indices
         sorted_frame_indices = sorted(frames.keys())
@@ -611,7 +611,7 @@ class VerifyOverlayBatch:
                 
                 # Debug first frame
                 if img_idx == 0:
-                    log.info(f" Frame keys: {list(frame.keys())}")
+                    log.info(f"Frame keys: {list(frame.keys())}")
                 
                 # Draw bounding box if available (helps debug detection)
                 bbox = frame.get("bbox")
@@ -623,9 +623,9 @@ class VerifyOverlayBatch:
                         cv2.putText(overlay, "Detection", (x1, y1-5), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
                         if img_idx == 0:
-                            log.info(f" Detection bbox: [{x1}, {y1}, {x2}, {y2}]")
+                            log.info(f"Detection bbox: [{x1}, {y1}, {x2}, {y2}]")
                 elif img_idx == 0:
-                    log.info(f" No bbox in frame data")
+                    log.info(f"No bbox in frame data")
                 
                 # Get 2D keypoints if available (most reliable)
                 keypoints_2d = frame.get("pred_keypoints_2d")
@@ -654,19 +654,19 @@ class VerifyOverlayBatch:
                 
                 # Log intrinsics comparison on first frame
                 if img_idx == 0 and sam3d_focal_length is not None:
-                    log.info(f" ========== INTRINSICS COMPARISON ==========")
-                    log.info(f" SAM3DBody focal: {sam3d_focal_length:.1f}px")
+                    log.info(f"========== INTRINSICS COMPARISON ==========")
+                    log.info(f"SAM3DBody focal: {sam3d_focal_length:.1f}px")
                     if moge_focal is not None:
                         focal_diff = moge_focal - sam3d_focal_length
                         focal_diff_pct = 100 * focal_diff / sam3d_focal_length
-                        log.info(f" MoGe2 focal: {moge_focal:.1f}px (diff: {focal_diff:+.1f}px, {focal_diff_pct:+.1f}%)")
+                        log.info(f"MoGe2 focal: {moge_focal:.1f}px (diff: {focal_diff:+.1f}px, {focal_diff_pct:+.1f}%)")
                         if moge_cx is not None and moge_cy is not None:
-                            log.info(f" MoGe2 principal point: ({moge_cx:.1f}, {moge_cy:.1f})")
-                            log.info(f" Image center: ({w/2:.1f}, {h/2:.1f})")
+                            log.info(f"MoGe2 principal point: ({moge_cx:.1f}, {moge_cy:.1f})")
+                            log.info(f"Image center: ({w/2:.1f}, {h/2:.1f})")
                     else:
-                        log.info(f" MoGe2 intrinsics: Not connected")
-                    log.info(f" Using: {active_source}")
-                    log.info(f" ============================================\n")
+                        log.info(f"MoGe2 intrinsics: Not connected")
+                    log.info(f"Using: {active_source}")
+                    log.info(f"============================================\n")
                 
                 joints_2d = None
                 joints_2d_moge = None  # For comparison mode
@@ -731,7 +731,7 @@ class VerifyOverlayBatch:
                     if keypoints_2d.ndim == 2:
                         joints_2d = keypoints_2d[:, :2] if keypoints_2d.shape[1] >= 2 else keypoints_2d
                     if img_idx == 0:
-                        log.info(f" Using pred_keypoints_2d: {joints_2d.shape}")
+                        log.info(f"Using pred_keypoints_2d: {joints_2d.shape}")
                 
                 elif joint_coords is not None and focal_length is not None and cam_t is not None:
                     # Project 3D to 2D
@@ -739,7 +739,7 @@ class VerifyOverlayBatch:
                     cam_t = np.array(cam_t)
                     joints_2d = project_points_to_2d(joint_coords, focal_length, cam_t, w, h)
                     if img_idx == 0:
-                        log.info(f" Projecting 3D joints: focal={focal_length}, cam_t={cam_t}")
+                        log.info(f"Projecting 3D joints: focal={focal_length}, cam_t={cam_t}")
                 
                 # Draw joints
                 if joints_2d is not None:
@@ -815,12 +815,12 @@ class VerifyOverlayBatch:
                                     offset_y = joints_center[1] - mesh_center[1]
                                     
                                     if img_idx == 0:
-                                        log.info(f" Mesh alignment (Auto):")
-                                        log.debug(f"  Joints center: ({joints_center[0]:.1f}, {joints_center[1]:.1f})")
-                                        log.debug(f"  Mesh center: ({mesh_center[0]:.1f}, {mesh_center[1]:.1f})")
-                                        log.debug(f"  Offset: ({offset_x:.1f}, {offset_y:.1f})")
+                                        log.info(f"Mesh alignment (Auto):")
+                                        log.debug(f" Joints center: ({joints_center[0]:.1f}, {joints_center[1]:.1f})")
+                                        log.debug(f" Mesh center: ({mesh_center[0]:.1f}, {mesh_center[1]:.1f})")
+                                        log.debug(f" Offset: ({offset_x:.1f}, {offset_y:.1f})")
                         elif img_idx == 0 and show_mesh:
-                            log.info(f" Mesh alignment: Direct projection (no offset)")
+                            log.info(f"Mesh alignment: Direct projection (no offset)")
                         
                         # Apply offset to mesh vertices
                         verts_2d[:, 0] += offset_x
@@ -915,7 +915,7 @@ class VerifyOverlayBatch:
         result_batch = torch.from_numpy(np.stack(result_frames, axis=0))
         
         info = f"Processed {num_images} frames with {len(frames)} mesh frames"
-        log.info(f" {info}")
+        log.info(f"{info}")
         
         return (result_batch, info)
 

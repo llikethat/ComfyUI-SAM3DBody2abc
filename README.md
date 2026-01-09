@@ -187,6 +187,11 @@ https://github.com/DepthAnything/Depth-Anything-V2
 
 ## Version History
 
+### v4.7.3 (January 2025)
+- Added traceback to module loading errors for better debugging
+- Removed all leading spaces from log messages
+- Fixed potential import issues in camera_solver
+
 ### v4.7.2 (January 2025)
 - Fixed circular reference in fallback loggers (camera_solver, motion_analyzer)
 - All fallback loggers now properly use print() instead of undefined log reference
