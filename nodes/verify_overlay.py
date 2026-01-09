@@ -23,6 +23,9 @@ except ImportError:
         def debug(self, msg): pass
         def warn(self, msg): print(f"[Verify Overlay] WARN: {msg}")
         def error(self, msg): print(f"[Verify Overlay] ERROR: {msg}")
+        def progress(self, current, total, task="", interval=10):
+            if current == 0 or current == total - 1 or (current + 1) % interval == 0:
+                print(f"[Verify Overlay] {task}: {current + 1}/{total}")
     log = _FallbackLog()
 
 

@@ -33,6 +33,9 @@ except ImportError:
         def debug(self, msg): pass
         def warn(self, msg): print(f"[Character Trajectory] WARN: {msg}")
         def error(self, msg): print(f"[Character Trajectory] ERROR: {msg}")
+        def progress(self, c, t, task="", interval=10): 
+            if c == 0 or c == t - 1 or (c + 1) % interval == 0:
+                print(f"[Character Trajectory] {task}: {c + 1}/{t}")
     log = _FallbackLog()
 
 # Try to import TAPIR

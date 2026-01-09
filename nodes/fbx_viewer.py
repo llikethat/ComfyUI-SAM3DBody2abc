@@ -15,6 +15,10 @@ try:
 except ImportError:
     class _FallbackLog:
         def info(self, msg): print(f"[FBX Viewer] {msg}")
+        def debug(self, msg): pass
+        def warn(self, msg): print(f"[FBX Viewer] WARN: {msg}")
+        def error(self, msg): print(f"[FBX Viewer] ERROR: {msg}")
+        def progress(self, c, t, task="", interval=10): pass
     log = _FallbackLog()
 
 

@@ -187,6 +187,10 @@ https://github.com/DepthAnything/Depth-Anything-V2
 
 ## Version History
 
+### v4.7.5 (January 2025)
+- Fixed all fallback loggers to include `progress()` method
+- Prevents AttributeError when logger import fails
+
 ### v4.7.4 (January 2025)
 - Fixed double module names in logs (e.g., `[Motion Analyzer] [Motion Analyzer]`)
 - Added progress logging to Verify Overlay (Sequence) node

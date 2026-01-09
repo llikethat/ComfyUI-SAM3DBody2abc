@@ -21,6 +21,9 @@ except ImportError:
         def debug(self, msg): pass
         def warn(self, msg): print(f"[Video Processor] WARN: {msg}")
         def error(self, msg): print(f"[Video Processor] ERROR: {msg}")
+        def progress(self, c, t, task="", interval=10): 
+            if c == 0 or c == t - 1 or (c + 1) % interval == 0:
+                print(f"[Video Processor] {task}: {c + 1}/{t}")
     log = _FallbackLog()
 
 
