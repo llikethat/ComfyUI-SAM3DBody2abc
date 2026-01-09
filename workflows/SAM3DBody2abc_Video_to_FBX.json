@@ -1,0 +1,2860 @@
+{
+  "id": "f8180323-9dad-4d60-8133-f27a8fdffc38",
+  "revision": 0,
+  "last_node_id": 124,
+  "last_link_id": 266,
+  "nodes": [
+    {
+      "id": 8,
+      "type": "LoadSAM3DBodyModel",
+      "pos": [
+        935.10546875,
+        108.38394927978516
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "links": [
+            99
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "ComfyUI-SAM3DBody",
+        "ver": "938d45782ceee7f0e967a0cbfdffc96ddd880f01",
+        "Node name for S&R": "LoadSAM3DBodyModel",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3DBody"
+      },
+      "widgets_values": [
+        "/workspace/ComfyUI/models/sam3dbody"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "LoadSAM3Model",
+      "pos": [
+        491.930419921875,
+        96.251708984375
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "sam3_model",
+          "type": "SAM3_MODEL",
+          "links": [
+            26,
+            216
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "LoadSAM3Model",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        "models/sam3/sam3.pt"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "SAM3Propagate",
+      "pos": [
+        1424.3150634765625,
+        523.8179321289062
+      ],
+      "size": [
+        270,
+        170
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sam3_model",
+          "type": "SAM3_MODEL",
+          "link": 26
+        },
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "masks",
+          "type": "SAM3_VIDEO_MASKS",
+          "links": [
+            93
+          ]
+        },
+        {
+          "name": "scores",
+          "type": "SAM3_VIDEO_SCORES",
+          "links": null
+        },
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "links": [
+            98
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "SAM3Propagate",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        0,
+        -1,
+        "forward",
+        false
+      ]
+    },
+    {
+      "id": 82,
+      "type": "ShowText|pysssss",
+      "pos": [
+        3140.169189453125,
+        125.48405456542969
+      ],
+      "size": [
+        419.55133056640625,
+        213.12005615234375
+      ],
+      "flags": {},
+      "order": 36,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 264
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "f2838ed5e59de4d73cde5c98354b87a8d3200190",
+        "Node name for S&R": "ShowText|pysssss",
+        "aux_id": "pythongosssss/ComfyUI-Custom-Scripts"
+      },
+      "widgets_values": [
+        "/workspace/ComfyUI/output/sam3d_animation_success.fbx"
+      ]
+    },
+    {
+      "id": 87,
+      "type": "PrimitiveFloat",
+      "pos": [
+        -122.32536315917969,
+        1257.5665283203125
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            132
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.6.0",
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "widgets_values": [
+        36
+      ]
+    },
+    {
+      "id": 96,
+      "type": "SAM3DBody2abc_ScaleInfoDisplay",
+      "pos": [
+        2442.46142578125,
+        1643.9803466796875
+      ],
+      "size": [
+        179.812109375,
+        26
+      ],
+      "flags": {},
+      "order": 31,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "scale_info",
+          "type": "SCALE_INFO",
+          "link": 148
+        }
+      ],
+      "outputs": [
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [
+            149
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "827592f4b0af2945bc27c1896591d8d55fee4c0a",
+        "Node name for S&R": "SAM3DBody2abc_ScaleInfoDisplay"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 81,
+      "type": "ShowText|pysssss",
+      "pos": [
+        3151.34814453125,
+        405.33953857421875
+      ],
+      "size": [
+        462.57501220703125,
+        283.1028747558594
+      ],
+      "flags": {},
+      "order": 38,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 266
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "f2838ed5e59de4d73cde5c98354b87a8d3200190",
+        "Node name for S&R": "ShowText|pysssss",
+        "aux_id": "pythongosssss/ComfyUI-Custom-Scripts"
+      },
+      "widgets_values": [
+        "Exported 50 frames as FBX (up=Y, skeleton=positions) +camera"
+      ]
+    },
+    {
+      "id": 97,
+      "type": "ShowText|pysssss",
+      "pos": [
+        2766.16259765625,
+        1845.728271484375
+      ],
+      "size": [
+        316.7096252441406,
+        327.6789855957031
+      ],
+      "flags": {},
+      "order": 35,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 149
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "1.2.5",
+        "Node name for S&R": "ShowText|pysssss",
+        "aux_id": "pythongosssss/ComfyUI-Custom-Scripts"
+      },
+      "widgets_values": [
+        "=== Scale Info ===\nSkeleton: Full Skeleton\nKeypoint source: joint_coords\nActual height: 1.63m\nMesh height: 1.526 units\nEstimated height: 1.487 units\nScale factor: 1.096\nLeg length: 0.732 units\nTorso+head: 0.795 units\nSource: user_input\nReference frame: 1\n"
+      ]
+    },
+    {
+      "id": 104,
+      "type": "ShowText|pysssss",
+      "pos": [
+        3128.961181640625,
+        841.5801391601562
+      ],
+      "size": [
+        425.4900817871094,
+        310.1939697265625
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 181
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "f2838ed5e59de4d73cde5c98354b87a8d3200190",
+        "Node name for S&R": "ShowText|pysssss"
+      },
+      "widgets_values": [
+        "Processed 50 frames with 50 mesh frames"
+      ]
+    },
+    {
+      "id": 102,
+      "type": "PrimitiveInt",
+      "pos": [
+        -2050.867431640625,
+        544.4776000976562
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            168,
+            263
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.7.0",
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "widgets_values": [
+        0,
+        "fixed"
+      ]
+    },
+    {
+      "id": 105,
+      "type": "SAM3DBody2abc_VerifyOverlayBatch",
+      "pos": [
+        2620.42529296875,
+        811.8388671875
+      ],
+      "size": [
+        296.1812438964844,
+        386
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 177
+        },
+        {
+          "name": "mesh_sequence",
+          "type": "MESH_SEQUENCE",
+          "link": 178
+        },
+        {
+          "name": "camera_intrinsics",
+          "shape": 7,
+          "type": "CAMERA_INTRINSICS",
+          "link": 179
+        }
+      ],
+      "outputs": [
+        {
+          "name": "overlay_images",
+          "type": "IMAGE",
+          "links": [
+            180
+          ]
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [
+            181
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "b9a19e03245c10897d269c843ccb5573156aad44",
+        "Node name for S&R": "SAM3DBody2abc_VerifyOverlayBatch"
+      },
+      "widgets_values": [
+        "SAM3DBody (Default)",
+        true,
+        false,
+        true,
+        "Solid",
+        "None (Direct Projection)",
+        5,
+        2,
+        "green",
+        "cyan",
+        "white",
+        0.7,
+        true
+      ]
+    },
+    {
+      "id": 86,
+      "type": "SAM4D_MoGe2CameraIntrinsics",
+      "pos": [
+        -380.7021179199219,
+        1393.4248046875
+      ],
+      "size": [
+        289.3931579589844,
+        146
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 131
+        }
+      ],
+      "outputs": [
+        {
+          "name": "camera_intrinsics",
+          "type": "CAMERA_INTRINSICS",
+          "links": [
+            179,
+            258
+          ]
+        },
+        {
+          "name": "depth_maps",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "focal_length",
+          "type": "FLOAT",
+          "links": [
+            134
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM4DBodyCapture",
+        "ver": "829f17eed284d7ece5e4a020544fb18c187bf7b0",
+        "Node name for S&R": "SAM4D_MoGe2CameraIntrinsics"
+      },
+      "widgets_values": [
+        "Ruicheng/moge-2-vitl-normal",
+        true,
+        0
+      ]
+    },
+    {
+      "id": 17,
+      "type": "SAM3VideoSegmentation",
+      "pos": [
+        1328.1558837890625,
+        52.244815826416016
+      ],
+      "size": [
+        270,
+        146
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_frames",
+          "type": "IMAGE",
+          "link": 25
+        },
+        {
+          "name": "positive_boxes",
+          "shape": 7,
+          "type": "SAM3_BOXES_PROMPT",
+          "link": 24
+        },
+        {
+          "name": "negative_boxes",
+          "shape": 7,
+          "type": "SAM3_BOXES_PROMPT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "links": [
+            23
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "SAM3VideoSegmentation",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        "box",
+        0.3,
+        0.3
+      ]
+    },
+    {
+      "id": 94,
+      "type": "SAM3DBody2abc_MotionAnalyzer",
+      "pos": [
+        1255.8050537109375,
+        1480.1673583984375
+      ],
+      "size": [
+        293.2109375,
+        310
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh_sequence",
+          "type": "MESH_SEQUENCE",
+          "link": 234
+        },
+        {
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 145
+        },
+        {
+          "name": "camera_extrinsics",
+          "shape": 7,
+          "type": "CAMERA_EXTRINSICS",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "subject_motion",
+          "type": "SUBJECT_MOTION",
+          "links": [
+            259
+          ]
+        },
+        {
+          "name": "scale_info",
+          "type": "SCALE_INFO",
+          "links": [
+            148,
+            260
+          ]
+        },
+        {
+          "name": "debug_overlay",
+          "type": "IMAGE",
+          "links": [
+            146
+          ]
+        },
+        {
+          "name": "debug_info",
+          "type": "STRING",
+          "links": [
+            147
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "827592f4b0af2945bc27c1896591d8d55fee4c0a",
+        "Node name for S&R": "SAM3DBody2abc_MotionAnalyzer"
+      },
+      "widgets_values": [
+        "Full Skeleton",
+        1.63,
+        1,
+        1.7,
+        0.05,
+        true,
+        true,
+        10,
+        36
+      ]
+    },
+    {
+      "id": 95,
+      "type": "ShowText|pysssss",
+      "pos": [
+        1628.810791015625,
+        1609.7083740234375
+      ],
+      "size": [
+        454.0498962402344,
+        368.5836181640625
+      ],
+      "flags": {},
+      "order": 34,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 147
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "1.2.5",
+        "Node name for S&R": "ShowText|pysssss",
+        "aux_id": "pythongosssss/ComfyUI-Custom-Scripts"
+      },
+      "widgets_values": [
+        "=== Motion Analysis Results ===\nFrames: 50, Duration: 2.04s @ 24.0fps\nSkeleton: Full Skeleton (joint_coords)\nSubject height: 1.63m (user_input)\nScale factor: 1.096\nAvg 2D velocity: 1.83 px/frame\nMax 2D velocity: 11.17 px/frame\nGrounded: 50/50 frames\nDepth range: 1.34m - 1.57m\n\n=== Trajectory RAW (camera-space) ===\nDisplacement: X=-0.012m, Y=0.061m, Z=0.039m\nTotal distance: 1.553m\nAverage speed: 0.761 m/s (2.74 km/h)\nDirection: Backward (away from camera) (-16.8°)\nDirection vector: X=-0.159, Y=+0.833, Z=+0.529\n\n=== Trajectory COMPENSATED (camera effects removed) ===\nSensor: 36.0mm, Focal ref: 41.3mm (734px)\nFocal range: 41.3mm - 41.3mm, variation: 0.0%\nExtrinsics compensation: NO\nDisplacement: X=-0.012m, Y=0.061m, Z=0.039m\nTotal distance: 1.553m\nAverage speed: 0.761 m/s (2.74 km/h)\nDirection: Backward (-16.8°)\nDirection vector: X=-0.159, Y=+0.833, Z=+0.529\n"
+      ]
+    },
+    {
+      "id": 112,
+      "type": "ShowText|pysssss",
+      "pos": [
+        668.9144287109375,
+        1719.2899169921875
+      ],
+      "size": [
+        282.563720703125,
+        189.8986053466797
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 236
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "f2838ed5e59de4d73cde5c98354b87a8d3200190",
+        "Node name for S&R": "ShowText|pysssss"
+      },
+      "widgets_values": [
+        "Character Trajectory Tracking Results\n=====================================\nFrames: 50\nTracking Mode: Pelvis (Center)\nTracker: TAPIR\n  Grid: 8x8 = 64 points\n  Batch Frames: 10\nSmoothing: Savitzky-Golay (window=5)\n\nDepth Analysis:\n  Reference depth (frame 0): 1.25m\n  Final depth (frame 49): 1.28m\n  Depth change: +0.04m (+2.9%)\n  Depth range: 1.22m to 1.43m\n\n3D Trajectory:\n  Start: (-0.23, 0.01, 1.25)\n  End: (-0.21, 0.00, 1.28)\n\nTips for GPU Memory (if OOM):\n  - Reduce tapir_grid_size: 4=16pts, 3=9pts, 2=4pts\n  - Reduce tapir_batch_frames (current: 10)\n  - Or disable use_tapir for optical flow fallback\n\nUse the updated mesh_sequence for FBX export with corrected depth values.\n"
+      ]
+    },
+    {
+      "id": 113,
+      "type": "DepthAnything_V2",
+      "pos": [
+        -354.8292236328125,
+        1770.7940673828125
+      ],
+      "size": [
+        164.573828125,
+        46
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "da_model",
+          "type": "DAMODEL",
+          "link": 215
+        },
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 214
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            231
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-depthanythingv2",
+        "ver": "d505cbca99803fc63327b8305618a23e59a18b42",
+        "Node name for S&R": "DepthAnything_V2"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 114,
+      "type": "DownloadAndLoadDepthAnythingV2Model",
+      "pos": [
+        -1006.9609985351562,
+        1576.242431640625
+      ],
+      "size": [
+        383.5777282714844,
+        82
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "da_v2_model",
+          "type": "DAMODEL",
+          "links": [
+            215
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-depthanythingv2",
+        "ver": "d505cbca99803fc63327b8305618a23e59a18b42",
+        "Node name for S&R": "DownloadAndLoadDepthAnythingV2Model"
+      },
+      "widgets_values": [
+        "depth_anything_v2_vitl_fp32.safetensors"
+      ]
+    },
+    {
+      "id": 62,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        1932.7945556640625,
+        758.3640747070312
+      ],
+      "size": [
+        225.3349609375,
+        463.50091552734375
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 104
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 204
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "title": "Sam3_character_mask",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoCombine",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "Sam3_masks",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "sam3d_animation_success_00001.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 24,
+            "workflow": "sam3d_animation_success_00001.png",
+            "fullpath": "/workspace/ComfyUI/output/sam3d_animation_success_00001.mp4"
+          }
+        }
+      }
+    },
+    {
+      "id": 41,
+      "type": "SAM3Propagate",
+      "pos": [
+        256.30682373046875,
+        2342.41650390625
+      ],
+      "size": [
+        270,
+        170
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "sam3_model",
+          "type": "SAM3_MODEL",
+          "link": 216
+        },
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "link": 62
+        }
+      ],
+      "outputs": [
+        {
+          "name": "masks",
+          "type": "SAM3_VIDEO_MASKS",
+          "links": [
+            63
+          ]
+        },
+        {
+          "name": "scores",
+          "type": "SAM3_VIDEO_SCORES",
+          "links": null
+        },
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "links": [
+            64
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "0.1.0",
+        "Node name for S&R": "SAM3Propagate",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        0,
+        -1,
+        "forward",
+        false
+      ]
+    },
+    {
+      "id": 40,
+      "type": "SAM3VideoSegmentation",
+      "pos": [
+        -183.3969268798828,
+        2316.747802734375
+      ],
+      "size": [
+        277.4634704589844,
+        130
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "video_frames",
+          "type": "IMAGE",
+          "link": 90
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "links": [
+            62
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "0.1.0",
+        "Node name for S&R": "SAM3VideoSegmentation",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        "text",
+        "boy, girl, men, women, running boy",
+        0.3,
+        0.3
+      ]
+    },
+    {
+      "id": 43,
+      "type": "SAM3VideoOutput",
+      "pos": [
+        725.8248901367188,
+        2414.77392578125
+      ],
+      "size": [
+        270,
+        122
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "masks",
+          "type": "SAM3_VIDEO_MASKS",
+          "link": 63
+        },
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "link": 64
+        },
+        {
+          "name": "scores",
+          "shape": 7,
+          "type": "SAM3_VIDEO_SCORES",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": []
+        },
+        {
+          "name": "frames",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "visualization",
+          "type": "IMAGE",
+          "links": [
+            92
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "0.1.0",
+        "Node name for S&R": "SAM3VideoOutput",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        -1,
+        true
+      ]
+    },
+    {
+      "id": 58,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        1212.4515380859375,
+        2623.109130859375
+      ],
+      "size": [
+        225.3349609375,
+        334
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 92
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 203
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "title": "Sam3_masks",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoCombine",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "sam3_remove_characters",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "sam3d_animation_RLACR_00011.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 24,
+            "workflow": "sam3d_animation_RLACR_00011.png",
+            "fullpath": "/workspace/ComfyUI/output/sam3d_animation_RLACR_00011.mp4"
+          }
+        }
+      }
+    },
+    {
+      "id": 77,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        2206.5322265625,
+        2163.44970703125
+      ],
+      "size": [
+        225.3349609375,
+        334
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 120
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 202
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "title": "Camera_Solve",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoCombine",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "camerasolver_debug",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "sam3d_animation_RLACR_00010.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 24,
+            "workflow": "sam3d_animation_RLACR_00010.png",
+            "fullpath": "/workspace/ComfyUI/output/sam3d_animation_RLACR_00010.mp4"
+          }
+        }
+      }
+    },
+    {
+      "id": 52,
+      "type": "SAM3DBody2abc_CameraSolver",
+      "pos": [
+        1832.0823974609375,
+        2153.305419921875
+      ],
+      "size": [
+        312.83203125,
+        338
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 78
+        },
+        {
+          "name": "foreground_masks",
+          "shape": 7,
+          "type": "MASK",
+          "link": 217
+        },
+        {
+          "name": "focal_length_mm",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "focal_length_mm"
+          },
+          "link": 139
+        }
+      ],
+      "outputs": [
+        {
+          "name": "camera_extrinsics",
+          "type": "CAMERA_EXTRINSICS",
+          "links": [
+            257
+          ]
+        },
+        {
+          "name": "debug_vis",
+          "type": "IMAGE",
+          "links": [
+            120
+          ]
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "cddeb7b1ce9300fb34ae17a14944d25f51239d8e",
+        "Node name for S&R": "SAM3DBody2abc_CameraSolver"
+      },
+      "widgets_values": [
+        "Rotation Only (Tripod)",
+        true,
+        "Best",
+        24.6,
+        36,
+        5,
+        "Essential Matrix",
+        "Medium",
+        500,
+        10,
+        ""
+      ]
+    },
+    {
+      "id": 83,
+      "type": "SAM3DBody2abc_FBXAnimationViewer",
+      "pos": [
+        1773.9696044921875,
+        -388.9898376464844
+      ],
+      "size": [
+        512,
+        538
+      ],
+      "flags": {},
+      "order": 37,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "link": 265
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fbx_path",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "80cfcd41d154e186140ee2fe006fd82e2ce0000f",
+        "Node name for S&R": "SAM3DBody2abc_FBXAnimationViewer"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 59,
+      "type": "SAM3VideoOutput",
+      "pos": [
+        1794.920166015625,
+        470.1199951171875
+      ],
+      "size": [
+        270,
+        122
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "masks",
+          "type": "SAM3_VIDEO_MASKS",
+          "link": 93
+        },
+        {
+          "name": "video_state",
+          "type": "SAM3_VIDEO_STATE",
+          "link": 98
+        },
+        {
+          "name": "scores",
+          "shape": 7,
+          "type": "SAM3_VIDEO_SCORES",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "masks",
+          "type": "MASK",
+          "links": [
+            103,
+            217,
+            230
+          ]
+        },
+        {
+          "name": "frames",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "visualization",
+          "type": "IMAGE",
+          "links": [
+            104
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "e65a61e8f73a630b0293e63da24d0b50ebf9a3a2",
+        "Node name for S&R": "SAM3VideoOutput",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        -1,
+        true
+      ]
+    },
+    {
+      "id": 89,
+      "type": "VHS_VideoInfoSource",
+      "pos": [
+        -703.3853149414062,
+        379.97576904296875
+      ],
+      "size": [
+        252.2548828125,
+        106
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "link": 135
+        }
+      ],
+      "outputs": [
+        {
+          "name": "fps🟨",
+          "type": "FLOAT",
+          "links": [
+            262
+          ]
+        },
+        {
+          "name": "frame_count🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "duration🟨",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "width🟨",
+          "type": "INT",
+          "links": [
+            136
+          ]
+        },
+        {
+          "name": "height🟨",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoInfoSource",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {}
+    },
+    {
+      "id": 93,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        2220.97216796875,
+        1400.449462890625
+      ],
+      "size": [
+        445.23944091796875,
+        587.1971855163574
+      ],
+      "flags": {},
+      "order": 33,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 146
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 201
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "title": "Motion_Analysis",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoCombine",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "analysisMotion",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "sam3d_animation_success_00003.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 24,
+            "workflow": "sam3d_animation_success_00003.png",
+            "fullpath": "/workspace/ComfyUI/output/sam3d_animation_success_00003.mp4"
+          }
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        3158.738037109375,
+        1269.2371826171875
+      ],
+      "size": [
+        504.5373840332031,
+        620.5522785186768
+      ],
+      "flags": {},
+      "order": 26,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 180
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 199
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "title": "Mesh_Overlay",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.8",
+        "Node name for S&R": "VHS_VideoCombine",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "redbib484_04",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "sam3d_animation_success_00002.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 24,
+            "workflow": "sam3d_animation_success_00002.png",
+            "fullpath": "/workspace/ComfyUI/output/sam3d_animation_success_00002.mp4"
+          }
+        }
+      }
+    },
+    {
+      "id": 88,
+      "type": "MathExpression|pysssss",
+      "pos": [
+        154.82589721679688,
+        1344.000732421875
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "a",
+          "shape": 7,
+          "type": "INT,FLOAT,IMAGE,LATENT",
+          "link": 136
+        },
+        {
+          "name": "b",
+          "shape": 7,
+          "type": "INT,FLOAT,IMAGE,LATENT",
+          "link": 132
+        },
+        {
+          "name": "c",
+          "shape": 7,
+          "type": "INT,FLOAT,IMAGE,LATENT",
+          "link": 134
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            139
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "f2838ed5e59de4d73cde5c98354b87a8d3200190",
+        "aux_id": "pythongosssss/ComfyUI-Custom-Scripts"
+      },
+      "widgets_values": [
+        "(a*b)/c"
+      ]
+    },
+    {
+      "id": 111,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        3256.072021484375,
+        2026.4915771484375
+      ],
+      "size": [
+        373.71270751953125,
+        546.9633979797363
+      ],
+      "flags": {},
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 235
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "3234937ff5f3ca19068aaba5042771514de2429d",
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "char_trajectory",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "char_trajectory_00003.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 24,
+            "workflow": "char_trajectory_00003.png",
+            "fullpath": "/workspace/ComfyUI/output/char_trajectory_00003.mp4"
+          }
+        }
+      }
+    },
+    {
+      "id": 61,
+      "type": "SAM3DBody2abc_VideoBatchProcessor",
+      "pos": [
+        2208.7265625,
+        306.7598571777344
+      ],
+      "size": [
+        276.130859375,
+        326
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "link": 99
+        },
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 100
+        },
+        {
+          "name": "masks",
+          "shape": 7,
+          "type": "MASK",
+          "link": 103
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mesh_sequence",
+          "type": "MESH_SEQUENCE",
+          "links": [
+            178,
+            232
+          ]
+        },
+        {
+          "name": "debug_images",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "focal_length_px",
+          "type": "FLOAT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "6406d1b87f40ed17c521a81cdde0e8074d317200",
+        "Node name for S&R": "SAM3DBody2abc_VideoBatchProcessor"
+      },
+      "widgets_values": [
+        24,
+        0,
+        0.8,
+        "full",
+        0.5,
+        0,
+        -1,
+        1
+      ]
+    },
+    {
+      "id": 116,
+      "type": "SAM3DBody2abc_CharacterTrajectoryTracker",
+      "pos": [
+        767.5235595703125,
+        911.1760864257812
+      ],
+      "size": [
+        341.396484375,
+        310
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 229
+        },
+        {
+          "name": "character_mask",
+          "type": "MASK",
+          "link": 230
+        },
+        {
+          "name": "depth_maps",
+          "type": "IMAGE",
+          "link": 231
+        },
+        {
+          "name": "mesh_sequence",
+          "shape": 7,
+          "type": "MESH_SEQUENCE",
+          "link": 232
+        }
+      ],
+      "outputs": [
+        {
+          "name": "trajectory_3d",
+          "type": "TRAJECTORY_3D",
+          "links": []
+        },
+        {
+          "name": "mesh_sequence_updated",
+          "type": "MESH_SEQUENCE",
+          "links": [
+            234,
+            256
+          ]
+        },
+        {
+          "name": "debug_video",
+          "type": "IMAGE",
+          "links": [
+            235
+          ]
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": [
+            236
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "b7f670e1403372c16f5a77a682aeff97dafb4070",
+        "Node name for S&R": "SAM3DBody2abc_CharacterTrajectoryTracker"
+      },
+      "widgets_values": [
+        false,
+        5,
+        "Pelvis (Center)",
+        8,
+        10,
+        true,
+        "Savitzky-Golay",
+        5,
+        true
+      ]
+    },
+    {
+      "id": 14,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        -1626.788818359375,
+        189.181640625
+      ],
+      "size": [
+        308.2494201660156,
+        486.1402988433838
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "skip_first_frames",
+          "type": "INT",
+          "widget": {
+            "name": "skip_first_frames"
+          },
+          "link": 168
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            19,
+            25,
+            78,
+            90,
+            100,
+            131,
+            145,
+            177,
+            205,
+            214,
+            229
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": [
+            135
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "537f3a02269e14ab4b0350d4189a52034e9a3b12",
+        "Node name for S&R": "VHS_LoadVideo",
+        "aux_id": "Kosinkadink/ComfyUI-VideoHelperSuite"
+      },
+      "widgets_values": {
+        "video": "success.mp4",
+        "force_rate": 24,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 50,
+        "skip_first_frames": 1,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "videopreview": {
+          "hidden": false,
+          "paused": true,
+          "params": {
+            "filename": "success.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 24,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 50,
+            "skip_first_frames": 1,
+            "select_every_nth": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 108,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        -945.932861328125,
+        -88.3470230102539
+      ],
+      "size": [
+        225.3349609375,
+        238
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 205
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "title": "Source Frames",
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 24,
+        "loop_count": 0,
+        "filename_prefix": "success/talkshow",
+        "format": "video/8bit-png",
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "talkshow_00001.%03d.png",
+            "subfolder": "success",
+            "type": "output",
+            "format": "video/8bit-png",
+            "frame_rate": 24,
+            "workflow": "talkshow_00001.png",
+            "fullpath": "/workspace/ComfyUI/output/success/talkshow_00001.%03d.png"
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "SAM3BBoxCollector",
+      "pos": [
+        503.6217041015625,
+        493.9269714355469
+      ],
+      "size": [
+        400,
+        480
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive_bboxes",
+          "type": "SAM3_BOXES_PROMPT",
+          "links": [
+            24
+          ]
+        },
+        {
+          "name": "negative_bboxes",
+          "type": "SAM3_BOXES_PROMPT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3",
+        "ver": "344fdc77e60a90c993da389e8fbb0ecf9b1c0fc4",
+        "Node name for S&R": "SAM3BBoxCollector",
+        "aux_id": "PozzettiAndrea/ComfyUI-SAM3"
+      },
+      "widgets_values": [
+        "[{\"x1\":53.96645846243491,\"y1\":25.31101234539936,\"x2\":493.3258941424703,\"y2\":355.4729724063809}]",
+        "[]",
+        ""
+      ]
+    },
+    {
+      "id": 107,
+      "type": "PrimitiveString",
+      "pos": [
+        2541.421630859375,
+        -91.44849395751953
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            199,
+            201,
+            202,
+            203,
+            204,
+            261
+          ]
+        }
+      ],
+      "title": "Filename",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.7.0",
+        "Node name for S&R": "PrimitiveString"
+      },
+      "widgets_values": [
+        "sam3d_animation_success"
+      ]
+    },
+    {
+      "id": 124,
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
+      "pos": [
+        2773.1921903448424,
+        100.54215481343536
+      ],
+      "size": [
+        290.744140625,
+        594
+      ],
+      "flags": {},
+      "order": 32,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh_sequence",
+          "type": "MESH_SEQUENCE",
+          "link": 256
+        },
+        {
+          "name": "camera_extrinsics",
+          "shape": 7,
+          "type": "CAMERA_EXTRINSICS",
+          "link": 257
+        },
+        {
+          "name": "camera_intrinsics",
+          "shape": 7,
+          "type": "CAMERA_INTRINSICS",
+          "link": 258
+        },
+        {
+          "name": "subject_motion",
+          "shape": 7,
+          "type": "SUBJECT_MOTION",
+          "link": 259
+        },
+        {
+          "name": "scale_info",
+          "shape": 7,
+          "type": "SCALE_INFO",
+          "link": 260
+        },
+        {
+          "name": "filename",
+          "type": "STRING",
+          "widget": {
+            "name": "filename"
+          },
+          "link": 261
+        },
+        {
+          "name": "source_video_fps",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "source_video_fps"
+          },
+          "link": 262
+        },
+        {
+          "name": "skip_first_frames",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "skip_first_frames"
+          },
+          "link": 263
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_path",
+          "type": "STRING",
+          "links": [
+            264,
+            265
+          ]
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": [
+            266
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "llikethat/ComfyUI-SAM3DBody2abc",
+        "ver": "3606f9815c3f4ebf591efc198cba5e36f35d879a",
+        "Node name for S&R": "SAM3DBody2abc_ExportAnimatedFBX"
+      },
+      "widgets_values": [
+        "animation",
+        24,
+        1,
+        "FBX",
+        "Y",
+        "Positions (Legacy)",
+        "Root Locator",
+        true,
+        true,
+        true,
+        true,
+        "Static",
+        "Kalman Filter",
+        0.5,
+        36,
+        true,
+        "Position (Z Movement)",
+        0,
+        0,
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      19,
+      14,
+      0,
+      2,
+      0,
+      "IMAGE"
+    ],
+    [
+      23,
+      17,
+      0,
+      16,
+      1,
+      "SAM3_VIDEO_STATE"
+    ],
+    [
+      24,
+      2,
+      0,
+      17,
+      1,
+      "SAM3_BOXES_PROMPT"
+    ],
+    [
+      25,
+      14,
+      0,
+      17,
+      0,
+      "IMAGE"
+    ],
+    [
+      26,
+      4,
+      0,
+      16,
+      0,
+      "SAM3_MODEL"
+    ],
+    [
+      62,
+      40,
+      0,
+      41,
+      1,
+      "SAM3_VIDEO_STATE"
+    ],
+    [
+      63,
+      41,
+      0,
+      43,
+      0,
+      "SAM3_VIDEO_MASKS"
+    ],
+    [
+      64,
+      41,
+      2,
+      43,
+      1,
+      "SAM3_VIDEO_STATE"
+    ],
+    [
+      78,
+      14,
+      0,
+      52,
+      0,
+      "IMAGE"
+    ],
+    [
+      90,
+      14,
+      0,
+      40,
+      0,
+      "IMAGE"
+    ],
+    [
+      92,
+      43,
+      2,
+      58,
+      0,
+      "IMAGE"
+    ],
+    [
+      93,
+      16,
+      0,
+      59,
+      0,
+      "SAM3_VIDEO_MASKS"
+    ],
+    [
+      98,
+      16,
+      2,
+      59,
+      1,
+      "SAM3_VIDEO_STATE"
+    ],
+    [
+      99,
+      8,
+      0,
+      61,
+      0,
+      "SAM3D_MODEL"
+    ],
+    [
+      100,
+      14,
+      0,
+      61,
+      1,
+      "IMAGE"
+    ],
+    [
+      103,
+      59,
+      0,
+      61,
+      2,
+      "MASK"
+    ],
+    [
+      104,
+      59,
+      2,
+      62,
+      0,
+      "IMAGE"
+    ],
+    [
+      120,
+      52,
+      1,
+      77,
+      0,
+      "IMAGE"
+    ],
+    [
+      131,
+      14,
+      0,
+      86,
+      0,
+      "IMAGE"
+    ],
+    [
+      132,
+      87,
+      0,
+      88,
+      1,
+      "FLOAT"
+    ],
+    [
+      134,
+      86,
+      2,
+      88,
+      2,
+      "FLOAT"
+    ],
+    [
+      135,
+      14,
+      3,
+      89,
+      0,
+      "VHS_VIDEOINFO"
+    ],
+    [
+      136,
+      89,
+      3,
+      88,
+      0,
+      "INT"
+    ],
+    [
+      139,
+      88,
+      1,
+      52,
+      2,
+      "FLOAT"
+    ],
+    [
+      145,
+      14,
+      0,
+      94,
+      1,
+      "IMAGE"
+    ],
+    [
+      146,
+      94,
+      2,
+      93,
+      0,
+      "IMAGE"
+    ],
+    [
+      147,
+      94,
+      3,
+      95,
+      0,
+      "STRING"
+    ],
+    [
+      148,
+      94,
+      1,
+      96,
+      0,
+      "SCALE_INFO"
+    ],
+    [
+      149,
+      96,
+      0,
+      97,
+      0,
+      "STRING"
+    ],
+    [
+      168,
+      102,
+      0,
+      14,
+      2,
+      "INT"
+    ],
+    [
+      177,
+      14,
+      0,
+      105,
+      0,
+      "IMAGE"
+    ],
+    [
+      178,
+      61,
+      0,
+      105,
+      1,
+      "MESH_SEQUENCE"
+    ],
+    [
+      179,
+      86,
+      0,
+      105,
+      2,
+      "CAMERA_INTRINSICS"
+    ],
+    [
+      180,
+      105,
+      0,
+      22,
+      0,
+      "IMAGE"
+    ],
+    [
+      181,
+      105,
+      1,
+      104,
+      0,
+      "STRING"
+    ],
+    [
+      199,
+      107,
+      0,
+      22,
+      4,
+      "STRING"
+    ],
+    [
+      201,
+      107,
+      0,
+      93,
+      4,
+      "STRING"
+    ],
+    [
+      202,
+      107,
+      0,
+      77,
+      4,
+      "STRING"
+    ],
+    [
+      203,
+      107,
+      0,
+      58,
+      4,
+      "STRING"
+    ],
+    [
+      204,
+      107,
+      0,
+      62,
+      4,
+      "STRING"
+    ],
+    [
+      205,
+      14,
+      0,
+      108,
+      0,
+      "IMAGE"
+    ],
+    [
+      214,
+      14,
+      0,
+      113,
+      1,
+      "IMAGE"
+    ],
+    [
+      215,
+      114,
+      0,
+      113,
+      0,
+      "DAMODEL"
+    ],
+    [
+      216,
+      4,
+      0,
+      41,
+      0,
+      "SAM3_MODEL"
+    ],
+    [
+      217,
+      59,
+      0,
+      52,
+      1,
+      "MASK"
+    ],
+    [
+      229,
+      14,
+      0,
+      116,
+      0,
+      "IMAGE"
+    ],
+    [
+      230,
+      59,
+      0,
+      116,
+      1,
+      "MASK"
+    ],
+    [
+      231,
+      113,
+      0,
+      116,
+      2,
+      "IMAGE"
+    ],
+    [
+      232,
+      61,
+      0,
+      116,
+      3,
+      "MESH_SEQUENCE"
+    ],
+    [
+      234,
+      116,
+      1,
+      94,
+      0,
+      "MESH_SEQUENCE"
+    ],
+    [
+      235,
+      116,
+      2,
+      111,
+      0,
+      "IMAGE"
+    ],
+    [
+      236,
+      116,
+      3,
+      112,
+      0,
+      "STRING"
+    ],
+    [
+      256,
+      116,
+      1,
+      124,
+      0,
+      "MESH_SEQUENCE"
+    ],
+    [
+      257,
+      52,
+      0,
+      124,
+      1,
+      "CAMERA_EXTRINSICS"
+    ],
+    [
+      258,
+      86,
+      0,
+      124,
+      2,
+      "CAMERA_INTRINSICS"
+    ],
+    [
+      259,
+      94,
+      0,
+      124,
+      3,
+      "SUBJECT_MOTION"
+    ],
+    [
+      260,
+      94,
+      1,
+      124,
+      4,
+      "SCALE_INFO"
+    ],
+    [
+      261,
+      107,
+      0,
+      124,
+      5,
+      "STRING"
+    ],
+    [
+      262,
+      89,
+      0,
+      124,
+      6,
+      "FLOAT"
+    ],
+    [
+      263,
+      102,
+      0,
+      124,
+      7,
+      "INT"
+    ],
+    [
+      264,
+      124,
+      0,
+      82,
+      0,
+      "STRING"
+    ],
+    [
+      265,
+      124,
+      0,
+      83,
+      0,
+      "STRING"
+    ],
+    [
+      266,
+      124,
+      1,
+      81,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7400249944258195,
+      "offset": [
+        -1874.7296862271962,
+        167.36360293613336
+      ]
+    },
+    "frontendVersion": "1.35.9",
+    "workflowRendererVersion": "LG",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

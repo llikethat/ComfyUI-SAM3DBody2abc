@@ -29,6 +29,19 @@ import torch
 import cv2
 from typing import Dict, List, Optional, Tuple, Any
 
+# Import logger
+try:
+    from ..lib.logger import log, set_module, LogLevel
+    set_module("Motion Analyzer")
+except ImportError:
+    class _FallbackLog:
+        def info(self, msg): log.info(f" {msg}")
+        def debug(self, msg): pass
+        def warn(self, msg): log.info(f" WARN: {msg}")
+        def error(self, msg): log.info(f" ERROR: {msg}")
+        def progress(self, c, t, task="", interval=10): pass
+    log = _FallbackLog()
+
 
 # ============================================================================
 # Body World / Global Trajectory Utilities
@@ -454,14 +467,13 @@ def detect_foot_contact(
         # Get timestamp in UTC+05:30 (IST)
         ist = timezone(timedelta(hours=5, minutes=30))
         timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-        print(f"[{timestamp}] [Foot Contact DEBUG] Frame {frame_idx}:")
-        print(f"  Method: MESH VERTICES (ground-relative coordinates)")
-        print(f"  Ground Y (mesh min): {ground_y:.4f}")
-        print(f"  Left foot Y (lowest left vertex): {left_foot_y:.4f}, distance: {left_dist:.4f}")
-        print(f"  Right foot Y (lowest right vertex): {right_foot_y:.4f}, distance: {right_dist:.4f}")
-        print(f"  Mesh height: {mesh_height:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
-        print(f"  Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
-        print(f"  Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
+        log.debug(f"  Method: MESH VERTICES (ground-relative coordinates)")
+        log.debug(f"  Ground Y (mesh min): {ground_y:.4f}")
+        log.debug(f"  Left foot Y (lowest left vertex): {left_foot_y:.4f}, distance: {left_dist:.4f}")
+        log.debug(f"  Right foot Y (lowest right vertex): {right_foot_y:.4f}, distance: {right_dist:.4f}")
+        log.debug(f"  Mesh height: {mesh_height:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
+        log.debug(f"  Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
+        log.debug(f"  Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
     
     # Check contact
     left_contact = left_dist < threshold
@@ -748,13 +760,13 @@ class MotionAnalyzer:
         
         # Handle case where mesh_sequence is already in the expected format
         if "vertices" in mesh_sequence and isinstance(mesh_sequence.get("vertices"), list):
-            print("[Motion Analyzer] Input already in expected format")
+            log.info(" Input already in expected format")
             return mesh_sequence
         
         sorted_indices = sorted(frames_dict.keys())
         
         if len(sorted_indices) == 0:
-            print("[Motion Analyzer] WARNING: No frames in mesh_sequence!")
+            log.info(" WARNING: No frames in mesh_sequence!")
             return {"vertices": [], "params": {}}
         
         converted = {
@@ -771,7 +783,7 @@ class MotionAnalyzer:
         # Debug: show available keys in first frame
         if sorted_indices:
             first_frame = frames_dict[sorted_indices[0]]
-            print(f"[Motion Analyzer] First frame keys: {list(first_frame.keys())}")
+            log.info(f" First frame keys: {list(first_frame.keys())}")
         
         for idx in sorted_indices:
             frame = frames_dict[idx]
@@ -801,22 +813,22 @@ class MotionAnalyzer:
             
             # Debug first frame keypoints
             if idx == sorted_indices[0]:
-                print(f"[Motion Analyzer] Frame 0 keypoints_2d source: {'keypoints_2d' if frame.get('keypoints_2d') is not None else ('pred_keypoints_2d' if frame.get('pred_keypoints_2d') is not None else 'None')}")
-                print(f"[Motion Analyzer] Frame 0 keypoints_3d source: {'keypoints_3d' if frame.get('keypoints_3d') is not None else ('pred_keypoints_3d' if frame.get('pred_keypoints_3d') is not None else 'None')}")
+                log.info(f" Frame 0 keypoints_2d source: {'keypoints_2d' if frame.get('keypoints_2d') is not None else ('pred_keypoints_2d' if frame.get('pred_keypoints_2d') is not None else 'None')}")
+                log.info(f" Frame 0 keypoints_3d source: {'keypoints_3d' if frame.get('keypoints_3d') is not None else ('pred_keypoints_3d' if frame.get('pred_keypoints_3d') is not None else 'None')}")
                 if kp2d is not None:
                     kp2d_shape = kp2d.shape if hasattr(kp2d, 'shape') else f"len={len(kp2d)}"
-                    print(f"[Motion Analyzer] Frame 0 kp2d shape: {kp2d_shape}")
+                    log.info(f" Frame 0 kp2d shape: {kp2d_shape}")
                 if kp3d is not None:
                     kp3d_shape = kp3d.shape if hasattr(kp3d, 'shape') else f"len={len(kp3d)}"
-                    print(f"[Motion Analyzer] Frame 0 kp3d shape: {kp3d_shape}")
+                    log.info(f" Frame 0 kp3d shape: {kp3d_shape}")
         
-        print(f"[Motion Analyzer] Converted {len(sorted_indices)} frames from SAM3DBody2abc format")
+        log.info(f" Converted {len(sorted_indices)} frames from SAM3DBody2abc format")
         
         # Log what data is available
         has_kp2d = any(k is not None for k in converted["params"]["keypoints_2d"])
         has_kp3d = any(k is not None for k in converted["params"]["keypoints_3d"])
         has_jc = any(k is not None for k in converted["params"]["joint_coords"])
-        print(f"[Motion Analyzer] Data available: keypoints_2d={has_kp2d}, keypoints_3d={has_kp3d}, joint_coords={has_jc}")
+        log.info(f" Data available: keypoints_2d={has_kp2d}, keypoints_3d={has_kp3d}, joint_coords={has_jc}")
         
         return converted
     
@@ -841,7 +853,7 @@ class MotionAnalyzer:
         If camera_extrinsics is provided, also computes camera-compensated trajectory
         (removes camera pan/tilt effects from body_world trajectory).
         """
-        print("\n[Motion Analyzer] ========== SUBJECT MOTION ANALYSIS ==========")
+        log.info("[Motion Analyzer] ========== SUBJECT MOTION ANALYSIS ==========")
         
         # Convert from SAM3DBody2abc format if needed
         mesh_sequence = self._convert_mesh_sequence(mesh_sequence)
@@ -849,7 +861,7 @@ class MotionAnalyzer:
         # Determine skeleton mode
         use_simple = skeleton_mode == "Simple Skeleton"
         mode_str = "simple" if use_simple else "full"
-        print(f"[Motion Analyzer] Skeleton mode: {skeleton_mode}")
+        log.info(f" Skeleton mode: {skeleton_mode}")
         
         # Extract data from mesh sequence
         vertices_list = mesh_sequence.get("vertices", [])
@@ -864,52 +876,51 @@ class MotionAnalyzer:
         
         num_frames = len(vertices_list)
         if num_frames == 0:
-            print("[Motion Analyzer] ERROR: No frames in mesh sequence!")
+            log.info(" ERROR: No frames in mesh sequence!")
             return ({}, {}, torch.zeros(1, 64, 64, 3), "Error: No frames")
         
-        print(f"[Motion Analyzer] Processing {num_frames} frames...")
+        log.info(f" Processing {num_frames} frames...")
         
         # Check what keypoint data is available
         has_kp_2d = len(keypoints_2d_list) > 0 and keypoints_2d_list[0] is not None
         has_kp_3d = len(keypoints_3d_list) > 0 and keypoints_3d_list[0] is not None
         has_joint_coords = len(joint_coords_list) > 0 and joint_coords_list[0] is not None
         
-        print(f"[Motion Analyzer] Data available: keypoints_2d={has_kp_2d}, keypoints_3d={has_kp_3d}, joint_coords={has_joint_coords}")
+        log.info(f" Data available: keypoints_2d={has_kp_2d}, keypoints_3d={has_kp_3d}, joint_coords={has_joint_coords}")
         
         # Debug: Print more details about available data
-        print(f"[Motion Analyzer] ===== KEYPOINT DATA DEBUG =====")
-        print(f"[Motion Analyzer] keypoints_2d_list length: {len(keypoints_2d_list)}")
+        log.info(f" keypoints_2d_list length: {len(keypoints_2d_list)}")
         if len(keypoints_2d_list) > 0 and keypoints_2d_list[0] is not None:
             kp2d_sample = to_numpy(keypoints_2d_list[0])
-            print(f"[Motion Analyzer] keypoints_2d[0] shape: {kp2d_sample.shape if hasattr(kp2d_sample, 'shape') else 'no shape'}")
+            log.info(f" keypoints_2d[0] shape: {kp2d_sample.shape if hasattr(kp2d_sample, 'shape') else 'no shape'}")
             if kp2d_sample is not None and len(kp2d_sample) > 0:
-                print(f"[Motion Analyzer] keypoints_2d[0] first 3 points: {kp2d_sample[:3] if len(kp2d_sample) >= 3 else kp2d_sample}")
+                log.info(f" keypoints_2d[0] first 3 points: {kp2d_sample[:3] if len(kp2d_sample) >= 3 else kp2d_sample}")
         else:
-            print(f"[Motion Analyzer] keypoints_2d[0] is None or empty")
+            log.info(f" keypoints_2d[0] is None or empty")
         
-        print(f"[Motion Analyzer] keypoints_3d_list length: {len(keypoints_3d_list)}")
+        log.info(f" keypoints_3d_list length: {len(keypoints_3d_list)}")
         if len(keypoints_3d_list) > 0 and keypoints_3d_list[0] is not None:
             kp3d_sample = to_numpy(keypoints_3d_list[0])
-            print(f"[Motion Analyzer] keypoints_3d[0] shape: {kp3d_sample.shape if hasattr(kp3d_sample, 'shape') else 'no shape'}")
+            log.info(f" keypoints_3d[0] shape: {kp3d_sample.shape if hasattr(kp3d_sample, 'shape') else 'no shape'}")
         
-        print(f"[Motion Analyzer] joint_coords_list length: {len(joint_coords_list)}")
+        log.info(f" joint_coords_list length: {len(joint_coords_list)}")
         if len(joint_coords_list) > 0 and joint_coords_list[0] is not None:
             jc_sample = to_numpy(joint_coords_list[0])
-            print(f"[Motion Analyzer] joint_coords[0] shape: {jc_sample.shape if hasattr(jc_sample, 'shape') else 'no shape'}")
-        print(f"[Motion Analyzer] =================================")
+            log.info(f" joint_coords[0] shape: {jc_sample.shape if hasattr(jc_sample, 'shape') else 'no shape'}")
+        log.info(f" =================================")
         
         # Decide which 3D keypoints to use
         if use_simple and has_kp_3d:
             kp_source = "keypoints_3d"
-            print(f"[Motion Analyzer] Using 18-joint keypoints_3d for analysis")
+            log.info(f" Using 18-joint keypoints_3d for analysis")
         elif has_joint_coords:
             kp_source = "joint_coords"
-            print(f"[Motion Analyzer] Using 127-joint joint_coords for analysis")
+            log.info(f" Using 127-joint joint_coords for analysis")
         elif has_kp_3d:
             kp_source = "keypoints_3d"
-            print(f"[Motion Analyzer] Fallback to 18-joint keypoints_3d")
+            log.info(f" Fallback to 18-joint keypoints_3d")
         else:
-            print("[Motion Analyzer] ERROR: No 3D keypoint data available!")
+            log.info(" ERROR: No 3D keypoint data available!")
             return ({}, {}, torch.zeros(1, 64, 64, 3), "Error: No keypoint data")
         
         # Get image size
@@ -917,7 +928,7 @@ class MotionAnalyzer:
         if images is not None:
             _, H, W, _ = images.shape
             image_size = (W, H)
-            print(f"[Motion Analyzer] Image size: {W}x{H}")
+            log.info(f" Image size: {W}x{H}")
         
         # ===== HEIGHT ESTIMATION =====
         ref_frame = min(reference_frame, num_frames - 1)
@@ -941,11 +952,11 @@ class MotionAnalyzer:
         if subject_height_m > 0:
             actual_height = subject_height_m
             height_source = "user_input"
-            print(f"[Motion Analyzer] Using user-specified height: {actual_height:.2f}m")
+            log.info(f" Using user-specified height: {actual_height:.2f}m")
         else:
             actual_height = default_height_m
             height_source = "auto_estimate"
-            print(f"[Motion Analyzer] Using default height: {actual_height:.2f}m")
+            log.info(f" Using default height: {actual_height:.2f}m")
         
         # Calculate scale factor
         estimated_height = kp_height_info["estimated_height"]
@@ -967,11 +978,11 @@ class MotionAnalyzer:
             "keypoint_source": kp_source,
         }
         
-        print(f"[Motion Analyzer] Mesh height: {mesh_height_info['mesh_height']:.3f} units")
-        print(f"[Motion Analyzer] Estimated height (from joints): {estimated_height:.3f} units")
-        print(f"[Motion Analyzer] Scale factor: {scale_factor:.3f}")
-        print(f"[Motion Analyzer] Leg length: {kp_height_info['leg_length']:.3f} units")
-        print(f"[Motion Analyzer] Torso+head: {kp_height_info['torso_head_length']:.3f} units")
+        log.info(f" Mesh height: {mesh_height_info['mesh_height']:.3f} units")
+        log.info(f" Estimated height (from joints): {estimated_height:.3f} units")
+        log.info(f" Scale factor: {scale_factor:.3f}")
+        log.info(f" Leg length: {kp_height_info['leg_length']:.3f} units")
+        log.info(f" Torso+head: {kp_height_info['torso_head_length']:.3f} units")
         
         # ===== PER-FRAME ANALYSIS =====
         # Get joint indices based on mode
@@ -1030,7 +1041,7 @@ class MotionAnalyzer:
                 keypoints_3d = to_numpy(joint_coords_list[i]) if i < len(joint_coords_list) else None
             
             if keypoints_3d is None:
-                print(f"[Motion Analyzer] Warning: No keypoints for frame {i}")
+                log.info(f" Warning: No keypoints for frame {i}")
                 keypoints_3d = np.zeros((18 if kp_source == "keypoints_3d" else 127, 3))
             
             # Handle shape
@@ -1048,16 +1059,16 @@ class MotionAnalyzer:
                 else:
                     joints_2d = keypoints_2d
                 if i == 0:
-                    print(f"[Motion Analyzer] Frame 0: Using pred_keypoints_2d DIRECTLY (shape={joints_2d.shape})")
-                    print(f"[Motion Analyzer] Frame 0: First 3 2D joints: {joints_2d[:3]}")
+                    log.info(f" Frame 0: Using pred_keypoints_2d DIRECTLY (shape={joints_2d.shape})")
+                    log.info(f" Frame 0: First 3 2D joints: {joints_2d[:3]}")
             else:
                 # Project 3D to 2D
                 joints_2d = project_points_to_2d(
                     keypoints_3d, focal, camera_t, image_size[0], image_size[1]
                 )
                 if i == 0:
-                    print(f"[Motion Analyzer] Frame 0: PROJECTING 3D→2D (focal={focal}, cam_t={camera_t})")
-                    print(f"[Motion Analyzer] Frame 0: First 3 projected joints: {joints_2d[:3]}")
+                    log.info(f" Frame 0: PROJECTING 3D→2D (focal={focal}, cam_t={camera_t})")
+                    log.info(f" Frame 0: First 3 projected joints: {joints_2d[:3]}")
             
             subject_motion["joints_2d"].append(joints_2d)
             subject_motion["joints_3d"].append(keypoints_3d * scale_factor)
@@ -1093,10 +1104,9 @@ class MotionAnalyzer:
                 from datetime import datetime, timezone, timedelta
                 ist = timezone(timedelta(hours=5, minutes=30))
                 timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-                print(f"[{timestamp}] [Body World DEBUG] Frame {i}:")
-                print(f"  pred_cam_t: tx={camera_t[0]:.4f}, ty={camera_t[1]:.4f}, tz={camera_t[2]:.4f}")
-                print(f"  focal_length: {focal:.1f}px")
-                print(f"  body_world_3d: X={body_world_3d_raw[0]:.4f}m, Y={body_world_3d_raw[1]:.4f}m, Z={body_world_3d_raw[2]:.4f}m")
+                log.debug(f"  pred_cam_t: tx={camera_t[0]:.4f}, ty={camera_t[1]:.4f}, tz={camera_t[2]:.4f}")
+                log.debug(f"  focal_length: {focal:.1f}px")
+                log.debug(f"  body_world_3d: X={body_world_3d_raw[0]:.4f}m, Y={body_world_3d_raw[1]:.4f}m, Z={body_world_3d_raw[2]:.4f}m")
             
             # Apparent height (pixels)
             head_2d = joints_2d[head_idx]
@@ -1140,11 +1150,11 @@ class MotionAnalyzer:
         focal_min_mm = focal_min * sensor_width_mm / image_width if image_width > 0 else 0
         focal_max_mm = focal_max * sensor_width_mm / image_width if image_width > 0 else 0
         
-        print(f"\n[Motion Analyzer] ----- CAMERA COMPENSATION -----")
-        print(f"[Motion Analyzer] Sensor: {sensor_width_mm}mm, Image width: {image_width}px")
-        print(f"[Motion Analyzer] Focal length (px): ref={ref_focal:.1f}, min={focal_min:.1f}, max={focal_max:.1f}")
-        print(f"[Motion Analyzer] Focal length (mm): ref={ref_focal_mm:.1f}, min={focal_min_mm:.1f}, max={focal_max_mm:.1f}")
-        print(f"[Motion Analyzer] Focal variation: {focal_variation:.1f}%")
+        log.info(f"[Motion Analyzer] ----- CAMERA COMPENSATION -----")
+        log.info(f" Sensor: {sensor_width_mm}mm, Image width: {image_width}px")
+        log.info(f" Focal length (px): ref={ref_focal:.1f}, min={focal_min:.1f}, max={focal_max:.1f}")
+        log.info(f" Focal length (mm): ref={ref_focal_mm:.1f}, min={focal_min_mm:.1f}, max={focal_max_mm:.1f}")
+        log.info(f" Focal variation: {focal_variation:.1f}%")
         
         # Apply focal length compensation
         # When focal length increases (zoom in), same screen motion = less world motion
@@ -1175,7 +1185,7 @@ class MotionAnalyzer:
                 per_frame_data = camera_extrinsics.get("per_frame", [])
                 
                 if len(per_frame_data) >= len(body_world_arr):
-                    print(f"[Motion Analyzer] Applying camera extrinsics compensation (pan/tilt)...")
+                    log.info(f" Applying camera extrinsics compensation (pan/tilt)...")
                     body_world_extrinsics_compensated = []
                     
                     # Get reference (first frame) rotation to define world space
@@ -1216,11 +1226,11 @@ class MotionAnalyzer:
                     
                     total_pan = per_frame_data[-1].get("pan", 0) - per_frame_data[0].get("pan", 0)
                     total_tilt = per_frame_data[-1].get("tilt", 0) - per_frame_data[0].get("tilt", 0)
-                    print(f"[Motion Analyzer] Camera extrinsics: total pan={total_pan:.2f}°, total tilt={total_tilt:.2f}°")
+                    log.info(f" Camera extrinsics: total pan={total_pan:.2f}°, total tilt={total_tilt:.2f}°")
                 else:
-                    print(f"[Motion Analyzer] Warning: Not enough extrinsics frames ({len(per_frame_data)} < {len(body_world_arr)})")
+                    log.info(f" Warning: Not enough extrinsics frames ({len(per_frame_data)} < {len(body_world_arr)})")
             except Exception as e:
-                print(f"[Motion Analyzer] Warning: Could not apply extrinsics compensation: {e}")
+                log.info(f" Warning: Could not apply extrinsics compensation: {e}")
         
         # Store all trajectory versions
         subject_motion["body_world_3d_raw"] = [pos.tolist() for pos in body_world_arr]  # Original
@@ -1351,34 +1361,33 @@ class MotionAnalyzer:
         grounded_count = sum(1 for fc in subject_motion["foot_contact"] if fc in ["both", "left", "right"])
         airborne_count = sum(1 for fc in subject_motion["foot_contact"] if fc == "none")
         
-        print(f"\n[Motion Analyzer] ----- MOTION STATISTICS -----")
-        print(f"[Motion Analyzer] Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps")
-        print(f"[Motion Analyzer] Avg 2D velocity: {avg_velocity_2d:.2f} px/frame")
-        print(f"[Motion Analyzer] Max 2D velocity: {max_velocity_2d:.2f} px/frame")
-        print(f"[Motion Analyzer] Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
-        print(f"[Motion Analyzer] Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
-        print(f"[Motion Analyzer] Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
+        log.info(f"[Motion Analyzer] ----- MOTION STATISTICS -----")
+        log.info(f" Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps")
+        log.info(f" Avg 2D velocity: {avg_velocity_2d:.2f} px/frame")
+        log.info(f" Max 2D velocity: {max_velocity_2d:.2f} px/frame")
+        log.info(f" Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
+        log.info(f" Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
+        log.info(f" Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
         
-        print(f"[Motion Analyzer] ----- TRAJECTORY (RAW - includes camera effects) -----")
-        print(f"[Motion Analyzer] Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
-        print(f"[Motion Analyzer] Total distance traveled: {body_world_total_distance:.3f}m")
-        print(f"[Motion Analyzer] Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
-        print(f"[Motion Analyzer] Direction: {direction_desc} ({direction_angle:.1f}°)")
-        print(f"[Motion Analyzer] Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}")
+        log.info(f" ----- TRAJECTORY (RAW - includes camera effects) -----")
+        log.info(f" Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
+        log.info(f" Total distance traveled: {body_world_total_distance:.3f}m")
+        log.info(f" Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
+        log.info(f" Direction: {direction_desc} ({direction_angle:.1f}°)")
+        log.info(f" Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}")
         
-        print(f"[Motion Analyzer] ----- TRAJECTORY (COMPENSATED - camera effects removed) -----")
-        print(f"[Motion Analyzer] Focal compensation: ref={ref_focal_mm:.1f}mm ({ref_focal:.0f}px), variation={focal_variation:.1f}%")
+        log.info(f" ----- TRAJECTORY (COMPENSATED - camera effects removed) -----")
+        log.info(f" Focal compensation: ref={ref_focal_mm:.1f}mm ({ref_focal:.0f}px), variation={focal_variation:.1f}%")
         if has_extrinsics_compensation:
-            print(f"[Motion Analyzer] Extrinsics compensation: YES (pan/tilt removed)")
+            log.info(f" Extrinsics compensation: YES (pan/tilt removed)")
         else:
-            print(f"[Motion Analyzer] Extrinsics compensation: NO (connect CameraSolver to enable)")
-        print(f"[Motion Analyzer] Displacement: X={comp_displacement[0]:.3f}m, Y={comp_displacement[1]:.3f}m, Z={comp_displacement[2]:.3f}m")
-        print(f"[Motion Analyzer] Total distance traveled: {comp_total_distance:.3f}m")
-        print(f"[Motion Analyzer] Average speed: {comp_avg_speed_ms:.3f} m/s ({comp_avg_speed_ms * 3.6:.2f} km/h)")
-        print(f"[Motion Analyzer] Direction: {comp_direction_desc} ({comp_direction_angle:.1f}°)")
-        print(f"[Motion Analyzer] Direction vector (Y-up): X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}")
+            log.info(f" Extrinsics compensation: NO (connect CameraSolver to enable)")
+        log.info(f" Displacement: X={comp_displacement[0]:.3f}m, Y={comp_displacement[1]:.3f}m, Z={comp_displacement[2]:.3f}m")
+        log.info(f" Total distance traveled: {comp_total_distance:.3f}m")
+        log.info(f" Average speed: {comp_avg_speed_ms:.3f} m/s ({comp_avg_speed_ms * 3.6:.2f} km/h)")
+        log.info(f" Direction: {comp_direction_desc} ({comp_direction_angle:.1f}°)")
+        log.info(f" Direction vector (Y-up): X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}")
         
-        # ===== DEBUG INFO STRING =====
         extrinsics_status = "YES" if has_extrinsics_compensation else "NO"
         debug_info = (
             f"=== Motion Analysis Results ===\n"
@@ -1407,9 +1416,8 @@ class MotionAnalyzer:
             f"Direction vector: X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}\n"
         )
         
-        # ===== DEBUG OVERLAY =====
         if show_debug and images is not None:
-            print(f"[Motion Analyzer] Generating debug overlay...")
+            log.info(f" Generating debug overlay...")
             
             images_np = images.cpu().numpy() if isinstance(images, torch.Tensor) else images
             
@@ -1428,7 +1436,7 @@ class MotionAnalyzer:
         else:
             debug_overlay = torch.zeros(1, 64, 64, 3)
         
-        print(f"[Motion Analyzer] =============================================\n")
+        log.info(f" =============================================\n")
         
         return (subject_motion, scale_info, debug_overlay, debug_info)
 
@@ -1464,7 +1472,7 @@ class ScaleInfoDisplay:
             f"Source: {scale_info.get('height_source', 'N/A')}\n"
             f"Reference frame: {scale_info.get('reference_frame', 'N/A')}\n"
         )
-        print(info)
+        log.info(info)
         return (info,)
 
 

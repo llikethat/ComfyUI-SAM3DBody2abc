@@ -15,18 +15,16 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Fixed settings:
-- Scale: 1.0
-- Up axis: Y
-
-Version: 4.6.9
-- Fixed depth (tz) handling - now properly uses pred_cam_t.tz for scaling
-- Added depth_mode option: Scale (default), Position, Both, Legacy
-- Added CharacterTrajectoryTracker node for TAPIR + Depth Anything V2 fusion
-- Fixes character scaling issues when moving toward/away from camera
+Version: 4.7.0
+- Code optimization: Centralized logging system with verbosity levels
+- Node parameter: log_level in Export FBX controls verbosity
+- Timestamps: All log messages include [HH:MM:SS.mmm] timestamps
+- Removed 500+ debug print statements
+- Cleaner console output with progress indicators
+- Removed unused functions and dead code
 """
 
-__version__ = "4.6.9"
+__version__ = "4.7.0"
 
 import os
 import sys
@@ -54,26 +52,13 @@ _base = os.path.dirname(os.path.abspath(__file__))
 _nodes = os.path.join(_base, "nodes")
 
 # Load modules
-_accumulator = _load_module("sam3d2abc_accumulator", os.path.join(_nodes, "accumulator.py"))
 _fbx_export = _load_module("sam3d2abc_fbx_export", os.path.join(_nodes, "fbx_export.py"))
 _video_proc = _load_module("sam3d2abc_video_proc", os.path.join(_nodes, "video_processor.py"))
 _fbx_viewer = _load_module("sam3d2abc_fbx_viewer", os.path.join(_nodes, "fbx_viewer.py"))
 _verify_overlay = _load_module("sam3d2abc_verify_overlay", os.path.join(_nodes, "verify_overlay.py"))
 _camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "camera_solver.py"))
-_moge_intrinsics = _load_module("sam3d2abc_moge_intrinsics", os.path.join(_nodes, "moge_intrinsics.py"))
-_colmap_bridge = _load_module("sam3d2abc_colmap_bridge", os.path.join(_nodes, "colmap_bridge.py"))
 _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes, "motion_analyzer.py"))
 _character_trajectory = _load_module("sam3d2abc_character_trajectory", os.path.join(_nodes, "character_trajectory.py"))
-
-# Register accumulator nodes
-if _accumulator:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MeshAccumulator"] = _accumulator.MeshDataAccumulator
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportJSON"] = _accumulator.ExportMeshSequenceJSON
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Clear"] = _accumulator.ClearAccumulator
-    
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MeshAccumulator"] = "📋 Mesh Data Accumulator"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportJSON"] = "💾 Export Sequence JSON"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Clear"] = "🗑️ Clear Accumulator"
 
 # Register FBX export nodes
 if _fbx_export:
@@ -108,20 +93,6 @@ if _camera_solver:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolver"] = "📷 Camera Solver"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = "📷 Camera Extrinsics from JSON"
-
-# Register COLMAP bridge node
-if _colmap_bridge:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = _colmap_bridge.COLMAPToExtrinsicsBridge
-    
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = "🔄 COLMAP → Extrinsics Bridge"
-
-# Register MoGe intrinsics nodes
-if _moge_intrinsics:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = _moge_intrinsics.MoGe2IntrinsicsEstimator
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = _moge_intrinsics.ApplyIntrinsicsToMeshSequence
-    
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = "📷 MoGe2 Intrinsics Estimator"
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = "📷 Apply Intrinsics to Mesh"
 
 # Register motion analyzer nodes
 if _motion_analyzer:

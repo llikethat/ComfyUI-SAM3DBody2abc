@@ -23,14 +23,26 @@ import cv2
 from scipy import ndimage
 from scipy.signal import savgol_filter
 
+# Import logger
+try:
+    from ..lib.logger import log, set_module
+    set_module("Character Trajectory")
+except ImportError:
+    class _FallbackLog:
+        def info(self, msg): print(f"[Character Trajectory] {msg}")
+        def debug(self, msg): pass
+        def warn(self, msg): print(f"[Character Trajectory] WARN: {msg}")
+        def error(self, msg): print(f"[Character Trajectory] ERROR: {msg}")
+    log = _FallbackLog()
+
 # Try to import TAPIR
 TAPIR_AVAILABLE = False
 try:
     from tapnet.torch import tapir_model
     TAPIR_AVAILABLE = True
-    print("[CharacterTracker] TAPIR (tapnet) available")
+    log.info(" TAPIR (tapnet) available")
 except ImportError:
-    print("[CharacterTracker] TAPIR not found - will use external TAPIR tracks or optical flow fallback")
+    log.info(" TAPIR not found - will use external TAPIR tracks or optical flow fallback")
 
 
 class CharacterTrajectoryTracker:
@@ -156,7 +168,7 @@ class CharacterTrajectoryTracker:
                     break
             
             if checkpoint_path is None:
-                print("[CharacterTracker] TAPIR checkpoint not found")
+                log.info(" TAPIR checkpoint not found")
                 return False
             
             self.tapir_model = tapir_model.TAPIR(pyramid_level=1)
@@ -164,11 +176,11 @@ class CharacterTrajectoryTracker:
             self.tapir_model.to(self.device)
             self.tapir_model.eval()
             
-            print(f"[CharacterTracker] TAPIR loaded from {checkpoint_path}")
+            log.info(f" TAPIR loaded from {checkpoint_path}")
             return True
             
         except Exception as e:
-            print(f"[CharacterTracker] Error loading TAPIR: {e}")
+            log.info(f" Error loading TAPIR: {e}")
             return False
     
     def _get_mask_centroid(self, mask: np.ndarray, tracking_mode: str) -> Tuple[float, float]:
@@ -391,11 +403,11 @@ class CharacterTrajectoryTracker:
         N, H, W, _ = images.shape
         num_points = grid_size * grid_size
         
-        print(f"[CharacterTracker] TAPIR settings: grid={grid_size}x{grid_size}={num_points}pts, batch_frames={batch_frames}")
+        log.info(f" TAPIR settings: grid={grid_size}x{grid_size}={num_points}pts, batch_frames={batch_frames}")
         
         # Get initial points from first frame mask
         init_points = self._sample_points_from_mask(masks[0], tracking_mode, grid_size)
-        print(f"[CharacterTracker] Tracking {len(init_points)} points (requested {num_points})")
+        log.info(f" Tracking {len(init_points)} points (requested {num_points})")
         
         # Result array
         all_tracks = np.zeros((N, 2))
@@ -408,7 +420,7 @@ class CharacterTrajectoryTracker:
             end_frame = min(start_frame + batch_frames, N)
             batch_size = end_frame - start_frame
             
-            print(f"[CharacterTracker] Processing batch {batch_idx + 1}/{num_batches} (frames {start_frame}-{end_frame-1})")
+            log.info(f" Processing batch {batch_idx + 1}/{num_batches} (frames {start_frame}-{end_frame-1})")
             
             # Get batch of frames
             batch_images = images[start_frame:end_frame]
@@ -457,11 +469,11 @@ class CharacterTrajectoryTracker:
                         
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
-                    print(f"[CharacterTracker] WARNING: GPU OOM in batch {batch_idx + 1}. Try reducing:")
-                    print(f"  - tapir_batch_frames (current: {batch_frames})")
-                    print(f"  - tapir_grid_size (current: {grid_size}, points: {num_points})")
+                    log.info(f" WARNING: GPU OOM in batch {batch_idx + 1}. Try reducing:")
+                    log.debug(f"  - tapir_batch_frames (current: {batch_frames})")
+                    log.debug(f"  - tapir_grid_size (current: {grid_size}, points: {num_points})")
                     # Fall back to optical flow for this batch
-                    print(f"[CharacterTracker] Falling back to optical flow for this batch...")
+                    log.info(f" Falling back to optical flow for this batch...")
                     batch_tracks = self._track_with_optical_flow(
                         batch_images, masks[start_frame:end_frame], tracking_mode
                     )
@@ -480,7 +492,7 @@ class CharacterTrajectoryTracker:
                 torch.cuda.empty_cache()
                 gc.collect()
         
-        print(f"[CharacterTracker] TAPIR tracking complete for {N} frames")
+        log.info(f" TAPIR tracking complete for {N} frames")
         return all_tracks
     
     def _sample_points_from_mask(self, mask: np.ndarray, tracking_mode: str, 
@@ -619,7 +631,7 @@ class CharacterTrajectoryTracker:
         Combines 2D tracking (TAPIR or optical flow) with depth maps to produce
         accurate 3D trajectory.
         """
-        print(f"[CharacterTracker] Starting character trajectory tracking...")
+        log.info(f" Starting character trajectory tracking...")
         
         # Convert inputs to numpy
         if isinstance(images, torch.Tensor):
@@ -650,42 +662,42 @@ class CharacterTrajectoryTracker:
         
         num_points = tapir_grid_size * tapir_grid_size
         
-        print(f"[CharacterTracker] Processing {N} frames at {W}x{H}")
-        print(f"[CharacterTracker] Tracking mode: {tracking_mode}")
+        log.info(f" Processing {N} frames at {W}x{H}")
+        log.info(f" Tracking mode: {tracking_mode}")
         
         # === Step 1: Get reference depth from SAM3DBody or use provided ===
         if mesh_sequence is not None:
             frames = mesh_sequence.get("frames", [])
             if frames and "pred_cam_t" in frames[0]:
                 ref_depth = abs(frames[0]["pred_cam_t"][2])
-                print(f"[CharacterTracker] Reference depth from SAM3DBody: {ref_depth:.2f}m")
+                log.info(f" Reference depth from SAM3DBody: {ref_depth:.2f}m")
             else:
                 ref_depth = reference_depth_m
-                print(f"[CharacterTracker] Using provided reference depth: {ref_depth:.2f}m")
+                log.info(f" Using provided reference depth: {ref_depth:.2f}m")
         else:
             ref_depth = reference_depth_m
-            print(f"[CharacterTracker] Using provided reference depth: {ref_depth:.2f}m")
+            log.info(f" Using provided reference depth: {ref_depth:.2f}m")
         
         # === Step 2: Track 2D position ===
-        print(f"[CharacterTracker] Tracking 2D position...")
+        log.info(f" Tracking 2D position...")
         
         tapir_loaded = self._load_tapir() if use_tapir else False
         
         if tapir_loaded and use_tapir:
-            print(f"[CharacterTracker] Using TAPIR for tracking")
+            log.info(f" Using TAPIR for tracking")
             tracks_2d = self._track_with_tapir(
                 images_np, masks_np, tracking_mode,
                 grid_size=tapir_grid_size, batch_frames=tapir_batch_frames
             )
         else:
             if not use_tapir:
-                print(f"[CharacterTracker] TAPIR disabled, using optical flow")
+                log.info(f" TAPIR disabled, using optical flow")
             else:
-                print(f"[CharacterTracker] TAPIR not available, using optical flow fallback")
+                log.info(f" TAPIR not available, using optical flow fallback")
             tracks_2d = self._track_with_optical_flow(images_np, masks_np, tracking_mode)
         
         # === Step 3: Sample depth at tracked positions ===
-        print(f"[CharacterTracker] Sampling depth values...")
+        log.info(f" Sampling depth values...")
         
         depths_raw = np.zeros(N)
         for i in range(N):
@@ -715,7 +727,7 @@ class CharacterTrajectoryTracker:
         # depth_metric = ref_depth * (depth_value / ref_depth_value)
         depths_metric = ref_depth * (depths_raw / ref_depth_value)
         
-        print(f"[CharacterTracker] Depth range: {depths_metric.min():.2f}m to {depths_metric.max():.2f}m")
+        log.info(f" Depth range: {depths_metric.min():.2f}m to {depths_metric.max():.2f}m")
         
         # === Step 5: Convert 2D + depth to 3D ===
         # X, Y in screen space, Z from depth
@@ -739,7 +751,7 @@ class CharacterTrajectoryTracker:
         
         # === Step 6: Apply smoothing ===
         if smoothing_method != "None":
-            print(f"[CharacterTracker] Applying {smoothing_method} smoothing (window={smoothing_window})")
+            log.info(f" Applying {smoothing_method} smoothing (window={smoothing_window})")
             trajectory_3d = self._smooth_trajectory(trajectory_3d, smoothing_method, smoothing_window)
             depths_metric = self._smooth_trajectory(depths_metric, smoothing_method, smoothing_window)
         
@@ -804,17 +816,17 @@ class CharacterTrajectoryTracker:
                     frame_data["tracked_position_3d"] = trajectory_3d[i].tolist()
                     frame_data["tracked_depth"] = float(depths_metric[i])
                     
-                print(f"[CharacterTracker] Updated {len(frame_items)} frames with depth data")
+                log.info(f" Updated {len(frame_items)} frames with depth data")
                     
             except Exception as e:
-                print(f"[CharacterTracker] Warning: Could not update mesh_sequence: {e}")
+                log.info(f" Warning: Could not update mesh_sequence: {e}")
                 import traceback
                 traceback.print_exc()
                 mesh_sequence_updated = mesh_sequence
         
         # === Step 9: Create debug video ===
         if output_debug_video:
-            print(f"[CharacterTracker] Creating debug visualization...")
+            log.info(f" Creating debug visualization...")
             debug_video = self._create_debug_video(images_np, masks_np, tracks_2d, 
                                                    depths_metric, trajectory_3d)
             debug_video = torch.from_numpy(debug_video)
@@ -853,8 +865,8 @@ Tips for GPU Memory (if OOM):
 Use the updated mesh_sequence for FBX export with corrected depth values.
 """
         
-        print(f"[CharacterTracker] Tracking complete!")
-        print(f"[CharacterTracker] Depth change: {depth_change:+.2f}m ({depth_pct:+.1f}%)")
+        log.info(f" Tracking complete!")
+        log.info(f" Depth change: {depth_change:+.2f}m ({depth_pct:+.1f}%)")
         
         return (trajectory_output, mesh_sequence_updated, debug_video, info)
 
