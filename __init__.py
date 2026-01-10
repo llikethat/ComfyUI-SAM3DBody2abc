@@ -15,12 +15,12 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.7.5
-- Fixed all fallback loggers to include progress() method
-- Prevents AttributeError when logger import fails
+Version: 4.7.6
+- Added camera custom properties for Maya: sensor_width_mm, sensor_height_mm, focal_length_mm, etc.
+- These are exported as Extra Attributes in FBX for proper camera setup in Maya
 """
 
-__version__ = "4.7.5"
+__version__ = "4.7.6"
 
 import os
 import sys

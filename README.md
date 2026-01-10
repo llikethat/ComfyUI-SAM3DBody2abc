@@ -187,6 +187,13 @@ https://github.com/DepthAnything/Depth-Anything-V2
 
 ## Version History
 
+### v4.7.6 (January 2025)
+- Added camera custom properties exported as Maya Extra Attributes:
+  - `sensor_width_mm`, `sensor_height_mm`
+  - `focal_length_mm`, `focal_length_px`
+  - `image_width`, `image_height`, `aspect_ratio`
+- These allow proper camera setup in Maya after FBX import
+
 ### v4.7.5 (January 2025)
 - Fixed all fallback loggers to include `progress()` method
 - Prevents AttributeError when logger import fails

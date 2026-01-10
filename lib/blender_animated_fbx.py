@@ -614,6 +614,15 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     log.info(f"Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length (source: {focal_source})")
     log.debug(f"Image: {image_width}x{image_height}, sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
     
+    # Add custom properties for Maya (exported as Extra Attributes)
+    camera["sensor_width_mm"] = sensor_width
+    camera["sensor_height_mm"] = cam_data.sensor_height
+    camera["focal_length_mm"] = focal_mm
+    camera["focal_length_px"] = focal_px
+    camera["image_width"] = image_width
+    camera["image_height"] = image_height
+    camera["aspect_ratio"] = aspect_ratio
+    
     # ============================================================
     # FILM OFFSET (from principal point cx, cy)
     # ============================================================
@@ -1659,6 +1668,16 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     log.info(f"Focal length: {focal_px:.0f}px -> {focal_mm:.1f}mm")
     log.info(f"Image size: {image_width}x{image_height}, aspect: {aspect_ratio:.3f}")
     log.info(f"Sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    
+    # Add custom properties for Maya (exported as Extra Attributes)
+    # These help set up the camera correctly after FBX import
+    camera["sensor_width_mm"] = sensor_width
+    camera["sensor_height_mm"] = cam_data.sensor_height
+    camera["focal_length_mm"] = focal_mm
+    camera["focal_length_px"] = focal_px
+    camera["image_width"] = image_width
+    camera["image_height"] = image_height
+    camera["aspect_ratio"] = aspect_ratio
     
     # Get pred_cam_t - this is the KEY to matching SAM3DBody's projection
     # pred_cam_t = [tx, ty, tz] where:
