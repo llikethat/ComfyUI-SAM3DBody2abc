@@ -15,16 +15,16 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.3
-- FIX: Pelvis joint index corrected to 11 (was incorrectly 0)
-- FIX: Multi-camera nodes now load correctly (fixed import issues)
+Version: 4.8.4
+- FIX: Multi-camera nodes import fix (use importlib for all module loading)
+- FIX: Pelvis joint index corrected to 11
 - 🔄 Temporal Smoothing node for reducing trajectory jitter
 - Multi-Camera Triangulation System
   - 📷 Camera Calibration Loader
   - 🔺 Multi-Camera Triangulator
 """
 
-__version__ = "4.8.3"
+__version__ = "4.8.4"
 
 import os
 import sys

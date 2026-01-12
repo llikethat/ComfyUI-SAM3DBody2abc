@@ -10,18 +10,27 @@ Generates:
 import numpy as np
 import cv2
 import os
-import sys
+import importlib.util
 from typing import List, Dict, Optional, Tuple
 
-# Add current directory to path for imports
+# Get the directory containing this file
 _current_dir = os.path.dirname(os.path.abspath(__file__))
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
 
-try:
-    from .camera import Camera
-except ImportError:
-    from camera import Camera
+# Function to load module from absolute path
+def _load_util_module(name, filepath):
+    spec = importlib.util.spec_from_file_location(name, filepath)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return None
+
+# Load camera module
+_camera_module = _load_util_module("camera", os.path.join(_current_dir, "camera.py"))
+if _camera_module:
+    Camera = _camera_module.Camera
+else:
+    raise ImportError(f"Failed to load camera module from {_current_dir}")
 
 
 def create_multicamera_debug_view(

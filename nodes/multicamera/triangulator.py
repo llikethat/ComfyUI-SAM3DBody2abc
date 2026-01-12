@@ -10,62 +10,66 @@ import torch
 import copy
 import os
 import sys
+import importlib.util
 from typing import Dict, Tuple, Optional, List
 
-# Add the multicamera directory to path for imports
+# Get the directory containing this file
 _current_dir = os.path.dirname(os.path.abspath(__file__))
-if _current_dir not in sys.path:
-    sys.path.insert(0, _current_dir)
+_utils_dir = os.path.join(_current_dir, "utils")
+
+# Function to load module from absolute path
+def _load_util_module(name, filepath):
+    spec = importlib.util.spec_from_file_location(name, filepath)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    return None
+
+# Load utils modules using absolute paths
+_camera_module = _load_util_module("camera", os.path.join(_utils_dir, "camera.py"))
+_triangulation_module = _load_util_module("triangulation", os.path.join(_utils_dir, "triangulation.py"))
+_visualization_module = _load_util_module("visualization", os.path.join(_utils_dir, "visualization.py"))
+
+if _camera_module:
+    Camera = _camera_module.Camera
+    convert_coordinate_system = _camera_module.convert_coordinate_system
+else:
+    raise ImportError(f"Failed to load camera module from {_utils_dir}")
+
+if _triangulation_module:
+    triangulate_point_from_cameras = _triangulation_module.triangulate_point_from_cameras
+    compute_reprojection_error = _triangulation_module.compute_reprojection_error
+    estimate_triangulation_quality = _triangulation_module.estimate_triangulation_quality
+else:
+    raise ImportError(f"Failed to load triangulation module from {_utils_dir}")
+
+if _visualization_module:
+    create_multicamera_debug_view = _visualization_module.create_multicamera_debug_view
+    create_topview_with_cameras = _visualization_module.create_topview_with_cameras
+    create_error_graph = _visualization_module.create_error_graph
+else:
+    raise ImportError(f"Failed to load visualization module from {_utils_dir}")
 
 # Try to import logger
 try:
-    # Try relative import first (when loaded as package)
-    from ...lib.logger import get_logger
-    log = get_logger("MultiCameraTriangulator")
-except ImportError:
-    try:
-        # Try absolute import (when loaded via importlib)
-        _lib_path = os.path.dirname(os.path.dirname(_current_dir))
-        if _lib_path not in sys.path:
-            sys.path.insert(0, _lib_path)
-        from lib.logger import get_logger
-        log = get_logger("MultiCameraTriangulator")
-    except ImportError:
-        class FallbackLogger:
-            def info(self, msg): print(f"[MultiCamera Triangulator] {msg}")
-            def warning(self, msg): print(f"[MultiCamera Triangulator] WARNING: {msg}")
-            def error(self, msg): print(f"[MultiCamera Triangulator] ERROR: {msg}")
-            def debug(self, msg): pass
-            def progress(self, c, t, task="", interval=10):
-                if c == 0 or c == t - 1 or (c + 1) % interval == 0:
-                    print(f"[MultiCamera Triangulator] {task}: {c + 1}/{t}")
-        log = FallbackLogger()
-
-# Import utils - try relative first, then absolute
-try:
-    from .utils.camera import Camera, convert_coordinate_system
-    from .utils.triangulation import (
-        triangulate_point_from_cameras,
-        compute_reprojection_error,
-        estimate_triangulation_quality
-    )
-    from .utils.visualization import (
-        create_multicamera_debug_view,
-        create_topview_with_cameras,
-        create_error_graph
-    )
-except ImportError:
-    from utils.camera import Camera, convert_coordinate_system
-    from utils.triangulation import (
-        triangulate_point_from_cameras,
-        compute_reprojection_error,
-        estimate_triangulation_quality
-    )
-    from utils.visualization import (
-        create_multicamera_debug_view,
-        create_topview_with_cameras,
-        create_error_graph
-    )
+    _lib_dir = os.path.dirname(_current_dir)
+    _lib_dir = os.path.dirname(_lib_dir)  # Go up to main package
+    _logger_module = _load_util_module("logger", os.path.join(_lib_dir, "lib", "logger.py"))
+    if _logger_module:
+        log = _logger_module.get_logger("MultiCameraTriangulator")
+    else:
+        raise ImportError()
+except:
+    class FallbackLogger:
+        def info(self, msg): print(f"[MultiCamera Triangulator] {msg}")
+        def warning(self, msg): print(f"[MultiCamera Triangulator] WARNING: {msg}")
+        def error(self, msg): print(f"[MultiCamera Triangulator] ERROR: {msg}")
+        def debug(self, msg): pass
+        def progress(self, c, t, task="", interval=10):
+            if c == 0 or c == t - 1 or (c + 1) % interval == 0:
+                print(f"[MultiCamera Triangulator] {task}: {c + 1}/{t}")
+    log = FallbackLogger()
 
 
 # Joint indices for different tracking modes (SMPL-X 127-joint skeleton)
