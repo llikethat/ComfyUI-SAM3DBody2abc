@@ -1,0 +1,63 @@
+{
+  "version": "1.0",
+  "name": "Two Camera 90° Setup",
+  "description": "Camera A front, Camera B side (90° angle) - optimal for depth triangulation",
+  
+  "coordinate_system": {
+    "up": "Y",
+    "forward": "-Z",
+    "right": "X",
+    "unit": "meters"
+  },
+  
+  "cameras": {
+    "camera_A": {
+      "name": "Front Camera",
+      "position": [0.0, 1.5, 5.0],
+      "rotation_euler": [0.0, 0.0, 0.0],
+      "rotation_order": "XYZ",
+      "focal_length_mm": 35.0,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution": [1920, 1080],
+      "principal_point": [960, 540],
+      "distortion": {
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0
+      }
+    },
+    "camera_B": {
+      "name": "Side Camera",
+      "position": [5.0, 1.5, 0.0],
+      "rotation_euler": [0.0, -90.0, 0.0],
+      "rotation_order": "XYZ",
+      "focal_length_mm": 35.0,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution": [1920, 1080],
+      "principal_point": [960, 540],
+      "distortion": {
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0
+      }
+    }
+  },
+  
+  "capture_volume": {
+    "center": [0.0, 1.0, 0.0],
+    "size": [4.0, 2.5, 4.0],
+    "description": "Expected performance area"
+  },
+  
+  "notes": [
+    "This setup provides optimal depth triangulation accuracy",
+    "Camera A is the primary view (front facing)",
+    "Camera B provides side coverage at 90 degrees",
+    "Both cameras should see the subject throughout the performance",
+    "Baseline distance is approximately 7.07 meters"
+  ]
+}

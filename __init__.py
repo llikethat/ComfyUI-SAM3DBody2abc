@@ -15,17 +15,21 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.7.8
-- Added trajectory_topview output to Motion Analyzer:
-  - Top-down view showing character path (X-Z plane)
-  - Camera position indicator at top
-  - Color-coded by depth (blue=close, red=far)
-  - Start/End markers and direction arrow
-  - Grid with scale reference
-- Helps visualize circular/complex paths for debugging
+Version: 4.8.1
+- NEW: 🔄 Temporal Smoothing node for reducing trajectory jitter
+  - Smooths pred_cam_t (tx, ty, tz) and tracked_depth
+  - Does NOT smooth joint_coords (pose data is accurate)
+  - Methods: Gaussian, EMA (bidirectional), Savitzky-Golay
+  - Optional vertex smoothing for shape keys
+  - Reports jitter reduction percentage
+- Multi-Camera Triangulation System (v4.8.0)
+  - 📷 Camera Calibration Loader: Load calibration from JSON or manual input
+  - 🔺 Multi-Camera Triangulator: Triangulate 3D from 2+ camera views
+  - Produces jitter-free depth through geometric calculation
+- Includes example calibrations (90°, 180° setups)
 """
 
-__version__ = "4.7.8"
+__version__ = "4.8.1"
 
 import os
 import sys
@@ -62,6 +66,7 @@ _verify_overlay = _load_module("sam3d2abc_verify_overlay", os.path.join(_nodes, 
 _camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "camera_solver.py"))
 _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes, "motion_analyzer.py"))
 _character_trajectory = _load_module("sam3d2abc_character_trajectory", os.path.join(_nodes, "character_trajectory.py"))
+_temporal_smoothing = _load_module("sam3d2abc_temporal_smoothing", os.path.join(_nodes, "temporal_smoothing.py"))
 
 # Register FBX export nodes
 if _fbx_export:
@@ -110,6 +115,36 @@ if _character_trajectory:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_CharacterTrajectoryTracker"] = _character_trajectory.CharacterTrajectoryTracker
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CharacterTrajectoryTracker"] = "🏃 Character Trajectory Tracker"
+
+# Register temporal smoothing
+if _temporal_smoothing:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = _temporal_smoothing.TemporalSmoothing
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = "🔄 Temporal Smoothing"
+
+# Load and register multicamera nodes
+_multicamera_path = os.path.join(_nodes, "multicamera")
+if os.path.isdir(_multicamera_path):
+    try:
+        # Load calibration loader
+        _calib_loader = _load_module(
+            "sam3d2abc_calibration_loader", 
+            os.path.join(_multicamera_path, "calibration_loader.py")
+        )
+        if _calib_loader:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = _calib_loader.CameraCalibrationLoader
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = "📷 Camera Calibration Loader"
+        
+        # Load triangulator
+        _triangulator = _load_module(
+            "sam3d2abc_triangulator",
+            os.path.join(_multicamera_path, "triangulator.py")
+        )
+        if _triangulator:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_MultiCameraTriangulator"] = _triangulator.MultiCameraTriangulator
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MultiCameraTriangulator"] = "🔺 Multi-Camera Triangulator"
+    except Exception as e:
+        print(f"[SAM3DBody2abc] Error loading multicamera nodes: {e}")
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

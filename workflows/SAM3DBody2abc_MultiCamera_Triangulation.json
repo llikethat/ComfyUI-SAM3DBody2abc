@@ -1,0 +1,326 @@
+{
+  "last_node_id": 30,
+  "last_link_id": 40,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 50],
+      "size": [300, 150],
+      "title": "Load Video A (Front Camera)",
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1, 10], "slot_index": 0}
+      ],
+      "widgets_values": ["camera_a.mp4", 0, 0, 24]
+    },
+    {
+      "id": 2,
+      "type": "VHS_LoadVideo",
+      "pos": [50, 450],
+      "size": [300, 150],
+      "title": "Load Video B (Side Camera)",
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2, 11], "slot_index": 0}
+      ],
+      "widgets_values": ["camera_b.mp4", 0, 0, 24]
+    },
+    {
+      "id": 3,
+      "type": "SAM3_BBoxCollector",
+      "pos": [400, 50],
+      "size": [250, 100],
+      "title": "Draw Box - Camera A",
+      "inputs": [
+        {"name": "image", "type": "IMAGE", "link": 1}
+      ],
+      "outputs": [
+        {"name": "BBOX", "type": "BBOX", "links": [3], "slot_index": 0}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "SAM3_BBoxCollector",
+      "pos": [400, 450],
+      "size": [250, 100],
+      "title": "Draw Box - Camera B",
+      "inputs": [
+        {"name": "image", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "BBOX", "type": "BBOX", "links": [4], "slot_index": 0}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "SAM3_Video",
+      "pos": [700, 50],
+      "size": [250, 150],
+      "title": "SAM3 Video - Camera A",
+      "inputs": [
+        {"name": "bbox", "type": "BBOX", "link": 3}
+      ],
+      "outputs": [
+        {"name": "SAM3_VIDEO", "type": "SAM3_VIDEO", "links": [5], "slot_index": 0}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "SAM3_Video",
+      "pos": [700, 450],
+      "size": [250, 150],
+      "title": "SAM3 Video - Camera B",
+      "inputs": [
+        {"name": "bbox", "type": "BBOX", "link": 4}
+      ],
+      "outputs": [
+        {"name": "SAM3_VIDEO", "type": "SAM3_VIDEO", "links": [6], "slot_index": 0}
+      ]
+    },
+    {
+      "id": 7,
+      "type": "SAM3_Propagate",
+      "pos": [1000, 50],
+      "size": [250, 150],
+      "title": "SAM3 Propagate - Camera A",
+      "inputs": [
+        {"name": "sam3_video", "type": "SAM3_VIDEO", "link": 5}
+      ],
+      "outputs": [
+        {"name": "MASK", "type": "MASK", "links": [7], "slot_index": 0}
+      ]
+    },
+    {
+      "id": 8,
+      "type": "SAM3_Propagate",
+      "pos": [1000, 450],
+      "size": [250, 150],
+      "title": "SAM3 Propagate - Camera B",
+      "inputs": [
+        {"name": "sam3_video", "type": "SAM3_VIDEO", "link": 6}
+      ],
+      "outputs": [
+        {"name": "MASK", "type": "MASK", "links": [8], "slot_index": 0}
+      ]
+    },
+    {
+      "id": 9,
+      "type": "SAM3DBody2abc_VideoBatchProcessor",
+      "pos": [1300, 50],
+      "size": [300, 200],
+      "title": "SAM3DBody - Camera A",
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 10},
+        {"name": "masks", "type": "MASK", "link": 7}
+      ],
+      "outputs": [
+        {"name": "MESH_SEQUENCE", "type": "MESH_SEQUENCE", "links": [20], "slot_index": 0}
+      ],
+      "widgets_values": [10, 512]
+    },
+    {
+      "id": 10,
+      "type": "SAM3DBody2abc_VideoBatchProcessor",
+      "pos": [1300, 450],
+      "size": [300, 200],
+      "title": "SAM3DBody - Camera B",
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 11},
+        {"name": "masks", "type": "MASK", "link": 8}
+      ],
+      "outputs": [
+        {"name": "MESH_SEQUENCE", "type": "MESH_SEQUENCE", "links": [21], "slot_index": 0}
+      ],
+      "widgets_values": [10, 512]
+    },
+    {
+      "id": 15,
+      "type": "SAM3DBody2abc_CameraCalibrationLoader",
+      "pos": [1300, 700],
+      "size": [350, 400],
+      "title": "📷 Camera Calibration",
+      "outputs": [
+        {"name": "calibration", "type": "CALIBRATION_DATA", "links": [22], "slot_index": 0},
+        {"name": "calibration_info", "type": "STRING", "links": [23], "slot_index": 1}
+      ],
+      "widgets_values": [
+        "Manual Input",
+        "",
+        "Y-up (Maya/Unity)",
+        "Front Camera",
+        0.0, 1.5, 5.0,
+        0.0, 0.0, 0.0,
+        35.0, 36.0,
+        1920, 1080,
+        "Side Camera",
+        5.0, 1.5, 0.0,
+        0.0, -90.0, 0.0,
+        35.0, 36.0,
+        1920, 1080
+      ]
+    },
+    {
+      "id": 16,
+      "type": "ShowText",
+      "pos": [1700, 900],
+      "size": [300, 150],
+      "title": "Calibration Info",
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 23}
+      ]
+    },
+    {
+      "id": 20,
+      "type": "SAM3DBody2abc_MultiCameraTriangulator",
+      "pos": [1700, 50],
+      "size": [350, 350],
+      "title": "🔺 Multi-Camera Triangulator",
+      "inputs": [
+        {"name": "mesh_sequence_a", "type": "MESH_SEQUENCE", "link": 20},
+        {"name": "mesh_sequence_b", "type": "MESH_SEQUENCE", "link": 21},
+        {"name": "calibration", "type": "CALIBRATION_DATA", "link": 22},
+        {"name": "images_a", "type": "IMAGE", "link": null},
+        {"name": "images_b", "type": "IMAGE", "link": null}
+      ],
+      "outputs": [
+        {"name": "trajectory_3d", "type": "TRAJECTORY_3D", "links": [30], "slot_index": 0},
+        {"name": "merged_sequence", "type": "MESH_SEQUENCE", "links": [31], "slot_index": 1},
+        {"name": "debug_view", "type": "IMAGE", "links": [32], "slot_index": 2},
+        {"name": "debug_info", "type": "STRING", "links": [33], "slot_index": 3}
+      ],
+      "widgets_values": [
+        "Pelvis",
+        "Z only (depth)",
+        0.5,
+        0.05,
+        true
+      ]
+    },
+    {
+      "id": 21,
+      "type": "PreviewImage",
+      "pos": [2100, 50],
+      "size": [400, 300],
+      "title": "Debug View",
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 32}
+      ]
+    },
+    {
+      "id": 22,
+      "type": "ShowText",
+      "pos": [2100, 400],
+      "size": [300, 200],
+      "title": "Triangulation Results",
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 33}
+      ]
+    },
+    {
+      "id": 25,
+      "type": "SAM3DBody2abc_MotionAnalyzer",
+      "pos": [2100, 650],
+      "size": [350, 250],
+      "title": "📊 Motion Analyzer",
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 31}
+      ],
+      "outputs": [
+        {"name": "subject_motion", "type": "SUBJECT_MOTION", "links": [35], "slot_index": 0},
+        {"name": "motion_info", "type": "STRING", "links": null, "slot_index": 1},
+        {"name": "depth_viz", "type": "IMAGE", "links": null, "slot_index": 2},
+        {"name": "trajectory_topview", "type": "IMAGE", "links": [36], "slot_index": 3}
+      ],
+      "widgets_values": [
+        1.75,
+        "Auto (Tracked if available)",
+        0.0, 0.0, 0.0
+      ]
+    },
+    {
+      "id": 26,
+      "type": "PreviewImage",
+      "pos": [2500, 650],
+      "size": [300, 300],
+      "title": "Trajectory Top View",
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 36}
+      ]
+    },
+    {
+      "id": 30,
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
+      "pos": [2500, 50],
+      "size": [350, 300],
+      "title": "📦 Export Animated FBX",
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 31},
+        {"name": "subject_motion", "type": "SUBJECT_MOTION", "link": 35}
+      ],
+      "outputs": [
+        {"name": "fbx_path", "type": "STRING", "links": null, "slot_index": 0}
+      ],
+      "widgets_values": [
+        "triangulated_character",
+        24.0,
+        "Y",
+        "Root Locator (Recommended)",
+        "Static (Character Moves)",
+        "None"
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "IMAGE"],
+    [2, 2, 0, 4, 0, "IMAGE"],
+    [3, 3, 0, 5, 0, "BBOX"],
+    [4, 4, 0, 6, 0, "BBOX"],
+    [5, 5, 0, 7, 0, "SAM3_VIDEO"],
+    [6, 6, 0, 8, 0, "SAM3_VIDEO"],
+    [7, 7, 0, 9, 1, "MASK"],
+    [8, 8, 0, 10, 1, "MASK"],
+    [10, 1, 0, 9, 0, "IMAGE"],
+    [11, 2, 0, 10, 0, "IMAGE"],
+    [20, 9, 0, 20, 0, "MESH_SEQUENCE"],
+    [21, 10, 0, 20, 1, "MESH_SEQUENCE"],
+    [22, 15, 0, 20, 2, "CALIBRATION_DATA"],
+    [23, 15, 1, 16, 0, "STRING"],
+    [30, 20, 0, 25, 0, "TRAJECTORY_3D"],
+    [31, 20, 1, 25, 0, "MESH_SEQUENCE"],
+    [32, 20, 2, 21, 0, "IMAGE"],
+    [33, 20, 3, 22, 0, "STRING"],
+    [35, 25, 0, 30, 1, "SUBJECT_MOTION"],
+    [36, 25, 3, 26, 0, "IMAGE"]
+  ],
+  "groups": [
+    {
+      "title": "Camera A Pipeline",
+      "bounding": [40, 20, 1270, 380],
+      "color": "#3f789e"
+    },
+    {
+      "title": "Camera B Pipeline",
+      "bounding": [40, 420, 1270, 380],
+      "color": "#a1a1a1"
+    },
+    {
+      "title": "Triangulation",
+      "bounding": [1690, 20, 430, 600],
+      "color": "#8a6d3b"
+    },
+    {
+      "title": "Export",
+      "bounding": [2090, 620, 720, 350],
+      "color": "#3c763d"
+    }
+  ],
+  "config": {},
+  "extra": {
+    "info": {
+      "name": "Multi-Camera Triangulation Workflow",
+      "description": "Process synchronized video from 2 cameras to produce jitter-free 3D character animation",
+      "version": "1.0",
+      "author": "SAM3DBody2abc"
+    }
+  },
+  "version": 0.4
+}

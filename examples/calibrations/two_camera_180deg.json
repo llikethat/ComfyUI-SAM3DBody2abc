@@ -1,0 +1,63 @@
+{
+  "version": "1.0",
+  "name": "Two Camera 180° Setup",
+  "description": "Camera A front, Camera B back (opposite sides)",
+  
+  "coordinate_system": {
+    "up": "Y",
+    "forward": "-Z",
+    "right": "X",
+    "unit": "meters"
+  },
+  
+  "cameras": {
+    "camera_A": {
+      "name": "Front Camera",
+      "position": [0.0, 1.5, 5.0],
+      "rotation_euler": [0.0, 0.0, 0.0],
+      "rotation_order": "XYZ",
+      "focal_length_mm": 50.0,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution": [1920, 1080],
+      "principal_point": [960, 540],
+      "distortion": {
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0
+      }
+    },
+    "camera_B": {
+      "name": "Back Camera",
+      "position": [0.0, 1.5, -5.0],
+      "rotation_euler": [0.0, 180.0, 0.0],
+      "rotation_order": "XYZ",
+      "focal_length_mm": 50.0,
+      "sensor_width_mm": 36.0,
+      "sensor_height_mm": 24.0,
+      "resolution": [1920, 1080],
+      "principal_point": [960, 540],
+      "distortion": {
+        "k1": 0.0,
+        "k2": 0.0,
+        "p1": 0.0,
+        "p2": 0.0
+      }
+    }
+  },
+  
+  "capture_volume": {
+    "center": [0.0, 1.0, 0.0],
+    "size": [3.0, 2.5, 3.0],
+    "description": "Expected performance area"
+  },
+  
+  "notes": [
+    "This setup provides good X/Y accuracy but limited depth precision",
+    "Camera A sees front of subject, Camera B sees back",
+    "Subject should stay near the center between cameras",
+    "Good for movements primarily in the X-Y plane",
+    "Baseline distance is 10 meters"
+  ]
+}
