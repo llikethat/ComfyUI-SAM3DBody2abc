@@ -15,21 +15,16 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.1
-- NEW: 🔄 Temporal Smoothing node for reducing trajectory jitter
-  - Smooths pred_cam_t (tx, ty, tz) and tracked_depth
-  - Does NOT smooth joint_coords (pose data is accurate)
-  - Methods: Gaussian, EMA (bidirectional), Savitzky-Golay
-  - Optional vertex smoothing for shape keys
-  - Reports jitter reduction percentage
-- Multi-Camera Triangulation System (v4.8.0)
-  - 📷 Camera Calibration Loader: Load calibration from JSON or manual input
-  - 🔺 Multi-Camera Triangulator: Triangulate 3D from 2+ camera views
-  - Produces jitter-free depth through geometric calculation
-- Includes example calibrations (90°, 180° setups)
+Version: 4.8.3
+- FIX: Pelvis joint index corrected to 11 (was incorrectly 0)
+- FIX: Multi-camera nodes now load correctly (fixed import issues)
+- 🔄 Temporal Smoothing node for reducing trajectory jitter
+- Multi-Camera Triangulation System
+  - 📷 Camera Calibration Loader
+  - 🔺 Multi-Camera Triangulator
 """
 
-__version__ = "4.8.1"
+__version__ = "4.8.3"
 
 import os
 import sys

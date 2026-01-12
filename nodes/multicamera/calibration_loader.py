@@ -7,21 +7,38 @@ Provides calibration data for multi-camera triangulation.
 
 import json
 import os
+import sys
 from typing import Dict, Tuple, Optional, List
+
+# Add the multicamera directory to path for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
 
 # Try to import logger
 try:
-    from ..lib.logger import get_logger
+    from ...lib.logger import get_logger
     log = get_logger("CameraCalibrationLoader")
 except ImportError:
-    class FallbackLogger:
-        def info(self, msg): print(f"[Camera Calibration] {msg}")
-        def warning(self, msg): print(f"[Camera Calibration] WARNING: {msg}")
-        def error(self, msg): print(f"[Camera Calibration] ERROR: {msg}")
-        def debug(self, msg): pass
-    log = FallbackLogger()
+    try:
+        _lib_path = os.path.dirname(os.path.dirname(_current_dir))
+        if _lib_path not in sys.path:
+            sys.path.insert(0, _lib_path)
+        from lib.logger import get_logger
+        log = get_logger("CameraCalibrationLoader")
+    except ImportError:
+        class FallbackLogger:
+            def info(self, msg): print(f"[Camera Calibration] {msg}")
+            def warning(self, msg): print(f"[Camera Calibration] WARNING: {msg}")
+            def error(self, msg): print(f"[Camera Calibration] ERROR: {msg}")
+            def debug(self, msg): pass
+        log = FallbackLogger()
 
-from .utils.camera import Camera, convert_coordinate_system, compute_baseline, compute_angle_between_cameras
+# Import utils - try relative first, then absolute
+try:
+    from .utils.camera import Camera, convert_coordinate_system, compute_baseline, compute_angle_between_cameras
+except ImportError:
+    from utils.camera import Camera, convert_coordinate_system, compute_baseline, compute_angle_between_cameras
 
 
 # Default calibration folder

@@ -8,39 +8,69 @@ Produces jitter-free depth through geometric calculation.
 import numpy as np
 import torch
 import copy
+import os
+import sys
 from typing import Dict, Tuple, Optional, List
+
+# Add the multicamera directory to path for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
 
 # Try to import logger
 try:
+    # Try relative import first (when loaded as package)
     from ...lib.logger import get_logger
     log = get_logger("MultiCameraTriangulator")
 except ImportError:
-    class FallbackLogger:
-        def info(self, msg): print(f"[MultiCamera Triangulator] {msg}")
-        def warning(self, msg): print(f"[MultiCamera Triangulator] WARNING: {msg}")
-        def error(self, msg): print(f"[MultiCamera Triangulator] ERROR: {msg}")
-        def debug(self, msg): pass
-        def progress(self, c, t, task="", interval=10):
-            if c == 0 or c == t - 1 or (c + 1) % interval == 0:
-                print(f"[MultiCamera Triangulator] {task}: {c + 1}/{t}")
-    log = FallbackLogger()
+    try:
+        # Try absolute import (when loaded via importlib)
+        _lib_path = os.path.dirname(os.path.dirname(_current_dir))
+        if _lib_path not in sys.path:
+            sys.path.insert(0, _lib_path)
+        from lib.logger import get_logger
+        log = get_logger("MultiCameraTriangulator")
+    except ImportError:
+        class FallbackLogger:
+            def info(self, msg): print(f"[MultiCamera Triangulator] {msg}")
+            def warning(self, msg): print(f"[MultiCamera Triangulator] WARNING: {msg}")
+            def error(self, msg): print(f"[MultiCamera Triangulator] ERROR: {msg}")
+            def debug(self, msg): pass
+            def progress(self, c, t, task="", interval=10):
+                if c == 0 or c == t - 1 or (c + 1) % interval == 0:
+                    print(f"[MultiCamera Triangulator] {task}: {c + 1}/{t}")
+        log = FallbackLogger()
 
-from .utils.camera import Camera, convert_coordinate_system
-from .utils.triangulation import (
-    triangulate_point_from_cameras,
-    compute_reprojection_error,
-    estimate_triangulation_quality
-)
-from .utils.visualization import (
-    create_multicamera_debug_view,
-    create_topview_with_cameras,
-    create_error_graph
-)
+# Import utils - try relative first, then absolute
+try:
+    from .utils.camera import Camera, convert_coordinate_system
+    from .utils.triangulation import (
+        triangulate_point_from_cameras,
+        compute_reprojection_error,
+        estimate_triangulation_quality
+    )
+    from .utils.visualization import (
+        create_multicamera_debug_view,
+        create_topview_with_cameras,
+        create_error_graph
+    )
+except ImportError:
+    from utils.camera import Camera, convert_coordinate_system
+    from utils.triangulation import (
+        triangulate_point_from_cameras,
+        compute_reprojection_error,
+        estimate_triangulation_quality
+    )
+    from utils.visualization import (
+        create_multicamera_debug_view,
+        create_topview_with_cameras,
+        create_error_graph
+    )
 
 
 # Joint indices for different tracking modes (SMPL-X 127-joint skeleton)
 JOINT_INDICES = {
-    "Pelvis": 0,
+    "Pelvis": 11,  # Left hip as pelvis proxy (center between 11 and 12)
     "Head": 15,
     "Left Ankle": 7,
     "Right Ankle": 8,
@@ -50,16 +80,17 @@ JOINT_INDICES = {
     "Right Knee": 5,
 }
 
-# For 18-joint keypoints_3d (simpler skeleton)
+# For 17-joint keypoints_2d from SAM3DBody (pred_keypoints_2d)
+# Based on COCO-like skeleton
 SIMPLE_JOINT_INDICES = {
-    "Pelvis": 0,
-    "Head": 10,
-    "Left Ankle": 6,
-    "Right Ankle": 3,
-    "Left Wrist": 14,
-    "Right Wrist": 11,
-    "Left Knee": 5,
-    "Right Knee": 2,
+    "Pelvis": 11,  # Left hip as pelvis proxy
+    "Head": 0,     # Nose
+    "Left Ankle": 15,
+    "Right Ankle": 16,
+    "Left Wrist": 9,
+    "Right Wrist": 10,
+    "Left Knee": 13,
+    "Right Knee": 14,
 }
 
 

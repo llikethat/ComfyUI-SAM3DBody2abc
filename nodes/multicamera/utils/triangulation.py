@@ -8,8 +8,19 @@ Provides methods for:
 """
 
 import numpy as np
+import os
+import sys
 from typing import Tuple, List, Optional
-from .camera import Camera
+
+# Add current directory to path for imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
+
+try:
+    from .camera import Camera
+except ImportError:
+    from camera import Camera
 
 
 def triangulate_two_rays(
