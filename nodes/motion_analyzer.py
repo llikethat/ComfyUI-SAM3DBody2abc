@@ -489,6 +489,217 @@ def detect_foot_contact(
         return "none"
 
 
+def create_trajectory_topview(
+    subject_motion: Dict,
+    image_size: int = 512,
+    padding: float = 0.15,
+    show_depth_color: bool = True,
+) -> np.ndarray:
+    """
+    Create a top-down view of the character trajectory.
+    
+    Shows:
+    - Camera position (at top center)
+    - Character path (X-Z plane, looking down from above)
+    - Color-coded by depth (optional)
+    - Start/end markers
+    - Grid for scale reference
+    
+    Args:
+        subject_motion: Motion data containing body_world_3d or depth_estimate
+        image_size: Output image size (square)
+        padding: Padding ratio around trajectory
+        show_depth_color: Color trajectory by depth (blue=close, red=far)
+    
+    Returns:
+        RGB image as numpy array (H, W, 3) uint8
+    """
+    # Create canvas (dark background)
+    canvas = np.zeros((image_size, image_size, 3), dtype=np.uint8)
+    canvas[:] = (30, 30, 30)  # Dark gray background
+    
+    # Get trajectory data
+    body_world_3d = subject_motion.get("body_world_3d_compensated", [])
+    if not body_world_3d:
+        body_world_3d = subject_motion.get("body_world_3d", [])
+    
+    depth_estimate = subject_motion.get("depth_estimate", [])
+    
+    if not body_world_3d or len(body_world_3d) < 2:
+        # No trajectory data - draw placeholder
+        cv2.putText(canvas, "No trajectory data", (image_size//4, image_size//2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
+        return canvas
+    
+    # Extract X (left-right) and Z (depth) coordinates
+    # In our coordinate system: X = lateral, Z = depth from camera
+    trajectory = np.array(body_world_3d)
+    
+    if trajectory.ndim == 1:
+        trajectory = trajectory.reshape(-1, 3)
+    
+    x_coords = trajectory[:, 0]  # Left-right
+    z_coords = trajectory[:, 2]  # Depth (distance from camera)
+    
+    # Get bounds with padding
+    x_min, x_max = x_coords.min(), x_coords.max()
+    z_min, z_max = z_coords.min(), z_coords.max()
+    
+    # Ensure minimum range to avoid division by zero
+    x_range = max(x_max - x_min, 0.5)
+    z_range = max(z_max - z_min, 0.5)
+    
+    # Make square aspect ratio (use larger range)
+    max_range = max(x_range, z_range)
+    
+    # Center the data
+    x_center = (x_min + x_max) / 2
+    z_center = (z_min + z_max) / 2
+    
+    # Calculate scale with padding
+    usable_size = image_size * (1 - 2 * padding)
+    scale = usable_size / max_range
+    
+    # Transform function: world coords to image coords
+    def world_to_image(x, z):
+        # X: left-right maps to image X
+        # Z: depth maps to image Y (top = far, bottom = close to camera)
+        img_x = int(image_size / 2 + (x - x_center) * scale)
+        img_y = int(image_size * padding + (z_max - z) * scale)  # Flip Z so far is at top
+        return img_x, img_y
+    
+    # Draw grid
+    grid_color = (60, 60, 60)
+    num_grid_lines = 5
+    for i in range(num_grid_lines + 1):
+        # Horizontal lines
+        y = int(image_size * padding + i * usable_size / num_grid_lines)
+        cv2.line(canvas, (int(image_size * padding), y), 
+                (int(image_size * (1 - padding)), y), grid_color, 1)
+        # Vertical lines
+        x = int(image_size * padding + i * usable_size / num_grid_lines)
+        cv2.line(canvas, (x, int(image_size * padding)), 
+                (x, int(image_size * (1 - padding))), grid_color, 1)
+    
+    # Draw camera position (at top center, representing viewpoint)
+    cam_x = image_size // 2
+    cam_y = int(image_size * padding * 0.5)
+    
+    # Camera icon (triangle pointing down)
+    cam_size = 15
+    cam_pts = np.array([
+        [cam_x, cam_y + cam_size],
+        [cam_x - cam_size, cam_y - cam_size//2],
+        [cam_x + cam_size, cam_y - cam_size//2]
+    ], np.int32)
+    cv2.fillPoly(canvas, [cam_pts], (100, 100, 255))  # Light blue camera
+    cv2.putText(canvas, "CAM", (cam_x - 15, cam_y - cam_size), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 255), 1)
+    
+    # Draw field of view lines (approximate)
+    fov_length = int(usable_size * 0.3)
+    cv2.line(canvas, (cam_x, cam_y + cam_size), 
+            (cam_x - fov_length//2, cam_y + cam_size + fov_length), (80, 80, 120), 1)
+    cv2.line(canvas, (cam_x, cam_y + cam_size), 
+            (cam_x + fov_length//2, cam_y + cam_size + fov_length), (80, 80, 120), 1)
+    
+    # Get depth range for coloring
+    if depth_estimate and show_depth_color:
+        depth_arr = np.array(depth_estimate)
+        depth_min, depth_max = depth_arr.min(), depth_arr.max()
+        depth_range = max(depth_max - depth_min, 0.1)
+    
+    # Draw trajectory path
+    points = []
+    colors = []
+    
+    for i in range(len(x_coords)):
+        img_x, img_y = world_to_image(x_coords[i], z_coords[i])
+        points.append((img_x, img_y))
+        
+        # Color by depth
+        if depth_estimate and show_depth_color and i < len(depth_estimate):
+            depth_norm = (depth_estimate[i] - depth_min) / depth_range
+            # Blue (close) to Red (far)
+            b = int(255 * (1 - depth_norm))
+            r = int(255 * depth_norm)
+            g = int(100 * (1 - abs(depth_norm - 0.5) * 2))  # Green in middle
+            colors.append((b, g, r))
+        else:
+            colors.append((0, 255, 0))  # Default green
+    
+    # Draw path segments with colors
+    for i in range(len(points) - 1):
+        pt1 = points[i]
+        pt2 = points[i + 1]
+        color = colors[i]
+        cv2.line(canvas, pt1, pt2, color, 2)
+    
+    # Draw points along path (every N frames)
+    point_interval = max(1, len(points) // 20)
+    for i in range(0, len(points), point_interval):
+        cv2.circle(canvas, points[i], 3, colors[i], -1)
+    
+    # Draw start point (green circle)
+    cv2.circle(canvas, points[0], 8, (0, 255, 0), 2)
+    cv2.circle(canvas, points[0], 4, (0, 255, 0), -1)
+    cv2.putText(canvas, "START", (points[0][0] + 10, points[0][1] - 5),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+    
+    # Draw end point (red circle)
+    cv2.circle(canvas, points[-1], 8, (0, 0, 255), 2)
+    cv2.circle(canvas, points[-1], 4, (0, 0, 255), -1)
+    cv2.putText(canvas, "END", (points[-1][0] + 10, points[-1][1] - 5),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+    
+    # Draw direction arrow at midpoint
+    mid_idx = len(points) // 2
+    if mid_idx > 0 and mid_idx < len(points) - 1:
+        # Calculate direction
+        dx = points[mid_idx + 1][0] - points[mid_idx - 1][0]
+        dy = points[mid_idx + 1][1] - points[mid_idx - 1][1]
+        length = np.sqrt(dx*dx + dy*dy)
+        if length > 0:
+            dx, dy = dx / length * 15, dy / length * 15
+            arrow_start = points[mid_idx]
+            arrow_end = (int(arrow_start[0] + dx), int(arrow_start[1] + dy))
+            cv2.arrowedLine(canvas, arrow_start, arrow_end, (255, 255, 0), 2, tipLength=0.4)
+    
+    # Add labels and info
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45
+    text_color = (200, 200, 200)
+    
+    # Title
+    cv2.putText(canvas, "TOP VIEW (Looking Down)", (10, 20), font, 0.5, (255, 255, 255), 1)
+    
+    # Axis labels
+    cv2.putText(canvas, "X (Left/Right)", (image_size//2 - 40, image_size - 10), font, font_scale, text_color, 1)
+    
+    # Rotated Z label (on left side)
+    cv2.putText(canvas, "Z", (5, image_size//2), font, font_scale, text_color, 1)
+    cv2.putText(canvas, "(Depth)", (2, image_size//2 + 15), font, 0.35, text_color, 1)
+    
+    # Scale info
+    cv2.putText(canvas, f"X range: {x_range:.2f}m", (10, image_size - 45), font, font_scale, text_color, 1)
+    cv2.putText(canvas, f"Z range: {z_range:.2f}m", (10, image_size - 25), font, font_scale, text_color, 1)
+    
+    # Depth color legend (if used)
+    if show_depth_color and depth_estimate:
+        legend_x = image_size - 80
+        legend_y = 30
+        cv2.putText(canvas, "Depth:", (legend_x, legend_y), font, font_scale, text_color, 1)
+        cv2.putText(canvas, f"{depth_min:.1f}m", (legend_x, legend_y + 18), font, 0.35, (255, 100, 100), 1)
+        cv2.rectangle(canvas, (legend_x + 35, legend_y + 8), (legend_x + 55, legend_y + 18), (255, 100, 100), -1)
+        cv2.putText(canvas, f"{depth_max:.1f}m", (legend_x, legend_y + 35), font, 0.35, (100, 100, 255), 1)
+        cv2.rectangle(canvas, (legend_x + 35, legend_y + 25), (legend_x + 55, legend_y + 35), (100, 100, 255), -1)
+    
+    # Frame count
+    cv2.putText(canvas, f"Frames: {len(points)}", (image_size - 90, image_size - 10), font, font_scale, text_color, 1)
+    
+    return canvas
+
+
 def create_motion_debug_overlay(
     images: np.ndarray,
     subject_motion: Dict,
@@ -722,11 +933,15 @@ class MotionAnalyzer:
                     "step": 0.1,
                     "tooltip": "Camera sensor width in mm (36mm = full frame, 23.5mm = APS-C)"
                 }),
+                "depth_source": (["Auto (Tracked if available)", "SAM3DBody Only (pred_cam_t)", "Tracked Depth Only"], {
+                    "default": "Auto (Tracked if available)",
+                    "tooltip": "Depth source for trajectory Z. 'Tracked' uses per-frame depth from Character Trajectory (better for circular paths). 'SAM3DBody' uses pred_cam_t[2] (original behavior)."
+                }),
             }
         }
     
-    RETURN_TYPES = ("SUBJECT_MOTION", "SCALE_INFO", "IMAGE", "STRING")
-    RETURN_NAMES = ("subject_motion", "scale_info", "debug_overlay", "debug_info")
+    RETURN_TYPES = ("SUBJECT_MOTION", "SCALE_INFO", "IMAGE", "IMAGE", "STRING")
+    RETURN_NAMES = ("subject_motion", "scale_info", "debug_overlay", "trajectory_topview", "debug_info")
     FUNCTION = "analyze"
     CATEGORY = "SAM3DBody2abc/Motion"
     
@@ -777,6 +992,7 @@ class MotionAnalyzer:
                 "joint_coords": [],
                 "camera_t": [],
                 "focal_length": [],
+                "tracked_depth": [],  # Per-frame depth from Character Trajectory Tracker
             }
         }
         
@@ -811,10 +1027,16 @@ class MotionAnalyzer:
             converted["params"]["keypoints_2d"].append(kp2d)
             converted["params"]["keypoints_3d"].append(kp3d)
             
+            # Extract tracked_depth from Character Trajectory Tracker (if available)
+            tracked_depth = frame.get("tracked_depth")
+            converted["params"]["tracked_depth"].append(tracked_depth)
+            
             # Debug first frame keypoints
             if idx == sorted_indices[0]:
                 log.info(f"Frame 0 keypoints_2d source: {'keypoints_2d' if frame.get('keypoints_2d') is not None else ('pred_keypoints_2d' if frame.get('pred_keypoints_2d') is not None else 'None')}")
                 log.info(f"Frame 0 keypoints_3d source: {'keypoints_3d' if frame.get('keypoints_3d') is not None else ('pred_keypoints_3d' if frame.get('pred_keypoints_3d') is not None else 'None')}")
+                if tracked_depth is not None:
+                    log.info(f"Frame 0 tracked_depth: {tracked_depth:.2f}m (from Character Trajectory)")
                 if kp2d is not None:
                     kp2d_shape = kp2d.shape if hasattr(kp2d, 'shape') else f"len={len(kp2d)}"
                     log.info(f"Frame 0 kp2d shape: {kp2d_shape}")
@@ -828,7 +1050,8 @@ class MotionAnalyzer:
         has_kp2d = any(k is not None for k in converted["params"]["keypoints_2d"])
         has_kp3d = any(k is not None for k in converted["params"]["keypoints_3d"])
         has_jc = any(k is not None for k in converted["params"]["joint_coords"])
-        log.info(f"Data available: keypoints_2d={has_kp2d}, keypoints_3d={has_kp3d}, joint_coords={has_jc}")
+        has_tracked_depth = any(k is not None for k in converted["params"]["tracked_depth"])
+        log.info(f"Data available: keypoints_2d={has_kp2d}, keypoints_3d={has_kp3d}, joint_coords={has_jc}, tracked_depth={has_tracked_depth}")
         
         return converted
     
@@ -846,6 +1069,7 @@ class MotionAnalyzer:
         show_skeleton: bool = True,
         arrow_scale: float = 10.0,
         sensor_width_mm: float = 36.0,
+        depth_source: str = "Auto (Tracked if available)",
     ) -> Tuple[Dict, Dict, torch.Tensor, str]:
         """
         Analyze subject motion from mesh sequence.
@@ -873,6 +1097,7 @@ class MotionAnalyzer:
         joint_coords_list = params.get("joint_coords", [])  # 127-joint fallback
         camera_t_list = params.get("camera_t", [])
         focal_length_list = params.get("focal_length", [])
+        tracked_depth_list = params.get("tracked_depth", [])  # From Character Trajectory Tracker
         
         num_frames = len(vertices_list)
         if num_frames == 0:
@@ -1087,7 +1312,38 @@ class MotionAnalyzer:
             #   screen_y = focal * ty / tz + cy
             # So world position: X = tx * tz, Y = ty * tz, Z = tz (depth)
             # This tracks the character's global trajectory in camera space
-            tz = camera_t[2]  # Depth
+            
+            # Determine depth source based on toggle
+            tz_sam3d = camera_t[2]  # SAM3DBody depth estimate
+            
+            # Get tracked depth from Character Trajectory (if available)
+            tracked_depth = None
+            if i < len(tracked_depth_list):
+                tracked_depth = tracked_depth_list[i]
+            
+            # Select depth based on depth_source setting
+            if depth_source == "SAM3DBody Only (pred_cam_t)":
+                tz = tz_sam3d
+                if i == 0:
+                    log.info(f"Depth source: SAM3DBody pred_cam_t (original behavior)")
+            elif depth_source == "Tracked Depth Only":
+                if tracked_depth is not None:
+                    tz = tracked_depth / scale_factor  # Convert back to raw units
+                    if i == 0:
+                        log.info(f"Depth source: Tracked Depth Only ({tracked_depth:.2f}m)")
+                else:
+                    tz = tz_sam3d
+                    if i == 0:
+                        log.info(f"Depth source: Tracked Depth requested but not available, using SAM3DBody")
+            else:  # Auto (Tracked if available)
+                if tracked_depth is not None:
+                    tz = tracked_depth / scale_factor  # Convert back to raw units
+                    if i == 0:
+                        log.info(f"Depth source: Auto → Using Tracked Depth ({tracked_depth:.2f}m)")
+                else:
+                    tz = tz_sam3d
+                    if i == 0:
+                        log.info(f"Depth source: Auto → Using SAM3DBody (no tracked depth)")
             
             # RAW trajectory (includes camera effects from focal length variation)
             body_world_3d_raw = np.array([
@@ -1116,8 +1372,8 @@ class MotionAnalyzer:
             apparent_height = abs(feet_y - head_2d[1])
             subject_motion["apparent_height"].append(apparent_height)
             
-            # Depth estimate
-            depth_m = camera_t[2] * scale_factor
+            # Depth estimate - use the same depth source as trajectory
+            depth_m = tz * scale_factor
             subject_motion["depth_estimate"].append(depth_m)
             
             # Foot contact detection
@@ -1436,9 +1692,16 @@ class MotionAnalyzer:
         else:
             debug_overlay = torch.zeros(1, 64, 64, 3)
         
+        # Generate trajectory top-view visualization
+        log.info(f"Generating trajectory top-view...")
+        topview = create_trajectory_topview(subject_motion, image_size=512, show_depth_color=True)
+        if topview.dtype == np.uint8:
+            topview = topview.astype(np.float32) / 255.0
+        trajectory_topview = torch.from_numpy(topview).unsqueeze(0).float()  # Add batch dim
+        
         log.info(f"=============================================\n")
         
-        return (subject_motion, scale_info, debug_overlay, debug_info)
+        return (subject_motion, scale_info, debug_overlay, trajectory_topview, debug_info)
 
 
 class ScaleInfoDisplay:

@@ -15,12 +15,17 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.7.6
-- Added camera custom properties for Maya: sensor_width_mm, sensor_height_mm, focal_length_mm, etc.
-- These are exported as Extra Attributes in FBX for proper camera setup in Maya
+Version: 4.7.8
+- Added trajectory_topview output to Motion Analyzer:
+  - Top-down view showing character path (X-Z plane)
+  - Camera position indicator at top
+  - Color-coded by depth (blue=close, red=far)
+  - Start/End markers and direction arrow
+  - Grid with scale reference
+- Helps visualize circular/complex paths for debugging
 """
 
-__version__ = "4.7.6"
+__version__ = "4.7.8"
 
 import os
 import sys

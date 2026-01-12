@@ -187,6 +187,23 @@ https://github.com/DepthAnything/Depth-Anything-V2
 
 ## Version History
 
+### v4.7.8 (January 2025)
+- Added `trajectory_topview` output to Motion Analyzer node:
+  - Top-down view showing character path (X-Z plane)
+  - Camera position indicator at top
+  - Color-coded by depth (blue=close, red=far)
+  - Start/End markers with direction arrow
+  - Grid with scale reference (meters)
+- Helps visualize circular/complex paths for debugging before Maya export
+
+### v4.7.7 (January 2025)
+- Added `depth_source` toggle to Motion Analyzer node:
+  - **Auto (Tracked if available)** - Uses per-frame tracked_depth from Character Trajectory Tracker (recommended for circular/complex paths)
+  - **SAM3DBody Only (pred_cam_t)** - Original behavior, uses SAM3DBody's depth estimate
+  - **Tracked Depth Only** - Forces tracked_depth usage
+- Fixes circular walk trajectories appearing as straight lines in Maya
+- Per-frame depth now properly flows through the entire pipeline to FBX export
+
 ### v4.7.6 (January 2025)
 - Added camera custom properties exported as Maya Extra Attributes:
   - `sensor_width_mm`, `sensor_height_mm`
