@@ -15,16 +15,22 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.4
-- FIX: Multi-camera nodes import fix (use importlib for all module loading)
-- FIX: Pelvis joint index corrected to 11
-- 🔄 Temporal Smoothing node for reducing trajectory jitter
+Version: 4.8.6
+- NEW: Viewing angle computation in Auto-Calibrator
+  - Distance from each camera to person
+  - Viewing angle (how much camera looks at person)
+  - Azimuth (horizontal angle)
+  - Elevation (vertical angle)
+  - Person 3D position
+- 🎯 Camera Auto-Calibrator node
+  - Automatically computes camera positions from person keypoints
+  - No manual measurement required!
+  - Scales using known person height
+- 🔄 Temporal Smoothing node
 - Multi-Camera Triangulation System
-  - 📷 Camera Calibration Loader
-  - 🔺 Multi-Camera Triangulator
 """
 
-__version__ = "4.8.4"
+__version__ = "4.8.6"
 
 import os
 import sys
@@ -121,14 +127,14 @@ if _temporal_smoothing:
 _multicamera_path = os.path.join(_nodes, "multicamera")
 if os.path.isdir(_multicamera_path):
     try:
-        # Load calibration loader
-        _calib_loader = _load_module(
-            "sam3d2abc_calibration_loader", 
-            os.path.join(_multicamera_path, "calibration_loader.py")
+        # Load auto calibrator
+        _auto_calibrator = _load_module(
+            "sam3d2abc_auto_calibrator",
+            os.path.join(_multicamera_path, "auto_calibrator.py")
         )
-        if _calib_loader:
-            NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = _calib_loader.CameraCalibrationLoader
-            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = "📷 Camera Calibration Loader"
+        if _auto_calibrator:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraAutoCalibrator"] = _auto_calibrator.CameraAutoCalibrator
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraAutoCalibrator"] = "🎯 Camera Auto-Calibrator"
         
         # Load triangulator
         _triangulator = _load_module(
