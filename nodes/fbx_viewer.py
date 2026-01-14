@@ -9,18 +9,6 @@ or will display the path for external viewing.
 
 from typing import Dict, Any, Tuple
 
-# Import logger
-try:
-    from ..lib.logger import log
-except ImportError:
-    class _FallbackLog:
-        def info(self, msg): print(f"[FBX Viewer] {msg}")
-        def debug(self, msg): pass
-        def warn(self, msg): print(f"[FBX Viewer] WARN: {msg}")
-        def error(self, msg): print(f"[FBX Viewer] ERROR: {msg}")
-        def progress(self, c, t, task="", interval=10): pass
-    log = _FallbackLog()
-
 
 class FBXAnimationViewer:
     """
@@ -61,7 +49,7 @@ class FBXAnimationViewer:
             Dict with ui key for web extension
         """
         try:
-            log.info(f" Displaying animation for: {fbx_path}")
+            print(f"[FBXAnimationViewer] Displaying animation for: {fbx_path}")
 
             # The actual animation viewer is handled by the web extension
             # Return ui dict to send data to onExecuted callback
@@ -74,7 +62,7 @@ class FBXAnimationViewer:
 
         except Exception as e:
             error_msg = f"FBXAnimationViewer failed: {str(e)}"
-            log.info(f" Error: {error_msg}")
+            print(f"[FBXAnimationViewer] Error: {error_msg}")
             import traceback
             traceback.print_exc()
             return {

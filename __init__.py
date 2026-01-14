@@ -15,22 +15,18 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.6
-- NEW: Viewing angle computation in Auto-Calibrator
-  - Distance from each camera to person
-  - Viewing angle (how much camera looks at person)
-  - Azimuth (horizontal angle)
-  - Elevation (vertical angle)
-  - Person 3D position
-- 🎯 Camera Auto-Calibrator node
-  - Automatically computes camera positions from person keypoints
-  - No manual measurement required!
-  - Scales using known person height
-- 🔄 Temporal Smoothing node
-- Multi-Camera Triangulation System
+Fixed settings:
+- Scale: 1.0
+- Up axis: Y
+
+Version: 4.6.9
+- Fixed depth (tz) handling - now properly uses pred_cam_t.tz for scaling
+- Added depth_mode option: Scale (default), Position, Both, Legacy
+- Added CharacterTrajectoryTracker node for TAPIR + Depth Anything V2 fusion
+- Fixes character scaling issues when moving toward/away from camera
 """
 
-__version__ = "4.8.6"
+__version__ = "4.6.9"
 
 import os
 import sys
@@ -50,9 +46,7 @@ def _load_module(name: str, path: str):
             spec.loader.exec_module(module)
             return module
     except Exception as e:
-        import traceback
         print(f"[SAM3DBody2abc] Error loading {name}: {e}")
-        traceback.print_exc()
     return None
 
 
@@ -60,14 +54,26 @@ _base = os.path.dirname(os.path.abspath(__file__))
 _nodes = os.path.join(_base, "nodes")
 
 # Load modules
+_accumulator = _load_module("sam3d2abc_accumulator", os.path.join(_nodes, "accumulator.py"))
 _fbx_export = _load_module("sam3d2abc_fbx_export", os.path.join(_nodes, "fbx_export.py"))
 _video_proc = _load_module("sam3d2abc_video_proc", os.path.join(_nodes, "video_processor.py"))
 _fbx_viewer = _load_module("sam3d2abc_fbx_viewer", os.path.join(_nodes, "fbx_viewer.py"))
 _verify_overlay = _load_module("sam3d2abc_verify_overlay", os.path.join(_nodes, "verify_overlay.py"))
 _camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "camera_solver.py"))
+_moge_intrinsics = _load_module("sam3d2abc_moge_intrinsics", os.path.join(_nodes, "moge_intrinsics.py"))
+_colmap_bridge = _load_module("sam3d2abc_colmap_bridge", os.path.join(_nodes, "colmap_bridge.py"))
 _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes, "motion_analyzer.py"))
 _character_trajectory = _load_module("sam3d2abc_character_trajectory", os.path.join(_nodes, "character_trajectory.py"))
-_temporal_smoothing = _load_module("sam3d2abc_temporal_smoothing", os.path.join(_nodes, "temporal_smoothing.py"))
+
+# Register accumulator nodes
+if _accumulator:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MeshAccumulator"] = _accumulator.MeshDataAccumulator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportJSON"] = _accumulator.ExportMeshSequenceJSON
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Clear"] = _accumulator.ClearAccumulator
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MeshAccumulator"] = "📋 Mesh Data Accumulator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportJSON"] = "💾 Export Sequence JSON"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Clear"] = "🗑️ Clear Accumulator"
 
 # Register FBX export nodes
 if _fbx_export:
@@ -103,6 +109,20 @@ if _camera_solver:
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolver"] = "📷 Camera Solver"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = "📷 Camera Extrinsics from JSON"
 
+# Register COLMAP bridge node
+if _colmap_bridge:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = _colmap_bridge.COLMAPToExtrinsicsBridge
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = "🔄 COLMAP → Extrinsics Bridge"
+
+# Register MoGe intrinsics nodes
+if _moge_intrinsics:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = _moge_intrinsics.MoGe2IntrinsicsEstimator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = _moge_intrinsics.ApplyIntrinsicsToMeshSequence
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = "📷 MoGe2 Intrinsics Estimator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = "📷 Apply Intrinsics to Mesh"
+
 # Register motion analyzer nodes
 if _motion_analyzer:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_MotionAnalyzer"] = _motion_analyzer.MotionAnalyzer
@@ -116,36 +136,6 @@ if _character_trajectory:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_CharacterTrajectoryTracker"] = _character_trajectory.CharacterTrajectoryTracker
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CharacterTrajectoryTracker"] = "🏃 Character Trajectory Tracker"
-
-# Register temporal smoothing
-if _temporal_smoothing:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = _temporal_smoothing.TemporalSmoothing
-    
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = "🔄 Temporal Smoothing"
-
-# Load and register multicamera nodes
-_multicamera_path = os.path.join(_nodes, "multicamera")
-if os.path.isdir(_multicamera_path):
-    try:
-        # Load auto calibrator
-        _auto_calibrator = _load_module(
-            "sam3d2abc_auto_calibrator",
-            os.path.join(_multicamera_path, "auto_calibrator.py")
-        )
-        if _auto_calibrator:
-            NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraAutoCalibrator"] = _auto_calibrator.CameraAutoCalibrator
-            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraAutoCalibrator"] = "🎯 Camera Auto-Calibrator"
-        
-        # Load triangulator
-        _triangulator = _load_module(
-            "sam3d2abc_triangulator",
-            os.path.join(_multicamera_path, "triangulator.py")
-        )
-        if _triangulator:
-            NODE_CLASS_MAPPINGS["SAM3DBody2abc_MultiCameraTriangulator"] = _triangulator.MultiCameraTriangulator
-            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MultiCameraTriangulator"] = "🔺 Multi-Camera Triangulator"
-    except Exception as e:
-        print(f"[SAM3DBody2abc] Error loading multicamera nodes: {e}")
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

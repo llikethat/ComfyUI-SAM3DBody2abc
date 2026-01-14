@@ -29,19 +29,6 @@ import torch
 import cv2
 from typing import Dict, List, Optional, Tuple, Any
 
-# Import logger
-try:
-    from ..lib.logger import log, set_module, LogLevel
-    set_module("Motion Analyzer")
-except ImportError:
-    class _FallbackLog:
-        def info(self, msg): print(f"[Motion Analyzer] {msg}")
-        def debug(self, msg): pass
-        def warn(self, msg): print(f"[Motion Analyzer] WARN: {msg}")
-        def error(self, msg): print(f"[Motion Analyzer] ERROR: {msg}")
-        def progress(self, c, t, task="", interval=10): pass
-    log = _FallbackLog()
-
 
 # ============================================================================
 # Body World / Global Trajectory Utilities
@@ -467,13 +454,14 @@ def detect_foot_contact(
         # Get timestamp in UTC+05:30 (IST)
         ist = timezone(timedelta(hours=5, minutes=30))
         timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-        log.debug(f" Method: MESH VERTICES (ground-relative coordinates)")
-        log.debug(f" Ground Y (mesh min): {ground_y:.4f}")
-        log.debug(f" Left foot Y (lowest left vertex): {left_foot_y:.4f}, distance: {left_dist:.4f}")
-        log.debug(f" Right foot Y (lowest right vertex): {right_foot_y:.4f}, distance: {right_dist:.4f}")
-        log.debug(f" Mesh height: {mesh_height:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
-        log.debug(f" Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
-        log.debug(f" Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
+        print(f"[{timestamp}] [Foot Contact DEBUG] Frame {frame_idx}:")
+        print(f"  Method: MESH VERTICES (ground-relative coordinates)")
+        print(f"  Ground Y (mesh min): {ground_y:.4f}")
+        print(f"  Left foot Y (lowest left vertex): {left_foot_y:.4f}, distance: {left_dist:.4f}")
+        print(f"  Right foot Y (lowest right vertex): {right_foot_y:.4f}, distance: {right_dist:.4f}")
+        print(f"  Mesh height: {mesh_height:.4f}, threshold ({threshold_ratio*100:.0f}%): {threshold:.4f}")
+        print(f"  Left contact: {left_dist:.4f} < {threshold:.4f} = {left_dist < threshold}")
+        print(f"  Right contact: {right_dist:.4f} < {threshold:.4f} = {right_dist < threshold}")
     
     # Check contact
     left_contact = left_dist < threshold
@@ -487,217 +475,6 @@ def detect_foot_contact(
         return "right"
     else:
         return "none"
-
-
-def create_trajectory_topview(
-    subject_motion: Dict,
-    image_size: int = 512,
-    padding: float = 0.15,
-    show_depth_color: bool = True,
-) -> np.ndarray:
-    """
-    Create a top-down view of the character trajectory.
-    
-    Shows:
-    - Camera position (at top center)
-    - Character path (X-Z plane, looking down from above)
-    - Color-coded by depth (optional)
-    - Start/end markers
-    - Grid for scale reference
-    
-    Args:
-        subject_motion: Motion data containing body_world_3d or depth_estimate
-        image_size: Output image size (square)
-        padding: Padding ratio around trajectory
-        show_depth_color: Color trajectory by depth (blue=close, red=far)
-    
-    Returns:
-        RGB image as numpy array (H, W, 3) uint8
-    """
-    # Create canvas (dark background)
-    canvas = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-    canvas[:] = (30, 30, 30)  # Dark gray background
-    
-    # Get trajectory data
-    body_world_3d = subject_motion.get("body_world_3d_compensated", [])
-    if not body_world_3d:
-        body_world_3d = subject_motion.get("body_world_3d", [])
-    
-    depth_estimate = subject_motion.get("depth_estimate", [])
-    
-    if not body_world_3d or len(body_world_3d) < 2:
-        # No trajectory data - draw placeholder
-        cv2.putText(canvas, "No trajectory data", (image_size//4, image_size//2),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
-        return canvas
-    
-    # Extract X (left-right) and Z (depth) coordinates
-    # In our coordinate system: X = lateral, Z = depth from camera
-    trajectory = np.array(body_world_3d)
-    
-    if trajectory.ndim == 1:
-        trajectory = trajectory.reshape(-1, 3)
-    
-    x_coords = trajectory[:, 0]  # Left-right
-    z_coords = trajectory[:, 2]  # Depth (distance from camera)
-    
-    # Get bounds with padding
-    x_min, x_max = x_coords.min(), x_coords.max()
-    z_min, z_max = z_coords.min(), z_coords.max()
-    
-    # Ensure minimum range to avoid division by zero
-    x_range = max(x_max - x_min, 0.5)
-    z_range = max(z_max - z_min, 0.5)
-    
-    # Make square aspect ratio (use larger range)
-    max_range = max(x_range, z_range)
-    
-    # Center the data
-    x_center = (x_min + x_max) / 2
-    z_center = (z_min + z_max) / 2
-    
-    # Calculate scale with padding
-    usable_size = image_size * (1 - 2 * padding)
-    scale = usable_size / max_range
-    
-    # Transform function: world coords to image coords
-    def world_to_image(x, z):
-        # X: left-right maps to image X
-        # Z: depth maps to image Y (top = far, bottom = close to camera)
-        img_x = int(image_size / 2 + (x - x_center) * scale)
-        img_y = int(image_size * padding + (z_max - z) * scale)  # Flip Z so far is at top
-        return img_x, img_y
-    
-    # Draw grid
-    grid_color = (60, 60, 60)
-    num_grid_lines = 5
-    for i in range(num_grid_lines + 1):
-        # Horizontal lines
-        y = int(image_size * padding + i * usable_size / num_grid_lines)
-        cv2.line(canvas, (int(image_size * padding), y), 
-                (int(image_size * (1 - padding)), y), grid_color, 1)
-        # Vertical lines
-        x = int(image_size * padding + i * usable_size / num_grid_lines)
-        cv2.line(canvas, (x, int(image_size * padding)), 
-                (x, int(image_size * (1 - padding))), grid_color, 1)
-    
-    # Draw camera position (at top center, representing viewpoint)
-    cam_x = image_size // 2
-    cam_y = int(image_size * padding * 0.5)
-    
-    # Camera icon (triangle pointing down)
-    cam_size = 15
-    cam_pts = np.array([
-        [cam_x, cam_y + cam_size],
-        [cam_x - cam_size, cam_y - cam_size//2],
-        [cam_x + cam_size, cam_y - cam_size//2]
-    ], np.int32)
-    cv2.fillPoly(canvas, [cam_pts], (100, 100, 255))  # Light blue camera
-    cv2.putText(canvas, "CAM", (cam_x - 15, cam_y - cam_size), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 255), 1)
-    
-    # Draw field of view lines (approximate)
-    fov_length = int(usable_size * 0.3)
-    cv2.line(canvas, (cam_x, cam_y + cam_size), 
-            (cam_x - fov_length//2, cam_y + cam_size + fov_length), (80, 80, 120), 1)
-    cv2.line(canvas, (cam_x, cam_y + cam_size), 
-            (cam_x + fov_length//2, cam_y + cam_size + fov_length), (80, 80, 120), 1)
-    
-    # Get depth range for coloring
-    if depth_estimate and show_depth_color:
-        depth_arr = np.array(depth_estimate)
-        depth_min, depth_max = depth_arr.min(), depth_arr.max()
-        depth_range = max(depth_max - depth_min, 0.1)
-    
-    # Draw trajectory path
-    points = []
-    colors = []
-    
-    for i in range(len(x_coords)):
-        img_x, img_y = world_to_image(x_coords[i], z_coords[i])
-        points.append((img_x, img_y))
-        
-        # Color by depth
-        if depth_estimate and show_depth_color and i < len(depth_estimate):
-            depth_norm = (depth_estimate[i] - depth_min) / depth_range
-            # Blue (close) to Red (far)
-            b = int(255 * (1 - depth_norm))
-            r = int(255 * depth_norm)
-            g = int(100 * (1 - abs(depth_norm - 0.5) * 2))  # Green in middle
-            colors.append((b, g, r))
-        else:
-            colors.append((0, 255, 0))  # Default green
-    
-    # Draw path segments with colors
-    for i in range(len(points) - 1):
-        pt1 = points[i]
-        pt2 = points[i + 1]
-        color = colors[i]
-        cv2.line(canvas, pt1, pt2, color, 2)
-    
-    # Draw points along path (every N frames)
-    point_interval = max(1, len(points) // 20)
-    for i in range(0, len(points), point_interval):
-        cv2.circle(canvas, points[i], 3, colors[i], -1)
-    
-    # Draw start point (green circle)
-    cv2.circle(canvas, points[0], 8, (0, 255, 0), 2)
-    cv2.circle(canvas, points[0], 4, (0, 255, 0), -1)
-    cv2.putText(canvas, "START", (points[0][0] + 10, points[0][1] - 5),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-    
-    # Draw end point (red circle)
-    cv2.circle(canvas, points[-1], 8, (0, 0, 255), 2)
-    cv2.circle(canvas, points[-1], 4, (0, 0, 255), -1)
-    cv2.putText(canvas, "END", (points[-1][0] + 10, points[-1][1] - 5),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-    
-    # Draw direction arrow at midpoint
-    mid_idx = len(points) // 2
-    if mid_idx > 0 and mid_idx < len(points) - 1:
-        # Calculate direction
-        dx = points[mid_idx + 1][0] - points[mid_idx - 1][0]
-        dy = points[mid_idx + 1][1] - points[mid_idx - 1][1]
-        length = np.sqrt(dx*dx + dy*dy)
-        if length > 0:
-            dx, dy = dx / length * 15, dy / length * 15
-            arrow_start = points[mid_idx]
-            arrow_end = (int(arrow_start[0] + dx), int(arrow_start[1] + dy))
-            cv2.arrowedLine(canvas, arrow_start, arrow_end, (255, 255, 0), 2, tipLength=0.4)
-    
-    # Add labels and info
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.45
-    text_color = (200, 200, 200)
-    
-    # Title
-    cv2.putText(canvas, "TOP VIEW (Looking Down)", (10, 20), font, 0.5, (255, 255, 255), 1)
-    
-    # Axis labels
-    cv2.putText(canvas, "X (Left/Right)", (image_size//2 - 40, image_size - 10), font, font_scale, text_color, 1)
-    
-    # Rotated Z label (on left side)
-    cv2.putText(canvas, "Z", (5, image_size//2), font, font_scale, text_color, 1)
-    cv2.putText(canvas, "(Depth)", (2, image_size//2 + 15), font, 0.35, text_color, 1)
-    
-    # Scale info
-    cv2.putText(canvas, f"X range: {x_range:.2f}m", (10, image_size - 45), font, font_scale, text_color, 1)
-    cv2.putText(canvas, f"Z range: {z_range:.2f}m", (10, image_size - 25), font, font_scale, text_color, 1)
-    
-    # Depth color legend (if used)
-    if show_depth_color and depth_estimate:
-        legend_x = image_size - 80
-        legend_y = 30
-        cv2.putText(canvas, "Depth:", (legend_x, legend_y), font, font_scale, text_color, 1)
-        cv2.putText(canvas, f"{depth_min:.1f}m", (legend_x, legend_y + 18), font, 0.35, (255, 100, 100), 1)
-        cv2.rectangle(canvas, (legend_x + 35, legend_y + 8), (legend_x + 55, legend_y + 18), (255, 100, 100), -1)
-        cv2.putText(canvas, f"{depth_max:.1f}m", (legend_x, legend_y + 35), font, 0.35, (100, 100, 255), 1)
-        cv2.rectangle(canvas, (legend_x + 35, legend_y + 25), (legend_x + 55, legend_y + 35), (100, 100, 255), -1)
-    
-    # Frame count
-    cv2.putText(canvas, f"Frames: {len(points)}", (image_size - 90, image_size - 10), font, font_scale, text_color, 1)
-    
-    return canvas
 
 
 def create_motion_debug_overlay(
@@ -933,15 +710,11 @@ class MotionAnalyzer:
                     "step": 0.1,
                     "tooltip": "Camera sensor width in mm (36mm = full frame, 23.5mm = APS-C)"
                 }),
-                "depth_source": (["Auto (Tracked if available)", "SAM3DBody Only (pred_cam_t)", "Tracked Depth Only"], {
-                    "default": "Auto (Tracked if available)",
-                    "tooltip": "Depth source for trajectory Z. 'Tracked' uses per-frame depth from Character Trajectory (better for circular paths). 'SAM3DBody' uses pred_cam_t[2] (original behavior)."
-                }),
             }
         }
     
-    RETURN_TYPES = ("SUBJECT_MOTION", "SCALE_INFO", "IMAGE", "IMAGE", "STRING")
-    RETURN_NAMES = ("subject_motion", "scale_info", "debug_overlay", "trajectory_topview", "debug_info")
+    RETURN_TYPES = ("SUBJECT_MOTION", "SCALE_INFO", "IMAGE", "STRING")
+    RETURN_NAMES = ("subject_motion", "scale_info", "debug_overlay", "debug_info")
     FUNCTION = "analyze"
     CATEGORY = "SAM3DBody2abc/Motion"
     
@@ -975,13 +748,13 @@ class MotionAnalyzer:
         
         # Handle case where mesh_sequence is already in the expected format
         if "vertices" in mesh_sequence and isinstance(mesh_sequence.get("vertices"), list):
-            log.info("Input already in expected format")
+            print("[Motion Analyzer] Input already in expected format")
             return mesh_sequence
         
         sorted_indices = sorted(frames_dict.keys())
         
         if len(sorted_indices) == 0:
-            log.info("WARNING: No frames in mesh_sequence!")
+            print("[Motion Analyzer] WARNING: No frames in mesh_sequence!")
             return {"vertices": [], "params": {}}
         
         converted = {
@@ -992,14 +765,13 @@ class MotionAnalyzer:
                 "joint_coords": [],
                 "camera_t": [],
                 "focal_length": [],
-                "tracked_depth": [],  # Per-frame depth from Character Trajectory Tracker
             }
         }
         
         # Debug: show available keys in first frame
         if sorted_indices:
             first_frame = frames_dict[sorted_indices[0]]
-            log.info(f"First frame keys: {list(first_frame.keys())}")
+            print(f"[Motion Analyzer] First frame keys: {list(first_frame.keys())}")
         
         for idx in sorted_indices:
             frame = frames_dict[idx]
@@ -1027,31 +799,24 @@ class MotionAnalyzer:
             converted["params"]["keypoints_2d"].append(kp2d)
             converted["params"]["keypoints_3d"].append(kp3d)
             
-            # Extract tracked_depth from Character Trajectory Tracker (if available)
-            tracked_depth = frame.get("tracked_depth")
-            converted["params"]["tracked_depth"].append(tracked_depth)
-            
             # Debug first frame keypoints
             if idx == sorted_indices[0]:
-                log.info(f"Frame 0 keypoints_2d source: {'keypoints_2d' if frame.get('keypoints_2d') is not None else ('pred_keypoints_2d' if frame.get('pred_keypoints_2d') is not None else 'None')}")
-                log.info(f"Frame 0 keypoints_3d source: {'keypoints_3d' if frame.get('keypoints_3d') is not None else ('pred_keypoints_3d' if frame.get('pred_keypoints_3d') is not None else 'None')}")
-                if tracked_depth is not None:
-                    log.info(f"Frame 0 tracked_depth: {tracked_depth:.2f}m (from Character Trajectory)")
+                print(f"[Motion Analyzer] Frame 0 keypoints_2d source: {'keypoints_2d' if frame.get('keypoints_2d') is not None else ('pred_keypoints_2d' if frame.get('pred_keypoints_2d') is not None else 'None')}")
+                print(f"[Motion Analyzer] Frame 0 keypoints_3d source: {'keypoints_3d' if frame.get('keypoints_3d') is not None else ('pred_keypoints_3d' if frame.get('pred_keypoints_3d') is not None else 'None')}")
                 if kp2d is not None:
                     kp2d_shape = kp2d.shape if hasattr(kp2d, 'shape') else f"len={len(kp2d)}"
-                    log.info(f"Frame 0 kp2d shape: {kp2d_shape}")
+                    print(f"[Motion Analyzer] Frame 0 kp2d shape: {kp2d_shape}")
                 if kp3d is not None:
                     kp3d_shape = kp3d.shape if hasattr(kp3d, 'shape') else f"len={len(kp3d)}"
-                    log.info(f"Frame 0 kp3d shape: {kp3d_shape}")
+                    print(f"[Motion Analyzer] Frame 0 kp3d shape: {kp3d_shape}")
         
-        log.info(f"Converted {len(sorted_indices)} frames from SAM3DBody2abc format")
+        print(f"[Motion Analyzer] Converted {len(sorted_indices)} frames from SAM3DBody2abc format")
         
         # Log what data is available
         has_kp2d = any(k is not None for k in converted["params"]["keypoints_2d"])
         has_kp3d = any(k is not None for k in converted["params"]["keypoints_3d"])
         has_jc = any(k is not None for k in converted["params"]["joint_coords"])
-        has_tracked_depth = any(k is not None for k in converted["params"]["tracked_depth"])
-        log.info(f"Data available: keypoints_2d={has_kp2d}, keypoints_3d={has_kp3d}, joint_coords={has_jc}, tracked_depth={has_tracked_depth}")
+        print(f"[Motion Analyzer] Data available: keypoints_2d={has_kp2d}, keypoints_3d={has_kp3d}, joint_coords={has_jc}")
         
         return converted
     
@@ -1069,7 +834,6 @@ class MotionAnalyzer:
         show_skeleton: bool = True,
         arrow_scale: float = 10.0,
         sensor_width_mm: float = 36.0,
-        depth_source: str = "Auto (Tracked if available)",
     ) -> Tuple[Dict, Dict, torch.Tensor, str]:
         """
         Analyze subject motion from mesh sequence.
@@ -1077,7 +841,7 @@ class MotionAnalyzer:
         If camera_extrinsics is provided, also computes camera-compensated trajectory
         (removes camera pan/tilt effects from body_world trajectory).
         """
-        log.info("========== SUBJECT MOTION ANALYSIS ==========")
+        print("\n[Motion Analyzer] ========== SUBJECT MOTION ANALYSIS ==========")
         
         # Convert from SAM3DBody2abc format if needed
         mesh_sequence = self._convert_mesh_sequence(mesh_sequence)
@@ -1085,7 +849,7 @@ class MotionAnalyzer:
         # Determine skeleton mode
         use_simple = skeleton_mode == "Simple Skeleton"
         mode_str = "simple" if use_simple else "full"
-        log.info(f"Skeleton mode: {skeleton_mode}")
+        print(f"[Motion Analyzer] Skeleton mode: {skeleton_mode}")
         
         # Extract data from mesh sequence
         vertices_list = mesh_sequence.get("vertices", [])
@@ -1097,55 +861,55 @@ class MotionAnalyzer:
         joint_coords_list = params.get("joint_coords", [])  # 127-joint fallback
         camera_t_list = params.get("camera_t", [])
         focal_length_list = params.get("focal_length", [])
-        tracked_depth_list = params.get("tracked_depth", [])  # From Character Trajectory Tracker
         
         num_frames = len(vertices_list)
         if num_frames == 0:
-            log.info("ERROR: No frames in mesh sequence!")
+            print("[Motion Analyzer] ERROR: No frames in mesh sequence!")
             return ({}, {}, torch.zeros(1, 64, 64, 3), "Error: No frames")
         
-        log.info(f"Processing {num_frames} frames...")
+        print(f"[Motion Analyzer] Processing {num_frames} frames...")
         
         # Check what keypoint data is available
         has_kp_2d = len(keypoints_2d_list) > 0 and keypoints_2d_list[0] is not None
         has_kp_3d = len(keypoints_3d_list) > 0 and keypoints_3d_list[0] is not None
         has_joint_coords = len(joint_coords_list) > 0 and joint_coords_list[0] is not None
         
-        log.info(f"Data available: keypoints_2d={has_kp_2d}, keypoints_3d={has_kp_3d}, joint_coords={has_joint_coords}")
+        print(f"[Motion Analyzer] Data available: keypoints_2d={has_kp_2d}, keypoints_3d={has_kp_3d}, joint_coords={has_joint_coords}")
         
         # Debug: Print more details about available data
-        log.info(f"keypoints_2d_list length: {len(keypoints_2d_list)}")
+        print(f"[Motion Analyzer] ===== KEYPOINT DATA DEBUG =====")
+        print(f"[Motion Analyzer] keypoints_2d_list length: {len(keypoints_2d_list)}")
         if len(keypoints_2d_list) > 0 and keypoints_2d_list[0] is not None:
             kp2d_sample = to_numpy(keypoints_2d_list[0])
-            log.info(f"keypoints_2d[0] shape: {kp2d_sample.shape if hasattr(kp2d_sample, 'shape') else 'no shape'}")
+            print(f"[Motion Analyzer] keypoints_2d[0] shape: {kp2d_sample.shape if hasattr(kp2d_sample, 'shape') else 'no shape'}")
             if kp2d_sample is not None and len(kp2d_sample) > 0:
-                log.info(f"keypoints_2d[0] first 3 points: {kp2d_sample[:3] if len(kp2d_sample) >= 3 else kp2d_sample}")
+                print(f"[Motion Analyzer] keypoints_2d[0] first 3 points: {kp2d_sample[:3] if len(kp2d_sample) >= 3 else kp2d_sample}")
         else:
-            log.info(f"keypoints_2d[0] is None or empty")
+            print(f"[Motion Analyzer] keypoints_2d[0] is None or empty")
         
-        log.info(f"keypoints_3d_list length: {len(keypoints_3d_list)}")
+        print(f"[Motion Analyzer] keypoints_3d_list length: {len(keypoints_3d_list)}")
         if len(keypoints_3d_list) > 0 and keypoints_3d_list[0] is not None:
             kp3d_sample = to_numpy(keypoints_3d_list[0])
-            log.info(f"keypoints_3d[0] shape: {kp3d_sample.shape if hasattr(kp3d_sample, 'shape') else 'no shape'}")
+            print(f"[Motion Analyzer] keypoints_3d[0] shape: {kp3d_sample.shape if hasattr(kp3d_sample, 'shape') else 'no shape'}")
         
-        log.info(f"joint_coords_list length: {len(joint_coords_list)}")
+        print(f"[Motion Analyzer] joint_coords_list length: {len(joint_coords_list)}")
         if len(joint_coords_list) > 0 and joint_coords_list[0] is not None:
             jc_sample = to_numpy(joint_coords_list[0])
-            log.info(f"joint_coords[0] shape: {jc_sample.shape if hasattr(jc_sample, 'shape') else 'no shape'}")
-        log.info(f"=================================")
+            print(f"[Motion Analyzer] joint_coords[0] shape: {jc_sample.shape if hasattr(jc_sample, 'shape') else 'no shape'}")
+        print(f"[Motion Analyzer] =================================")
         
         # Decide which 3D keypoints to use
         if use_simple and has_kp_3d:
             kp_source = "keypoints_3d"
-            log.info(f"Using 18-joint keypoints_3d for analysis")
+            print(f"[Motion Analyzer] Using 18-joint keypoints_3d for analysis")
         elif has_joint_coords:
             kp_source = "joint_coords"
-            log.info(f"Using 127-joint joint_coords for analysis")
+            print(f"[Motion Analyzer] Using 127-joint joint_coords for analysis")
         elif has_kp_3d:
             kp_source = "keypoints_3d"
-            log.info(f"Fallback to 18-joint keypoints_3d")
+            print(f"[Motion Analyzer] Fallback to 18-joint keypoints_3d")
         else:
-            log.info("ERROR: No 3D keypoint data available!")
+            print("[Motion Analyzer] ERROR: No 3D keypoint data available!")
             return ({}, {}, torch.zeros(1, 64, 64, 3), "Error: No keypoint data")
         
         # Get image size
@@ -1153,7 +917,7 @@ class MotionAnalyzer:
         if images is not None:
             _, H, W, _ = images.shape
             image_size = (W, H)
-            log.info(f"Image size: {W}x{H}")
+            print(f"[Motion Analyzer] Image size: {W}x{H}")
         
         # ===== HEIGHT ESTIMATION =====
         ref_frame = min(reference_frame, num_frames - 1)
@@ -1177,11 +941,11 @@ class MotionAnalyzer:
         if subject_height_m > 0:
             actual_height = subject_height_m
             height_source = "user_input"
-            log.info(f"Using user-specified height: {actual_height:.2f}m")
+            print(f"[Motion Analyzer] Using user-specified height: {actual_height:.2f}m")
         else:
             actual_height = default_height_m
             height_source = "auto_estimate"
-            log.info(f"Using default height: {actual_height:.2f}m")
+            print(f"[Motion Analyzer] Using default height: {actual_height:.2f}m")
         
         # Calculate scale factor
         estimated_height = kp_height_info["estimated_height"]
@@ -1203,11 +967,11 @@ class MotionAnalyzer:
             "keypoint_source": kp_source,
         }
         
-        log.info(f"Mesh height: {mesh_height_info['mesh_height']:.3f} units")
-        log.info(f"Estimated height (from joints): {estimated_height:.3f} units")
-        log.info(f"Scale factor: {scale_factor:.3f}")
-        log.info(f"Leg length: {kp_height_info['leg_length']:.3f} units")
-        log.info(f"Torso+head: {kp_height_info['torso_head_length']:.3f} units")
+        print(f"[Motion Analyzer] Mesh height: {mesh_height_info['mesh_height']:.3f} units")
+        print(f"[Motion Analyzer] Estimated height (from joints): {estimated_height:.3f} units")
+        print(f"[Motion Analyzer] Scale factor: {scale_factor:.3f}")
+        print(f"[Motion Analyzer] Leg length: {kp_height_info['leg_length']:.3f} units")
+        print(f"[Motion Analyzer] Torso+head: {kp_height_info['torso_head_length']:.3f} units")
         
         # ===== PER-FRAME ANALYSIS =====
         # Get joint indices based on mode
@@ -1266,7 +1030,7 @@ class MotionAnalyzer:
                 keypoints_3d = to_numpy(joint_coords_list[i]) if i < len(joint_coords_list) else None
             
             if keypoints_3d is None:
-                log.info(f"Warning: No keypoints for frame {i}")
+                print(f"[Motion Analyzer] Warning: No keypoints for frame {i}")
                 keypoints_3d = np.zeros((18 if kp_source == "keypoints_3d" else 127, 3))
             
             # Handle shape
@@ -1284,16 +1048,16 @@ class MotionAnalyzer:
                 else:
                     joints_2d = keypoints_2d
                 if i == 0:
-                    log.info(f"Frame 0: Using pred_keypoints_2d DIRECTLY (shape={joints_2d.shape})")
-                    log.info(f"Frame 0: First 3 2D joints: {joints_2d[:3]}")
+                    print(f"[Motion Analyzer] Frame 0: Using pred_keypoints_2d DIRECTLY (shape={joints_2d.shape})")
+                    print(f"[Motion Analyzer] Frame 0: First 3 2D joints: {joints_2d[:3]}")
             else:
                 # Project 3D to 2D
                 joints_2d = project_points_to_2d(
                     keypoints_3d, focal, camera_t, image_size[0], image_size[1]
                 )
                 if i == 0:
-                    log.info(f"Frame 0: PROJECTING 3D→2D (focal={focal}, cam_t={camera_t})")
-                    log.info(f"Frame 0: First 3 projected joints: {joints_2d[:3]}")
+                    print(f"[Motion Analyzer] Frame 0: PROJECTING 3D→2D (focal={focal}, cam_t={camera_t})")
+                    print(f"[Motion Analyzer] Frame 0: First 3 projected joints: {joints_2d[:3]}")
             
             subject_motion["joints_2d"].append(joints_2d)
             subject_motion["joints_3d"].append(keypoints_3d * scale_factor)
@@ -1312,38 +1076,7 @@ class MotionAnalyzer:
             #   screen_y = focal * ty / tz + cy
             # So world position: X = tx * tz, Y = ty * tz, Z = tz (depth)
             # This tracks the character's global trajectory in camera space
-            
-            # Determine depth source based on toggle
-            tz_sam3d = camera_t[2]  # SAM3DBody depth estimate
-            
-            # Get tracked depth from Character Trajectory (if available)
-            tracked_depth = None
-            if i < len(tracked_depth_list):
-                tracked_depth = tracked_depth_list[i]
-            
-            # Select depth based on depth_source setting
-            if depth_source == "SAM3DBody Only (pred_cam_t)":
-                tz = tz_sam3d
-                if i == 0:
-                    log.info(f"Depth source: SAM3DBody pred_cam_t (original behavior)")
-            elif depth_source == "Tracked Depth Only":
-                if tracked_depth is not None:
-                    tz = tracked_depth / scale_factor  # Convert back to raw units
-                    if i == 0:
-                        log.info(f"Depth source: Tracked Depth Only ({tracked_depth:.2f}m)")
-                else:
-                    tz = tz_sam3d
-                    if i == 0:
-                        log.info(f"Depth source: Tracked Depth requested but not available, using SAM3DBody")
-            else:  # Auto (Tracked if available)
-                if tracked_depth is not None:
-                    tz = tracked_depth / scale_factor  # Convert back to raw units
-                    if i == 0:
-                        log.info(f"Depth source: Auto → Using Tracked Depth ({tracked_depth:.2f}m)")
-                else:
-                    tz = tz_sam3d
-                    if i == 0:
-                        log.info(f"Depth source: Auto → Using SAM3DBody (no tracked depth)")
+            tz = camera_t[2]  # Depth
             
             # RAW trajectory (includes camera effects from focal length variation)
             body_world_3d_raw = np.array([
@@ -1360,9 +1093,10 @@ class MotionAnalyzer:
                 from datetime import datetime, timezone, timedelta
                 ist = timezone(timedelta(hours=5, minutes=30))
                 timestamp = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
-                log.debug(f" pred_cam_t: tx={camera_t[0]:.4f}, ty={camera_t[1]:.4f}, tz={camera_t[2]:.4f}")
-                log.debug(f" focal_length: {focal:.1f}px")
-                log.debug(f" body_world_3d: X={body_world_3d_raw[0]:.4f}m, Y={body_world_3d_raw[1]:.4f}m, Z={body_world_3d_raw[2]:.4f}m")
+                print(f"[{timestamp}] [Body World DEBUG] Frame {i}:")
+                print(f"  pred_cam_t: tx={camera_t[0]:.4f}, ty={camera_t[1]:.4f}, tz={camera_t[2]:.4f}")
+                print(f"  focal_length: {focal:.1f}px")
+                print(f"  body_world_3d: X={body_world_3d_raw[0]:.4f}m, Y={body_world_3d_raw[1]:.4f}m, Z={body_world_3d_raw[2]:.4f}m")
             
             # Apparent height (pixels)
             head_2d = joints_2d[head_idx]
@@ -1372,8 +1106,8 @@ class MotionAnalyzer:
             apparent_height = abs(feet_y - head_2d[1])
             subject_motion["apparent_height"].append(apparent_height)
             
-            # Depth estimate - use the same depth source as trajectory
-            depth_m = tz * scale_factor
+            # Depth estimate
+            depth_m = camera_t[2] * scale_factor
             subject_motion["depth_estimate"].append(depth_m)
             
             # Foot contact detection
@@ -1406,11 +1140,11 @@ class MotionAnalyzer:
         focal_min_mm = focal_min * sensor_width_mm / image_width if image_width > 0 else 0
         focal_max_mm = focal_max * sensor_width_mm / image_width if image_width > 0 else 0
         
-        log.info(f"----- CAMERA COMPENSATION -----")
-        log.info(f"Sensor: {sensor_width_mm}mm, Image width: {image_width}px")
-        log.info(f"Focal length (px): ref={ref_focal:.1f}, min={focal_min:.1f}, max={focal_max:.1f}")
-        log.info(f"Focal length (mm): ref={ref_focal_mm:.1f}, min={focal_min_mm:.1f}, max={focal_max_mm:.1f}")
-        log.info(f"Focal variation: {focal_variation:.1f}%")
+        print(f"\n[Motion Analyzer] ----- CAMERA COMPENSATION -----")
+        print(f"[Motion Analyzer] Sensor: {sensor_width_mm}mm, Image width: {image_width}px")
+        print(f"[Motion Analyzer] Focal length (px): ref={ref_focal:.1f}, min={focal_min:.1f}, max={focal_max:.1f}")
+        print(f"[Motion Analyzer] Focal length (mm): ref={ref_focal_mm:.1f}, min={focal_min_mm:.1f}, max={focal_max_mm:.1f}")
+        print(f"[Motion Analyzer] Focal variation: {focal_variation:.1f}%")
         
         # Apply focal length compensation
         # When focal length increases (zoom in), same screen motion = less world motion
@@ -1441,7 +1175,7 @@ class MotionAnalyzer:
                 per_frame_data = camera_extrinsics.get("per_frame", [])
                 
                 if len(per_frame_data) >= len(body_world_arr):
-                    log.info(f"Applying camera extrinsics compensation (pan/tilt)...")
+                    print(f"[Motion Analyzer] Applying camera extrinsics compensation (pan/tilt)...")
                     body_world_extrinsics_compensated = []
                     
                     # Get reference (first frame) rotation to define world space
@@ -1482,11 +1216,11 @@ class MotionAnalyzer:
                     
                     total_pan = per_frame_data[-1].get("pan", 0) - per_frame_data[0].get("pan", 0)
                     total_tilt = per_frame_data[-1].get("tilt", 0) - per_frame_data[0].get("tilt", 0)
-                    log.info(f"Camera extrinsics: total pan={total_pan:.2f}°, total tilt={total_tilt:.2f}°")
+                    print(f"[Motion Analyzer] Camera extrinsics: total pan={total_pan:.2f}°, total tilt={total_tilt:.2f}°")
                 else:
-                    log.info(f"Warning: Not enough extrinsics frames ({len(per_frame_data)} < {len(body_world_arr)})")
+                    print(f"[Motion Analyzer] Warning: Not enough extrinsics frames ({len(per_frame_data)} < {len(body_world_arr)})")
             except Exception as e:
-                log.info(f"Warning: Could not apply extrinsics compensation: {e}")
+                print(f"[Motion Analyzer] Warning: Could not apply extrinsics compensation: {e}")
         
         # Store all trajectory versions
         subject_motion["body_world_3d_raw"] = [pos.tolist() for pos in body_world_arr]  # Original
@@ -1617,33 +1351,34 @@ class MotionAnalyzer:
         grounded_count = sum(1 for fc in subject_motion["foot_contact"] if fc in ["both", "left", "right"])
         airborne_count = sum(1 for fc in subject_motion["foot_contact"] if fc == "none")
         
-        log.info(f"----- MOTION STATISTICS -----")
-        log.info(f"Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps")
-        log.info(f"Avg 2D velocity: {avg_velocity_2d:.2f} px/frame")
-        log.info(f"Max 2D velocity: {max_velocity_2d:.2f} px/frame")
-        log.info(f"Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
-        log.info(f"Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
-        log.info(f"Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
+        print(f"\n[Motion Analyzer] ----- MOTION STATISTICS -----")
+        print(f"[Motion Analyzer] Frames: {num_frames}, Duration: {subject_motion['duration_sec']:.2f}s @ {fps_val}fps")
+        print(f"[Motion Analyzer] Avg 2D velocity: {avg_velocity_2d:.2f} px/frame")
+        print(f"[Motion Analyzer] Max 2D velocity: {max_velocity_2d:.2f} px/frame")
+        print(f"[Motion Analyzer] Grounded frames: {grounded_count} ({100*grounded_count/num_frames:.1f}%)")
+        print(f"[Motion Analyzer] Airborne frames: {airborne_count} ({100*airborne_count/num_frames:.1f}%)")
+        print(f"[Motion Analyzer] Depth range: {min(subject_motion['depth_estimate']):.2f}m - {max(subject_motion['depth_estimate']):.2f}m")
         
-        log.info(f"----- TRAJECTORY (RAW - includes camera effects) -----")
-        log.info(f"Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
-        log.info(f"Total distance traveled: {body_world_total_distance:.3f}m")
-        log.info(f"Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
-        log.info(f"Direction: {direction_desc} ({direction_angle:.1f}°)")
-        log.info(f"Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}")
+        print(f"[Motion Analyzer] ----- TRAJECTORY (RAW - includes camera effects) -----")
+        print(f"[Motion Analyzer] Displacement: X={body_world_displacement[0]:.3f}m, Y={body_world_displacement[1]:.3f}m, Z={body_world_displacement[2]:.3f}m")
+        print(f"[Motion Analyzer] Total distance traveled: {body_world_total_distance:.3f}m")
+        print(f"[Motion Analyzer] Average speed: {avg_speed_ms:.3f} m/s ({avg_speed_ms * 3.6:.2f} km/h)")
+        print(f"[Motion Analyzer] Direction: {direction_desc} ({direction_angle:.1f}°)")
+        print(f"[Motion Analyzer] Direction vector (Y-up): X={direction_vector[0]:+.3f}, Y={direction_vector[1]:+.3f}, Z={direction_vector[2]:+.3f}")
         
-        log.info(f"----- TRAJECTORY (COMPENSATED - camera effects removed) -----")
-        log.info(f"Focal compensation: ref={ref_focal_mm:.1f}mm ({ref_focal:.0f}px), variation={focal_variation:.1f}%")
+        print(f"[Motion Analyzer] ----- TRAJECTORY (COMPENSATED - camera effects removed) -----")
+        print(f"[Motion Analyzer] Focal compensation: ref={ref_focal_mm:.1f}mm ({ref_focal:.0f}px), variation={focal_variation:.1f}%")
         if has_extrinsics_compensation:
-            log.info(f"Extrinsics compensation: YES (pan/tilt removed)")
+            print(f"[Motion Analyzer] Extrinsics compensation: YES (pan/tilt removed)")
         else:
-            log.info(f"Extrinsics compensation: NO (connect CameraSolver to enable)")
-        log.info(f"Displacement: X={comp_displacement[0]:.3f}m, Y={comp_displacement[1]:.3f}m, Z={comp_displacement[2]:.3f}m")
-        log.info(f"Total distance traveled: {comp_total_distance:.3f}m")
-        log.info(f"Average speed: {comp_avg_speed_ms:.3f} m/s ({comp_avg_speed_ms * 3.6:.2f} km/h)")
-        log.info(f"Direction: {comp_direction_desc} ({comp_direction_angle:.1f}°)")
-        log.info(f"Direction vector (Y-up): X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}")
+            print(f"[Motion Analyzer] Extrinsics compensation: NO (connect CameraSolver to enable)")
+        print(f"[Motion Analyzer] Displacement: X={comp_displacement[0]:.3f}m, Y={comp_displacement[1]:.3f}m, Z={comp_displacement[2]:.3f}m")
+        print(f"[Motion Analyzer] Total distance traveled: {comp_total_distance:.3f}m")
+        print(f"[Motion Analyzer] Average speed: {comp_avg_speed_ms:.3f} m/s ({comp_avg_speed_ms * 3.6:.2f} km/h)")
+        print(f"[Motion Analyzer] Direction: {comp_direction_desc} ({comp_direction_angle:.1f}°)")
+        print(f"[Motion Analyzer] Direction vector (Y-up): X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}")
         
+        # ===== DEBUG INFO STRING =====
         extrinsics_status = "YES" if has_extrinsics_compensation else "NO"
         debug_info = (
             f"=== Motion Analysis Results ===\n"
@@ -1672,8 +1407,9 @@ class MotionAnalyzer:
             f"Direction vector: X={comp_direction_vector[0]:+.3f}, Y={comp_direction_vector[1]:+.3f}, Z={comp_direction_vector[2]:+.3f}\n"
         )
         
+        # ===== DEBUG OVERLAY =====
         if show_debug and images is not None:
-            log.info(f"Generating debug overlay...")
+            print(f"[Motion Analyzer] Generating debug overlay...")
             
             images_np = images.cpu().numpy() if isinstance(images, torch.Tensor) else images
             
@@ -1692,16 +1428,9 @@ class MotionAnalyzer:
         else:
             debug_overlay = torch.zeros(1, 64, 64, 3)
         
-        # Generate trajectory top-view visualization
-        log.info(f"Generating trajectory top-view...")
-        topview = create_trajectory_topview(subject_motion, image_size=512, show_depth_color=True)
-        if topview.dtype == np.uint8:
-            topview = topview.astype(np.float32) / 255.0
-        trajectory_topview = torch.from_numpy(topview).unsqueeze(0).float()  # Add batch dim
+        print(f"[Motion Analyzer] =============================================\n")
         
-        log.info(f"=============================================\n")
-        
-        return (subject_motion, scale_info, debug_overlay, trajectory_topview, debug_info)
+        return (subject_motion, scale_info, debug_overlay, debug_info)
 
 
 class ScaleInfoDisplay:
@@ -1735,7 +1464,7 @@ class ScaleInfoDisplay:
             f"Source: {scale_info.get('height_source', 'N/A')}\n"
             f"Reference frame: {scale_info.get('reference_frame', 'N/A')}\n"
         )
-        log.info(info)
+        print(info)
         return (info,)
 
 
