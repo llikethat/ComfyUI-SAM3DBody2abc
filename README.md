@@ -41,6 +41,9 @@ A complete workflow is included: `workflows/SAM3DBody2abc_Video_to_FBX.json`
 | 📦 **Export Animated FBX** | Export to Maya/Blender FBX |
 | 📦 **Export FBX from JSON** | Export from saved JSON data |
 | 🎥 **FBX Animation Viewer** | Preview animation in ComfyUI |
+| 🔄 **Temporal Smoothing** | Reduce trajectory jitter (single camera) |
+| 🎯 **Camera Auto-Calibrator** | Auto-compute camera positions from person |
+| 🔺 **Multi-Camera Triangulator** | Triangulate 3D from 2 camera views |
 
 ## Installation
 
@@ -156,6 +159,30 @@ FBX File:
 - **Recommended**: 12GB+ VRAM for higher resolution
 - Falls back to CPU for some operations if GPU unavailable
 
+## Multi-Camera Triangulation
+
+For jitter-free depth, use synchronized footage from 2 cameras:
+
+### Workflow
+```
+Video A → SAM3DBody → mesh_sequence_a ─┬─→ 🎯 Auto-Calibrator → calibration ─┐
+                                       │                                      │
+Video B → SAM3DBody → mesh_sequence_b ─┼──────────────────────────────────────┼→ 🔺 Triangulator → mesh_sequence
+                                       └──────────────────────────────────────┘
+```
+
+### Requirements
+- Two synchronized videos of the same person
+- Person visible in both cameras simultaneously
+- Cameras at 60-120° angle for best accuracy (minimum 30°)
+
+### What It Solves
+Single-camera depth estimation is noisy because it guesses depth from body size. Multi-camera triangulation **calculates** depth geometrically by finding where viewing rays intersect - eliminating jitter.
+
+### Maya Import
+- Use **Video A** as the image plane (Camera A is the reference at origin)
+- The exported mesh/skeleton aligns with Video A
+
 ## Licenses
 
 ### Main Package
@@ -186,6 +213,27 @@ https://github.com/DepthAnything/Depth-Anything-V2
 ```
 
 ## Version History
+
+### v4.8.6 (January 2025)
+- **Multi-Camera System**: Jitter-free depth through geometric triangulation
+  - 🎯 **Camera Auto-Calibrator**: Automatically computes camera positions from person keypoints
+    - No manual measurement required
+    - Uses person visible in both cameras to solve relative pose
+    - Scales using known person height
+    - Reports viewing angles, distance to person, camera geometry
+  - 🔺 **Multi-Camera Triangulator**: Triangulates 3D positions from 2 camera views
+    - Geometric intersection of viewing rays
+    - Produces jitter-free depth
+    - Outputs same MESH_SEQUENCE format for seamless pipeline integration
+- **Viewing angle computation**: Distance, azimuth, elevation from each camera to person
+
+### v4.8.1 (January 2025)
+- 🔄 **Temporal Smoothing** node for single-camera jitter reduction
+  - Smooths pred_cam_t (tx, ty, tz) and tracked_depth
+  - Does NOT smooth joint_coords (pose data is accurate)
+  - Methods: Gaussian, EMA (bidirectional), Savitzky-Golay
+  - Optional vertex smoothing for shape keys
+  - Reports jitter reduction percentage
 
 ### v4.7.8 (January 2025)
 - Added `trajectory_topview` output to Motion Analyzer node:
