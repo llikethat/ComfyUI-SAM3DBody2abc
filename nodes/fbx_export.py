@@ -338,21 +338,22 @@ class ExportAnimatedFBX:
         """
         from datetime import datetime, timezone, timedelta
         
-        # Get version from parent package - use direct file read since module name has dashes
-        __version__ = "unknown"
-        try:
-            import os
-            init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
-            if os.path.exists(init_path):
-                with open(init_path, "r") as f:
-                    for line in f:
-                        if line.strip().startswith("__version__"):
-                            # Parse: __version__ = "4.5.8"
-                            __version__ = line.split("=")[1].strip().strip('"\'').strip()
-                            break
-        except Exception as e:
-            log.info(f"Warning: Could not read version: {e}")
-            __version__ = "unknown"
+        # Get version - use module-level import first, then file read as fallback
+        # Note: module-level __version__ is imported at top of file
+        version_str = __version__  # From module-level import
+        if version_str == "unknown":
+            try:
+                import os
+                init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
+                if os.path.exists(init_path):
+                    with open(init_path, "r") as f:
+                        for line in f:
+                            if line.strip().startswith("__version__"):
+                                # Parse: __version__ = "4.5.8"
+                                version_str = line.split("=")[1].strip().strip('"\'').strip()
+                                break
+            except Exception as e:
+                log.info(f"Warning: Could not read version from file: {e}")
         
         # Get timestamp in IST
         ist = timezone(timedelta(hours=5, minutes=30))
@@ -360,7 +361,7 @@ class ExportAnimatedFBX:
         
         metadata = {
             # Build info
-            "sam3dbody2abc_version": __version__,
+            "sam3dbody2abc_version": version_str,
             "export_timestamp": timestamp,
             # Export settings
             "world_translation": world_translation,

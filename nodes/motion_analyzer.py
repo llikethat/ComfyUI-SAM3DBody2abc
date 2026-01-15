@@ -538,7 +538,9 @@ def create_trajectory_topview(
     if trajectory.ndim == 1:
         trajectory = trajectory.reshape(-1, 3)
     
-    x_coords = trajectory[:, 0]  # Left-right
+    # Negate X so left-right matches video perspective (viewer looking at screen)
+    # Without this, movement to screen-left appears as movement to the right
+    x_coords = -trajectory[:, 0]  # Left-right (negated for correct orientation)
     z_coords = trajectory[:, 2]  # Depth (distance from camera)
     
     # Get bounds with padding
@@ -697,10 +699,6 @@ def create_trajectory_topview(
     # Frame count
     cv2.putText(canvas, f"Frames: {len(points)}", (image_size - 90, image_size - 10), font, font_scale, text_color, 1)
     
-    # Horizontal flip so left-right matches video perspective
-    # (viewer looking at screen sees left as left, right as right)
-    canvas = cv2.flip(canvas, 1)
-    
     return canvas
 
 
@@ -711,6 +709,7 @@ def create_motion_debug_overlay(
     skeleton_mode: str = "simple",
     arrow_scale: float = 10.0,
     show_skeleton: bool = True,
+    highlight_joint_idx: int = -1,
 ) -> np.ndarray:
     """
     Create debug visualization with joint markers overlaid on video.
@@ -720,6 +719,10 @@ def create_motion_debug_overlay(
     Only individual joint dots are shown for accurate alignment.
     
     Uses pred_keypoints_2d directly for accurate positioning.
+    
+    Args:
+        highlight_joint_idx: If >= 0, this joint will be highlighted in green
+                            (used by Trajectory Smoother to show reference joint)
     """
     # Convert to uint8 if needed
     if images.dtype == np.float32 or images.dtype == np.float64:
@@ -768,6 +771,12 @@ def create_motion_debug_overlay(
         left_ankle_idx: (COLOR_FEET, 5),    # Orange
         right_ankle_idx: (COLOR_FEET, 5),   # Orange
     }
+    
+    # If a highlight joint is specified (from Trajectory Smoother), make it green and larger
+    COLOR_HIGHLIGHT = (0, 255, 0)  # Bright green
+    if highlight_joint_idx >= 0:
+        # Override or add the highlighted joint
+        special_joints[highlight_joint_idx] = (COLOR_HIGHLIGHT, 10)  # Green, extra large
     
     for i in range(num_frames):
         frame = output[i]
@@ -1681,6 +1690,9 @@ class MotionAnalyzer:
             
             images_np = images.cpu().numpy() if isinstance(images, torch.Tensor) else images
             
+            # Check if a highlight joint was specified (e.g., from Trajectory Smoother)
+            highlight_joint_idx = subject_motion.get("highlight_joint_idx", -1)
+            
             overlay = create_motion_debug_overlay(
                 images_np,
                 subject_motion,
@@ -1688,6 +1700,7 @@ class MotionAnalyzer:
                 skeleton_mode=skeleton_mode_str,
                 arrow_scale=arrow_scale,
                 show_skeleton=show_skeleton,
+                highlight_joint_idx=highlight_joint_idx,
             )
             
             if overlay.dtype == np.uint8:

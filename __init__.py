@@ -15,22 +15,18 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.6
-- NEW: Viewing angle computation in Auto-Calibrator
-  - Distance from each camera to person
-  - Viewing angle (how much camera looks at person)
-  - Azimuth (horizontal angle)
-  - Elevation (vertical angle)
-  - Person 3D position
-- 🎯 Camera Auto-Calibrator node
-  - Automatically computes camera positions from person keypoints
-  - No manual measurement required!
-  - Scales using known person height
-- 🔄 Temporal Smoothing node
-- Multi-Camera Triangulation System
+Version: 4.8.7
+- FIX: Trajectory top-view horizontal orientation (left-right now matches video)
+- FIX: Viewing angle calculation (was ~170°, now correct ~30°)
+- FIX: Version "unknown" in FBX metadata
+- NEW: 📈 Trajectory Smoother node
+  - Dedicated noise reduction for body_world_3d
+  - Methods: Savitzky-Golay, Gaussian, Moving Average, Spline, Kalman
+  - Jitter reduction statistics
+  - Before/after comparison visualization
 """
 
-__version__ = "4.8.7"
+__version__ = "4.8.8"
 
 import os
 import sys
@@ -122,6 +118,12 @@ if _temporal_smoothing:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = _temporal_smoothing.TemporalSmoothing
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = "🔄 Temporal Smoothing"
+
+# Load and register trajectory smoother
+_trajectory_smoother = _load_module("sam3d2abc_trajectory_smoother", os.path.join(_nodes, "trajectory_smoother.py"))
+if _trajectory_smoother:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_TrajectorySmoother"] = _trajectory_smoother.TrajectorySmoother
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_TrajectorySmoother"] = "📈 Trajectory Smoother"
 
 # Load and register multicamera nodes
 _multicamera_path = os.path.join(_nodes, "multicamera")
