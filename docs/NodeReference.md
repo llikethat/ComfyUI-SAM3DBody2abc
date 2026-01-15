@@ -1,413 +1,368 @@
 # SAM3DBody2abc Node Reference
 
-Complete reference for all nodes in SAM3DBody2abc v5.0.1
+## Version 4.8.8
+
+This document provides detailed information about all nodes in the SAM3DBody2abc extension.
 
 ---
 
 ## Table of Contents
 
-1. [Video Processing](#video-processing)
-2. [Camera Solving](#camera-solving)
-3. [MegaSAM (Optional)](#megasam-optional)
-4. [Motion Analysis](#motion-analysis)
-5. [Multi-Camera](#multi-camera)
-6. [Export](#export)
-7. [Debug & Visualization](#debug--visualization)
-8. [Datatype Reference](#datatype-reference)
+1. [Processing Nodes](#processing-nodes)
+2. [Analysis Nodes](#analysis-nodes)
+3. [Export Nodes](#export-nodes)
+4. [Camera Nodes](#camera-nodes)
+5. [Multi-Camera Nodes](#multi-camera-nodes)
+6. [Utility Nodes](#utility-nodes)
 
 ---
 
-## Video Processing
+## Processing Nodes
 
-### 🎬 Video Batch Processor
+### SAM3DBody2abc Mesh Accumulator
 
-Core node for extracting 3D body data from video frames.
+Accumulates per-frame SAM3DBody outputs into a MESH_SEQUENCE.
 
 **Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `images` | IMAGE | Video frames [N, H, W, 3] |
-| `sam3dbody_model` | SAM3DBODY_MODEL | Loaded SAM3DBody model |
-| `masks` | MASK | Optional foreground masks |
+| Input | Type | Description |
+|-------|------|-------------|
+| sam3dbody_mesh | SAM3DBODY_MESH | Per-frame mesh from SAM3DBody |
+| frame_index | INT | Current frame index |
+| mesh_sequence | MESH_SEQUENCE | Existing sequence (optional) |
 
 **Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence` | MESH_SEQUENCE | Per-frame mesh and skeleton data |
-| `status` | STRING | Processing status |
+| Output | Type | Description |
+|--------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | Accumulated sequence |
+| frame_count | INT | Number of frames |
 
 ---
 
-### 🏃 Character Trajectory Tracker
+### SAM3DBody2abc Video Processor
 
-Tracks character position through video using TAPIR point tracking + depth.
+Processes video through SAM3DBody frame-by-frame.
 
 **Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `images` | IMAGE | Video frames |
-| `mesh_sequence` | MESH_SEQUENCE | From Video Batch Processor |
-| `depth_maps` | IMAGE | Optional depth maps |
+| Input | Type | Description |
+|-------|------|-------------|
+| images | IMAGE | Video frames |
+| sam3dbody_model | MODEL | SAM3DBody model |
 
 **Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence` | MESH_SEQUENCE | Updated with tracked_depth |
-| `trajectory_vis` | IMAGE | Visualization of tracking |
+| Output | Type | Description |
+|--------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | Complete sequence |
 
 ---
 
-## Camera Solving
+## Analysis Nodes
 
-### 📷 Camera Solver
+### Motion Analyzer
 
-Standard camera solver for pan/tilt detection from background motion.
-
-**Best for:** Static tripod shots, pan/tilt movements, simple rotations
+Analyzes subject motion and generates trajectory data.
 
 **Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `images` | IMAGE | Video frames |
-| `solving_method` | COMBO | Static/Auto/Rotation Only/Full 6-DOF |
-| `foreground_masks` | MASK | Optional masks to exclude foreground |
-| `quality_mode` | COMBO | Fast/Balanced/Best |
+| Input | Type | Description |
+|-------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | From Accumulator |
+| images | IMAGE | Original video (optional, for overlay) |
+| camera_extrinsics | CAMERA_EXTRINSICS | For camera-compensated trajectory (optional) |
+| skeleton_mode | STRING | "Simple Skeleton" (18-joint) or "Full Skeleton" (127-joint) |
+| subject_height_m | FLOAT | Subject height in meters (0 = auto) |
+| reference_frame | INT | Frame for height estimation |
+| depth_source | STRING | "Auto", "SAM3DBody Only", or "Tracked Depth Only" |
+| reference_joint_idx | INT | Joint to highlight (-1 = default pelvis) |
 
 **Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `camera_extrinsics` | CAMERA_EXTRINSICS | Per-frame camera rotation/translation |
-| `debug_vis` | IMAGE | Feature matching visualization |
-| `status` | STRING | Solving status |
+| Output | Type | Description |
+|--------|------|-------------|
+| subject_motion | SUBJECT_MOTION | Motion analysis data |
+| scale_info | SCALE_INFO | Height/scale information |
+| debug_overlay | IMAGE | Video with joint markers |
+| trajectory_topview | IMAGE | Top-down trajectory view |
+| debug_info | STRING | Analysis summary |
+
+**Custom Fields Stored:**
+- `depth_source`: Which depth method was used
+- `skeleton_mode`: Simple or Full
+- `scale_factor`: Computed scale
 
 ---
 
-### 📷 Camera Extrinsics from JSON
+### Trajectory Smoother
 
-Load camera data from external tracking applications.
-
-**Supported Formats:** PFTrack, 3DEqualizer, SynthEyes, Maya, Nuke, After Effects
+Reduces noise/jitter in trajectory data.
 
 **Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `json_path` | STRING | Path to camera JSON file |
-| `coordinate_system` | COMBO | Source coordinate system |
+| Input | Type | Description |
+|-------|------|-------------|
+| subject_motion | SUBJECT_MOTION | From Motion Analyzer |
+| method | STRING | Smoothing algorithm |
+| strength | FLOAT | 0.0-1.0 smoothing intensity |
+| mesh_sequence | MESH_SEQUENCE | For Joint-Guided method (optional) |
+| skeleton_format | STRING | "SMPL-H" or "COCO" |
+| reference_joint_smplh | STRING | Reference joint for SMPL-H |
+| reference_joint_coco | STRING | Reference joint for COCO |
+
+**Smoothing Methods:**
+| Method | Description |
+|--------|-------------|
+| Savitzky-Golay (Best) | Preserves shape, best for motion capture |
+| Gaussian | General-purpose smoothing |
+| Moving Average | Simple but effective |
+| Spline | Fits smooth curve |
+| Kalman | Physics-based (constant velocity model) |
+| Joint-Guided (NEW) | Uses stable 2D joint detection to guide smoothing |
 
 **Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `camera_extrinsics` | CAMERA_EXTRINSICS | Loaded camera data |
+| Output | Type | Description |
+|--------|------|-------------|
+| subject_motion | SUBJECT_MOTION | Smoothed motion data |
+| comparison_image | IMAGE | Before/after visualization |
+| stats | STRING | Jitter reduction statistics |
+| reference_joint_index | INT | Selected joint index |
+
+**Custom Fields Stored:**
+- `smoothing_applied.method`: Which method was used
+- `smoothing_applied.strength`: Smoothing strength
+- `smoothing_applied.jitter_reduction_pct`: Percentage reduction
+- `smoothing_applied.reference_joint_name`: Joint used for Joint-Guided
 
 ---
 
-## MegaSAM (Optional)
+### Character Trajectory Tracker
 
-High-quality camera solving for complex shots. Requires separate installation.
-
-### 🎬 MegaSAM Camera Solver
-
-Full 6-DOF camera solving using DROID-SLAM + Consistent Video Depth.
-
-**Best for:** Dolly shots, crane movements, handheld footage, dynamic scenes
-
-**Requirements:**
-- lietorch, kornia, torch-scatter
-- Compiled DROID base module
-- Checkpoints in `ComfyUI/models/megasam/`
+Tracks character position using TAPIR point tracking.
 
 **Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `images` | IMAGE | Video frames |
-| `coordinate_system` | COMBO | Maya (Y-up) / Blender (Z-up) / OpenCV |
-| `focal_length_px` | FLOAT | Initial focal length (0 = auto) |
-| `optimize_focal` | BOOLEAN | Optimize focal during tracking |
-| `model_path` | STRING | Custom checkpoint directory |
+| Input | Type | Description |
+|-------|------|-------------|
+| images | IMAGE | Video frames |
+| mesh_sequence | MESH_SEQUENCE | From Accumulator |
+| tracking_mode | STRING | "Pelvis", "Average Body", etc. |
+| smoothing_method | STRING | Smoothing algorithm |
+| smoothing_window | INT | Window size |
 
 **Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `camera_extrinsics` | CAMERA_EXTRINSICS | Full 6-DOF camera data |
-| `depth_maps` | IMAGE | Dense depth maps [N, H, W, 1] |
-| `motion_masks` | IMAGE | Motion probability [N, H, W, 1] |
-| `status` | STRING | Processing status |
+| Output | Type | Description |
+|--------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | With tracked_depth added |
+| trajectory_3d | LIST | 3D positions |
 
-**Checkpoint Paths:**
+**Custom Fields Stored (via subject_motion):**
+- `character_trajectory_settings.tracking_mode`
+- `character_trajectory_settings.smoothing_method`
+- `character_trajectory_settings.smoothing_window`
+
+---
+
+## Export Nodes
+
+### Export Animated FBX
+
+Exports MESH_SEQUENCE to animated FBX file.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | From Accumulator |
+| filename | STRING | Output filename |
+| camera_extrinsics | CAMERA_EXTRINSICS | Camera motion (optional) |
+| fps | FLOAT | Export framerate (0 = use source) |
+| skeleton_mode | STRING | "Rotations" or "Positions" |
+| world_translation | STRING | Body positioning mode |
+| camera_motion | STRING | Camera export mode |
+| extrinsics_smoothing | STRING | Smoothing for camera |
+| use_depth_positioning | BOOLEAN | Enable depth-based Z |
+| depth_mode | STRING | "Position" or "Scale" |
+| subject_motion | SUBJECT_MOTION | Motion analysis (optional) |
+| scale_info | SCALE_INFO | Scale data (optional) |
+
+**World Translation Options:**
+| Option | Description |
+|--------|-------------|
+| None (Body at Origin) | Body stays at 0,0,0 |
+| Body World (Raw) | Uses pred_cam_t directly |
+| Body World (Compensated) | Camera effects removed |
+| Depth Only (Z-axis) | Only Z from depth |
+
+**Custom Fields in FBX:**
+| Field | Source |
+|-------|--------|
+| sam3dbody2abc_version | Package version |
+| export_timestamp | Export time (IST) |
+| world_translation | Position mode |
+| camera_motion | Camera mode |
+| extrinsics_smoothing | Smoothing method |
+| extrinsics_smoothing_strength | Strength value |
+| depth_positioning_enabled | True/False |
+| depth_mode | Position/Scale |
+| skeleton_export_mode | Rotations/Positions |
+| trajectory_smoothing_method | From Trajectory Smoother |
+| trajectory_jitter_reduction_pct | Reduction achieved |
+| depth_source | From Motion Analyzer |
+| camera_solving_method | From Camera Solver |
+| camera_translational_solver | From Camera Solver |
+
+**Outputs:**
+| Output | Type | Description |
+|--------|------|-------------|
+| output_path | STRING | Path to FBX file |
+| status | STRING | Export summary |
+| frame_count | INT | Frames exported |
+| fps | FLOAT | Export framerate |
+
+---
+
+## Camera Nodes
+
+### Camera Solver V2
+
+Solves camera rotation from video features.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| images | IMAGE | Video frames |
+| foreground_masks | MASK | Person mask (optional) |
+| solving_method | STRING | Algorithm selection |
+| translational_solver | STRING | For translation |
+| coordinate_system | STRING | Maya/Blender/OpenCV |
+
+**Solving Methods:**
+| Method | Description |
+|--------|-------------|
+| Essential + Bundle | Most accurate |
+| Homography | Fast, rotation-only |
+| Feature Flow | Simple averaging |
+
+**Outputs:**
+| Output | Type | Description |
+|--------|------|-------------|
+| camera_extrinsics | CAMERA_EXTRINSICS | 6-DOF camera motion |
+| status | STRING | Solving summary |
+
+**Custom Fields Stored:**
+- `solving_method`: Which method was used
+- `translational_solver`: Translation method
+- `coordinate_system`: Output coordinate system
+
+---
+
+### Intrinsics from SAM3DBody
+
+Estimates camera intrinsics from SAM3DBody focal length.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| mesh_sequence | MESH_SEQUENCE | From Accumulator |
+| sensor_width_mm | FLOAT | Camera sensor width |
+
+**Outputs:**
+| Output | Type | Description |
+|--------|------|-------------|
+| camera_intrinsics | CAMERA_INTRINSICS | Focal length, principal point |
+
+---
+
+## Multi-Camera Nodes
+
+### Multi-Camera Auto Calibrator
+
+Automatically calibrates two cameras from synchronized video.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| subject_motion_a | SUBJECT_MOTION | Camera A motion |
+| subject_motion_b | SUBJECT_MOTION | Camera B motion |
+| focal_length_mm | FLOAT | Camera focal length |
+
+**Outputs:**
+| Output | Type | Description |
+|--------|------|-------------|
+| calibration | CALIBRATION | Camera calibration data |
+| visualization | IMAGE | Debug visualization |
+| status | STRING | Calibration summary |
+
+---
+
+### Multi-Camera Triangulator
+
+Triangulates 3D positions from multiple camera views.
+
+**Inputs:**
+| Input | Type | Description |
+|-------|------|-------------|
+| subject_motion_a | SUBJECT_MOTION | Camera A |
+| subject_motion_b | SUBJECT_MOTION | Camera B |
+| calibration | CALIBRATION | From Auto Calibrator |
+
+**Outputs:**
+| Output | Type | Description |
+|--------|------|-------------|
+| triangulated_motion | TRIANGULATED_MOTION | True 3D positions |
+| topview | IMAGE | Top-down visualization |
+
+---
+
+## Skeleton Formats
+
+### SMPL-H (127 joints) - joint_coords
+
 ```
-ComfyUI/models/megasam/
-├── megasam_final.pth       # Main MegaSAM weights
-├── depth_anything_vitl14.pth  # Depth estimation
-└── raft-things.pth         # Optical flow
-```
-
----
-
-### 📁 MegaSAM Data Loader
-
-Load pre-computed MegaSAM results from .npz files.
-
-**Use when:** You've run MegaSAM offline and want to use results in ComfyUI
-
-**Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `npz_path` | STRING | Path to `{scene}_sgd_cvd_hr.npz` file |
-| `coordinate_system` | COMBO | Target coordinate system |
-
-**Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `camera_extrinsics` | CAMERA_EXTRINSICS | Loaded camera data |
-| `depth_maps` | IMAGE | Depth visualization |
-| `images` | IMAGE | Original images from file |
-| `status` | STRING | Load status |
-
-**NPZ File Format:**
-```python
-{
-    "cam_c2w": np.float32,   # [N, 4, 4] camera-to-world matrices
-    "depths": np.float16,    # [N, H, W] depth maps
-    "intrinsic": np.float32, # [3, 3] K matrix
-    "images": np.uint8,      # [N, H, W, 3] optional
-}
-```
-
----
-
-## Motion Analysis
-
-### 📊 Motion Analyzer
-
-Analyze character motion: speed, direction, foot contacts, trajectory.
-
-**Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence` | MESH_SEQUENCE | From Video Batch Processor |
-| `camera_extrinsics` | CAMERA_EXTRINSICS | Optional camera data |
-| `depth_source` | COMBO | Auto/SAM3DBody Only/Tracked Depth |
-| `fps` | FLOAT | Frames per second |
-
-**Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `subject_motion` | SUBJECT_MOTION | Analyzed motion data |
-| `trajectory_vis` | IMAGE | Trajectory visualization |
-| `trajectory_topview` | IMAGE | Top-down trajectory view |
-| `foot_contact_vis` | IMAGE | Foot contact detection |
-| `status` | STRING | Analysis summary |
-
----
-
-### 📏 Scale Info Display
-
-Display scale and measurement information.
-
----
-
-## Multi-Camera
-
-### 🎯 Camera Auto-Calibrator
-
-Automatically compute relative camera positions from person keypoints.
-
-**Use when:** You have 2 synchronized camera views of the same person
-
-**Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence_a` | MESH_SEQUENCE | Camera A data |
-| `mesh_sequence_b` | MESH_SEQUENCE | Camera B data |
-| `person_height_m` | FLOAT | Known person height for scale |
-| `focal_length_px` | FLOAT | Camera focal length |
-
-**Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `calibration` | CALIBRATION_DATA | Camera calibration result |
-| `debug_vis` | IMAGE | Calibration visualization |
-| `status` | STRING | Calibration summary with viewing angles |
-
----
-
-### 🔺 Multi-Camera Triangulator
-
-Triangulate 3D positions from 2 camera views.
-
-**Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence_a` | MESH_SEQUENCE | Camera A data |
-| `mesh_sequence_b` | MESH_SEQUENCE | Camera B data |
-| `calibration` | CALIBRATION_DATA | From Auto-Calibrator |
-
-**Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence` | MESH_SEQUENCE | Triangulated 3D data |
-| `debug_vis` | IMAGE | Triangulation visualization |
-
----
-
-## Export
-
-### 📦 Export Animated FBX
-
-Export animated FBX for Maya/Blender.
-
-**Inputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `mesh_sequence` | MESH_SEQUENCE | Body data |
-| `subject_motion` | SUBJECT_MOTION | Motion analysis |
-| `camera_extrinsics` | CAMERA_EXTRINSICS | Optional camera data |
-| `camera_intrinsics` | CAMERA_INTRINSICS | Optional intrinsics |
-| `output_path` | STRING | Output file path |
-| `fps` | INT | Frame rate |
-| `world_translation_mode` | COMBO | None/Root Locator/Baked |
-| `include_skeleton` | BOOLEAN | Include skeleton |
-| `include_mesh` | BOOLEAN | Include mesh |
-
-**Outputs:**
-| Name | Type | Description |
-|------|------|-------------|
-| `fbx_path` | STRING | Path to exported FBX |
-| `status` | STRING | Export summary |
-
----
-
-### 📦 Export FBX from JSON
-
-Export FBX from saved JSON data.
-
----
-
-## Debug & Visualization
-
-### 🔍 Verify Overlay
-
-Overlay mesh on single frame for verification.
-
-### 🔍 Verify Overlay (Sequence)
-
-Overlay mesh on video sequence.
-
-### 🎥 FBX Animation Viewer
-
-Preview FBX animation in ComfyUI.
-
-### 🔄 Temporal Smoothing
-
-Reduce jitter in single-camera depth estimates.
-
-**Methods:** Gaussian, EMA (bidirectional), Savitzky-Golay
-
----
-
-## Datatype Reference
-
-### CAMERA_EXTRINSICS
-
-Per-frame camera rotation and translation data.
-
-```python
-{
-    "num_frames": int,
-    "image_width": int,
-    "image_height": int,
-    "source": str,  # "CameraSolver", "MegaSAM", "JSON", etc.
-    "solving_method": str,
-    "coordinate_system": str,  # "maya", "blender", "opencv"
-    "units": str,  # "radians" or "degrees"
-    "has_translation": bool,
-    "rotations": [
-        {
-            "frame": int,
-            "pan": float,      # Y-rotation (radians)
-            "tilt": float,     # X-rotation (radians)
-            "roll": float,     # Z-rotation (radians)
-            "pan_deg": float,  # Convenience
-            "tilt_deg": float,
-            "roll_deg": float,
-            "tx": float,       # Translation X
-            "ty": float,       # Translation Y
-            "tz": float,       # Translation Z
-        },
-        ...
-    ],
-    # Optional MegaSAM-specific:
-    "focal_length_px": float,
-    "principal_point": [float, float],
-}
+0: Pelvis      1: L_Hip       2: R_Hip       3: Spine1
+4: L_Knee      5: R_Knee      6: Spine2      7: L_Ankle
+8: R_Ankle     9: Spine3     10: L_Foot     11: R_Foot
+12: Neck      13: L_Collar   14: R_Collar   15: Head
+16: L_Shoulder 17: R_Shoulder 18: L_Elbow   19: R_Elbow
+20: L_Wrist   21: R_Wrist    22-126: Hands/Face
 ```
 
-### MESH_SEQUENCE
+### COCO (17 joints) - keypoints_2d/3d
 
-Per-frame mesh and skeleton data.
-
-```python
-{
-    "vertices": list,      # Per-frame vertex positions
-    "faces": np.array,     # Face indices (constant)
-    "joint_coords": list,  # Per-frame joint positions
-    "joint_parents": list, # Skeleton hierarchy
-    "pred_cam_t": list,    # SAM3DBody camera parameters
-    "tracked_depth": list, # Optional tracked depth
-    # ... additional fields
-}
 ```
-
-### SUBJECT_MOTION
-
-Analyzed motion data from Motion Analyzer.
-
-```python
-{
-    "body_world_3d": list,             # Per-frame world position
-    "body_world_3d_compensated": list, # Camera-compensated position
-    "depth_estimate": list,            # Depth per frame
-    "speed_mps": list,                 # Speed in m/s
-    "direction": list,                 # Movement direction
-    "foot_contacts": list,             # Left/right foot ground contact
-    # ... additional fields
-}
-```
-
-### CALIBRATION_DATA
-
-Multi-camera calibration from Auto-Calibrator.
-
-```python
-{
-    "R": np.array,         # [3, 3] Relative rotation
-    "t": np.array,         # [3] Relative translation
-    "scale": float,        # Scale factor
-    "K": np.array,         # [3, 3] Intrinsic matrix
-    "viewing_angles": {
-        "camera_a": {
-            "viewing_angle_deg": float,
-            "azimuth_deg": float,
-            "elevation_deg": float,
-            "distance_m": float,
-        },
-        "camera_b": { ... },
-    },
-}
+0: Nose        1: L_Eye       2: R_Eye       3: L_Ear
+4: R_Ear       5: L_Shoulder  6: R_Shoulder  7: L_Elbow
+8: R_Elbow     9: L_Wrist    10: R_Wrist    11: L_Hip
+12: R_Hip     13: L_Knee     14: R_Knee     15: L_Ankle
+16: R_Ankle
 ```
 
 ---
 
-## Coordinate Systems
+## Typical Workflow
 
-| System | Up | Forward | Right |
-|--------|-----|---------|-------|
-| **Maya** | +Y | -Z | +X |
-| **Blender** | +Z | +Y | +X |
-| **OpenCV** | -Y | +Z | +X |
-
-MegaSAM outputs in OpenCV convention and converts to Maya/Blender automatically.
+```
+Video → SAM3DBody → Mesh Accumulator → Motion Analyzer
+                                            ↓
+                    Character Trajectory (optional)
+                                            ↓
+                    Camera Solver V2 (optional)
+                                            ↓
+                    Trajectory Smoother (optional)
+                                            ↓
+                    Export Animated FBX → .fbx file
+```
 
 ---
 
-*Last updated: January 2025 (v5.0.1)*
+## Changelog
+
+### v4.8.8
+- Added Joint-Guided smoothing method to Trajectory Smoother
+- Added reference joint selection (SMPL-H/COCO)
+- Added reference_joint_idx input to Motion Analyzer
+- Added depth_source to subject_motion for FBX metadata
+- Extended FBX custom fields with export settings
+- Fixed trajectory top-view X-axis orientation
+
+### v4.8.7
+- Fixed trajectory top-view horizontal flip
+- Fixed viewing angle calculation (170° → 30-35°)
+- Fixed version display in FBX custom fields
+
+---
+
+*Generated for SAM3DBody2abc v4.8.8*

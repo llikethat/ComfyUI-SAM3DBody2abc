@@ -329,6 +329,18 @@ class ExportAnimatedFBX:
         skip_first_frames: int,
         fps: float,
         frame_count: int,
+        camera_extrinsics: Optional[Dict] = None,
+        # New in v4.8.8 - export settings
+        extrinsics_smoothing: str = "",
+        smoothing_strength: float = 0.0,
+        use_depth_positioning: bool = True,
+        depth_mode: str = "",
+        skeleton_mode: str = "",
+        up_axis: str = "Y",
+        flip_x: bool = False,
+        include_mesh: bool = True,
+        include_skeleton: bool = True,
+        include_camera: bool = True,
     ) -> Dict:
         """
         Build metadata dict to be embedded in FBX as custom properties.
@@ -368,6 +380,17 @@ class ExportAnimatedFBX:
             "camera_motion": camera_motion,
             "export_fps": fps,
             "frame_count": frame_count,
+            # Additional export settings (v4.8.8)
+            "extrinsics_smoothing": extrinsics_smoothing,
+            "extrinsics_smoothing_strength": smoothing_strength,
+            "depth_positioning_enabled": str(use_depth_positioning),
+            "depth_mode": depth_mode,
+            "skeleton_export_mode": skeleton_mode,
+            "up_axis": up_axis,
+            "flip_x": str(flip_x),
+            "include_mesh": str(include_mesh),
+            "include_skeleton": str(include_skeleton),
+            "include_camera": str(include_camera),
         }
         
         # Video info - use source_video_fps if provided, otherwise use export fps
@@ -470,6 +493,31 @@ class ExportAnimatedFBX:
             metadata["focal_variation_percent"] = round(subject_motion.get("focal_variation_percent", 0), 1)
             metadata["sensor_width_mm"] = round(subject_motion.get("sensor_width_mm", 36.0), 1)
             metadata["has_extrinsics_compensation"] = str(subject_motion.get("has_extrinsics_compensation", False))
+            
+            # === Motion Analyzer settings ===
+            metadata["depth_source"] = subject_motion.get("depth_source", "Auto")
+            
+            # === Trajectory Smoother settings (if applied) ===
+            smoothing_info = subject_motion.get("smoothing_applied", {})
+            if smoothing_info:
+                metadata["trajectory_smoothing_method"] = smoothing_info.get("method", "None")
+                metadata["trajectory_smoothing_strength"] = str(smoothing_info.get("strength", 0))
+                metadata["trajectory_jitter_reduction_pct"] = str(round(smoothing_info.get("jitter_reduction_pct", 0), 1))
+                metadata["trajectory_reference_joint"] = smoothing_info.get("reference_joint_name", "")
+                metadata["trajectory_skeleton_format"] = smoothing_info.get("skeleton_format", "")
+            
+            # === Character Trajectory settings (if available) ===
+            char_traj_info = subject_motion.get("character_trajectory_settings", {})
+            if char_traj_info:
+                metadata["char_traj_tracking_mode"] = char_traj_info.get("tracking_mode", "")
+                metadata["char_traj_smoothing_method"] = char_traj_info.get("smoothing_method", "")
+                metadata["char_traj_smoothing_window"] = str(char_traj_info.get("smoothing_window", 0))
+            
+            # === Camera Solver settings (if available from extrinsics) ===
+            if camera_extrinsics:
+                metadata["camera_solving_method"] = camera_extrinsics.get("solving_method", "")
+                metadata["camera_translational_solver"] = camera_extrinsics.get("translational_solver", "")
+                metadata["camera_coordinate_system"] = camera_extrinsics.get("coordinate_system", "")
         
         # Add detailed joint indices reference for Maya users
         # Full Skeleton (127 joints) - SMPL-X based
@@ -783,6 +831,18 @@ class ExportAnimatedFBX:
                 skip_first_frames=skip_first_frames,
                 fps=fps,
                 frame_count=len(sorted_indices),
+                camera_extrinsics=camera_extrinsics,
+                # New in v4.8.8 - export settings
+                extrinsics_smoothing=extrinsics_smoothing,
+                smoothing_strength=smoothing_strength,
+                use_depth_positioning=use_depth_positioning,
+                depth_mode=depth_mode,
+                skeleton_mode=skeleton_mode,
+                up_axis=up_axis,
+                flip_x=flip_x,
+                include_mesh=include_mesh,
+                include_skeleton=include_skeleton,
+                include_camera=include_camera,
             ),
         }
         

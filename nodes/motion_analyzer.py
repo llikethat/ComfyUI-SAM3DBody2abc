@@ -950,6 +950,12 @@ class MotionAnalyzer:
                     "default": "Auto (Tracked if available)",
                     "tooltip": "Depth source for trajectory Z. 'Tracked' uses per-frame depth from Character Trajectory (better for circular paths). 'SAM3DBody' uses pred_cam_t[2] (original behavior)."
                 }),
+                "reference_joint_idx": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 126,
+                    "tooltip": "Joint index to highlight in green (-1 = default pelvis). SMPL-H: 0=Pelvis, 1=L_Hip, etc. COCO: 11=L_Hip, etc."
+                }),
             }
         }
     
@@ -1083,6 +1089,7 @@ class MotionAnalyzer:
         arrow_scale: float = 10.0,
         sensor_width_mm: float = 36.0,
         depth_source: str = "Auto (Tracked if available)",
+        reference_joint_idx: int = -1,
     ) -> Tuple[Dict, Dict, torch.Tensor, str]:
         """
         Analyze subject motion from mesh sequence.
@@ -1254,6 +1261,7 @@ class MotionAnalyzer:
             "scale_factor": scale_factor,
             "skeleton_mode": skeleton_mode,
             "keypoint_source": kp_source,
+            "depth_source": depth_source,  # Added in v4.8.8 for FBX metadata
         }
         
         for i in range(num_frames):
@@ -1690,8 +1698,8 @@ class MotionAnalyzer:
             
             images_np = images.cpu().numpy() if isinstance(images, torch.Tensor) else images
             
-            # Check if a highlight joint was specified (e.g., from Trajectory Smoother)
-            highlight_joint_idx = subject_motion.get("highlight_joint_idx", -1)
+            # Use reference_joint_idx parameter if specified, otherwise check subject_motion
+            highlight_idx = reference_joint_idx if reference_joint_idx >= 0 else subject_motion.get("highlight_joint_idx", -1)
             
             overlay = create_motion_debug_overlay(
                 images_np,
@@ -1700,7 +1708,7 @@ class MotionAnalyzer:
                 skeleton_mode=skeleton_mode_str,
                 arrow_scale=arrow_scale,
                 show_skeleton=show_skeleton,
-                highlight_joint_idx=highlight_joint_idx,
+                highlight_joint_idx=highlight_idx,
             )
             
             if overlay.dtype == np.uint8:
