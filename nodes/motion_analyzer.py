@@ -772,11 +772,12 @@ def create_motion_debug_overlay(
         right_ankle_idx: (COLOR_FEET, 5),   # Orange
     }
     
-    # If a highlight joint is specified (from Trajectory Smoother), make it green and larger
-    COLOR_HIGHLIGHT = (0, 255, 0)  # Bright green
-    if highlight_joint_idx >= 0:
-        # Override or add the highlighted joint
-        special_joints[highlight_joint_idx] = (COLOR_HIGHLIGHT, 10)  # Green, extra large
+    # If a highlight joint is specified (from Trajectory Smoother or reference_joint_idx input),
+    # show it in CYAN (different from default green pelvis) with extra large size
+    COLOR_REFERENCE = (255, 255, 0)  # Cyan (BGR) - distinct from green pelvis
+    if highlight_joint_idx >= 0 and highlight_joint_idx != pelvis_idx:
+        # Override or add the highlighted joint with cyan color
+        special_joints[highlight_joint_idx] = (COLOR_REFERENCE, 12)  # Cyan, extra large
     
     for i in range(num_frames):
         frame = output[i]
@@ -800,6 +801,13 @@ def create_motion_debug_overlay(
                         cv2.circle(frame, (int(pt[0]), int(pt[1])), radius, color, -1)
                         # Add black outline for visibility
                         cv2.circle(frame, (int(pt[0]), int(pt[1])), radius, (0, 0, 0), 1)
+                        
+                        # Extra highlight ring for reference joint (cyan with pulsing effect)
+                        if j == highlight_joint_idx and highlight_joint_idx >= 0:
+                            # Draw outer ring in white for contrast
+                            cv2.circle(frame, (int(pt[0]), int(pt[1])), radius + 4, (255, 255, 255), 2)
+                            # Draw inner ring in cyan
+                            cv2.circle(frame, (int(pt[0]), int(pt[1])), radius + 2, (255, 255, 0), 1)
         
         # Draw pelvis position with larger black outline
         pelvis_2d = subject_motion.get("pelvis_2d")
