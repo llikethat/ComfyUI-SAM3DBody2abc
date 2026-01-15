@@ -15,13 +15,15 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.6
-- NEW: Viewing angle computation in Auto-Calibrator
-  - Distance from each camera to person
-  - Viewing angle (how much camera looks at person)
-  - Azimuth (horizontal angle)
-  - Elevation (vertical angle)
-  - Person 3D position
+Version: 5.0.1
+- NEW: MegaSAM camera solver integration (optional)
+  - High-quality 6-DOF camera solving
+  - Dense depth maps output
+  - Motion probability masks
+  - Best for dolly/crane/handheld shots
+- FIX: Trajectory top-view horizontal flip
+- FIX: Viewing angle calculation (OpenCV→Maya coordinate fix)
+- FIX: Camera compensation sign in blender export
 - 🎯 Camera Auto-Calibrator node
   - Automatically computes camera positions from person keypoints
   - No manual measurement required!
@@ -30,7 +32,7 @@ Version: 4.8.6
 - Multi-Camera Triangulation System
 """
 
-__version__ = "4.8.6"
+__version__ = "5.0.1"
 
 import os
 import sys
@@ -122,6 +124,15 @@ if _temporal_smoothing:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = _temporal_smoothing.TemporalSmoothing
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_TemporalSmoothing"] = "🔄 Temporal Smoothing"
+
+# Load and register MegaSAM solver (optional)
+_megasam_solver = _load_module("sam3d2abc_megasam_solver", os.path.join(_nodes, "megasam_solver.py"))
+if _megasam_solver:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MegaSAMCameraSolver"] = _megasam_solver.MegaSAMCameraSolver
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MegaSAMDataLoader"] = _megasam_solver.MegaSAMDataLoader
+    
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MegaSAMCameraSolver"] = "🎬 MegaSAM Camera Solver"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MegaSAMDataLoader"] = "📁 MegaSAM Data Loader"
 
 # Load and register multicamera nodes
 _multicamera_path = os.path.join(_nodes, "multicamera")

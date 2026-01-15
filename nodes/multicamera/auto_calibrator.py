@@ -669,7 +669,7 @@ class CameraAutoCalibrator:
         Triangulate the person's center (pelvis) position in 3D.
         """
         if len(pelvis_points_a) == 0:
-            return np.array([0, 0, 5])  # Default: 5m in front
+            return np.array([0, 0, -5])  # Default: 5m in front (Maya convention: -Z is forward)
         
         P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
         P2 = K @ np.hstack([R, t])
@@ -692,9 +692,16 @@ class CameraAutoCalibrator:
                 continue
         
         if len(positions) == 0:
-            return np.array([0, 0, 5])
+            return np.array([0, 0, -5])  # Default: 5m in front (Maya convention)
         
-        return np.median(positions, axis=0)
+        result = np.median(positions, axis=0)
+        
+        # Convert from OpenCV convention (Z-forward positive) to 
+        # Maya/Blender convention (Z-forward negative, camera looks down -Z)
+        # This ensures viewing angle calculations work correctly
+        result[2] = -result[2]
+        
+        return result
 
 
 # Node registration
