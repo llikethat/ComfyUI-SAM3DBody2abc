@@ -697,8 +697,8 @@ def create_trajectory_topview(
     # Frame count
     cv2.putText(canvas, f"Frames: {len(points)}", (image_size - 90, image_size - 10), font, font_scale, text_color, 1)
     
-    # Horizontal flip for correct left/right orientation
-    # (Camera view convention: stage-left should appear on left of screen)
+    # Horizontal flip so left-right matches video perspective
+    # (viewer looking at screen sees left as left, right as right)
     canvas = cv2.flip(canvas, 1)
     
     return canvas

@@ -577,32 +577,35 @@ class CameraAutoCalibrator:
         Compute the viewing angle from each camera to the person.
         
         Returns angles in degrees:
-        - camera_a_to_person: Angle from Camera A's forward direction to person
-        - camera_b_to_person: Angle from Camera B's forward direction to person
-        - person_facing_a: Approximate angle person is facing relative to Camera A
-        - person_facing_b: Approximate angle person is facing relative to Camera B
+        - viewing_angle_deg: Angle from Camera's forward direction to person
+        - azimuth_deg: Horizontal angle (+ = person to right)
+        - elevation_deg: Vertical angle (+ = person above)
+        - distance_m: Distance from camera to person
         
         Angles:
-        - 0° = looking directly at camera (frontal view)
-        - 90° = side view (profile)
-        - 180° = back view
+        - 0° = person directly in front of camera (on optical axis)
+        - 30° = person slightly off-center
+        - 90° = person at side of camera
         """
-        # Camera A is at origin, looking down -Z axis
-        cam_a_forward = np.array([0, 0, -1])
+        # Camera A is at origin, looking down +Z axis (into the scene)
+        # In computer vision convention, camera looks along +Z
+        cam_a_forward = np.array([0, 0, 1])
         
         # Camera B forward direction (rotated)
-        cam_b_forward = R @ np.array([0, 0, -1])
+        cam_b_forward = R @ np.array([0, 0, 1])
         
         # Vector from Camera A to person
         vec_a_to_person = person_3d - camera_a_pos
-        vec_a_to_person_norm = vec_a_to_person / (np.linalg.norm(vec_a_to_person) + 1e-8)
+        dist_a = np.linalg.norm(vec_a_to_person)
+        vec_a_to_person_norm = vec_a_to_person / (dist_a + 1e-8)
         
         # Vector from Camera B to person
         vec_b_to_person = person_3d - camera_b_pos
-        vec_b_to_person_norm = vec_b_to_person / (np.linalg.norm(vec_b_to_person) + 1e-8)
+        dist_b = np.linalg.norm(vec_b_to_person)
+        vec_b_to_person_norm = vec_b_to_person / (dist_b + 1e-8)
         
         # Angle from Camera A forward to person direction
-        # This tells us how much the camera needs to "look" towards the person
+        # This tells us how much off-center the person is from camera's view
         dot_a = np.clip(np.dot(cam_a_forward, vec_a_to_person_norm), -1, 1)
         angle_a_to_person = np.degrees(np.arccos(dot_a))
         
@@ -616,7 +619,7 @@ class CameraAutoCalibrator:
         # Camera A horizontal angle to person
         vec_a_xz = np.array([vec_a_to_person[0], 0, vec_a_to_person[2]])
         vec_a_xz_norm = vec_a_xz / (np.linalg.norm(vec_a_xz) + 1e-8)
-        forward_xz = np.array([0, 0, -1])
+        forward_xz = np.array([0, 0, 1])  # +Z forward
         
         # Use atan2 for signed angle
         cross_a = np.cross(forward_xz, vec_a_xz_norm)
@@ -636,22 +639,18 @@ class CameraAutoCalibrator:
         elevation_a = np.degrees(np.arcsin(np.clip(vec_a_to_person_norm[1], -1, 1)))
         elevation_b = np.degrees(np.arcsin(np.clip(vec_b_to_person_norm[1], -1, 1)))
         
-        # Distance from each camera to person
-        distance_a = np.linalg.norm(vec_a_to_person)
-        distance_b = np.linalg.norm(vec_b_to_person)
-        
         return {
             "camera_a": {
                 "viewing_angle_deg": angle_a_to_person,
                 "azimuth_deg": azimuth_a,  # Horizontal angle (+ = person to right)
                 "elevation_deg": elevation_a,  # Vertical angle (+ = person above)
-                "distance_m": distance_a,
+                "distance_m": dist_a,
             },
             "camera_b": {
                 "viewing_angle_deg": angle_b_to_person,
                 "azimuth_deg": azimuth_b,
                 "elevation_deg": elevation_b,
-                "distance_m": distance_b,
+                "distance_m": dist_b,
             },
             "person_position_3d": person_3d.tolist(),
         }
@@ -669,7 +668,7 @@ class CameraAutoCalibrator:
         Triangulate the person's center (pelvis) position in 3D.
         """
         if len(pelvis_points_a) == 0:
-            return np.array([0, 0, -5])  # Default: 5m in front (Maya convention: -Z is forward)
+            return np.array([0, 0, 5])  # Default: 5m in front
         
         P1 = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
         P2 = K @ np.hstack([R, t])
@@ -692,16 +691,9 @@ class CameraAutoCalibrator:
                 continue
         
         if len(positions) == 0:
-            return np.array([0, 0, -5])  # Default: 5m in front (Maya convention)
+            return np.array([0, 0, 5])
         
-        result = np.median(positions, axis=0)
-        
-        # Convert from OpenCV convention (Z-forward positive) to 
-        # Maya/Blender convention (Z-forward negative, camera looks down -Z)
-        # This ensures viewing angle calculations work correctly
-        result[2] = -result[2]
-        
-        return result
+        return np.median(positions, axis=0)
 
 
 # Node registration

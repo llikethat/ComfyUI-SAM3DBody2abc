@@ -9,7 +9,6 @@ Convert video of a person into animated 3D body mesh with skeleton, camera, and 
 - **3D Body Reconstruction**: Per-frame mesh and skeleton from SAM3DBody
 - **Depth Tracking**: TAPIR + Depth Anything V2 for accurate Z-axis movement
 - **Camera Solving**: Automatic pan/tilt detection from background motion
-- **MegaSAM Integration** (v5.0.1): High-quality 6-DOF camera solving for complex shots
 - **Motion Analysis**: Speed, direction, foot contact detection
 - **FBX Export**: Maya-compatible with proper axis conversion and scale
 
@@ -35,8 +34,6 @@ A complete workflow is included: `workflows/SAM3DBody2abc_Video_to_FBX.json`
 | 🏃 **Character Trajectory Tracker** | TAPIR + Depth Anything V2 depth tracking |
 | 📷 **Camera Solver** | Pan/tilt detection from background |
 | 📷 **Camera Extrinsics from JSON** | Import external camera data |
-| 🎬 **MegaSAM Camera Solver** | High-quality 6-DOF camera solving (dolly/handheld) |
-| 📁 **MegaSAM Data Loader** | Load pre-computed MegaSAM results |
 | 📊 **Motion Analyzer** | Speed, direction, foot contact analysis |
 | 📏 **Scale Info Display** | Display scale information |
 | 🔍 **Verify Overlay** | Debug visualization (single frame) |
@@ -81,44 +78,6 @@ git clone https://github.com/cvg/LightGlue.git && cd LightGlue && pip install -e
 # LoFTR - Alternative detector-free matching (included in kornia)
 pip install kornia
 ```
-
-### MegaSAM Installation (Optional - for complex camera motion)
-
-MegaSAM provides high-quality 6-DOF camera solving for dolly, crane, handheld, and dynamic scenes.
-
-**Dependencies:**
-```bash
-# Core dependencies
-pip install lietorch kornia torch-scatter
-
-# xformers (for UniDepth) - use prebuilt for your CUDA version
-# Example for Python 3.10 + CUDA 11.8 + PyTorch 2.0.1:
-wget https://anaconda.org/xformers/xformers/0.0.22.post7/download/linux-64/xformers-0.0.22.post7-py310_cu11.8.0_pyt2.0.1.tar.bz2
-conda install xformers-0.0.22.post7-py310_cu11.8.0_pyt2.0.1.tar.bz2
-```
-
-**Compile DROID-SLAM base module:**
-```bash
-cd ComfyUI/custom_nodes/ComfyUI-SAM3DBody2abc/mega-sam/base
-python setup.py install
-```
-
-**Download Checkpoints** to `ComfyUI/models/megasam/`:
-
-| Checkpoint | Source | Size |
-|------------|--------|------|
-| `megasam_final.pth` | MegaSAM release | ~300MB |
-| `depth_anything_vitl14.pth` | [HuggingFace](https://huggingface.co/spaces/LiheYoung/Depth-Anything/blob/main/checkpoints/depth_anything_vitl14.pth) | ~350MB |
-| `raft-things.pth` | [Google Drive](https://drive.google.com/drive/folders/1sWDsfuZ3Up38EUQt7-JDTT1HcGHuJgvT) | ~20MB |
-
-**When to use MegaSAM vs standard Camera Solver:**
-
-| Use Camera Solver | Use MegaSAM |
-|-------------------|-------------|
-| Static tripod shots | Dolly/tracking shots |
-| Pan/tilt only | Crane/jib movements |
-| Simple movements | Handheld footage |
-| Fast processing needed | Maximum accuracy needed |
 
 ### Model Downloads
 
@@ -237,7 +196,6 @@ MIT License
 | **Depth Anything V2** | Apache 2.0 | Monocular depth estimation |
 | **LightGlue** | Apache 2.0 | Feature matching for camera solve |
 | **LoFTR** | Apache 2.0 | Feature matching fallback |
-| **MegaSAM** | Apache 2.0 | High-quality camera solving (optional) |
 | **SAM3DBody** | See original repo | 3D body estimation |
 
 #### TAPIR License
@@ -254,30 +212,7 @@ Licensed under the Apache License, Version 2.0
 https://github.com/DepthAnything/Depth-Anything-V2
 ```
 
-#### MegaSAM License
-```
-Copyright 2025 Google LLC
-Licensed under the Apache License, Version 2.0
-https://github.com/mega-sam/mega-sam
-Paper: https://arxiv.org/abs/2412.04463
-```
-
 ## Version History
-
-### v5.0.1 (January 2025)
-- **MegaSAM Integration**: Optional high-quality camera solver
-  - 🎬 **MegaSAM Camera Solver**: Full 6-DOF camera solving using DROID-SLAM + CVD
-    - Best for dolly, crane, handheld, and translation shots
-    - Outputs dense depth maps and motion probability masks
-    - Coordinate system conversion (OpenCV → Maya/Blender)
-  - 📁 **MegaSAM Data Loader**: Load pre-computed MegaSAM .npz files
-  - Falls back gracefully when MegaSAM not installed
-  - Checkpoints stored in `ComfyUI/models/megasam/`
-- **Bug Fixes**:
-  - Fixed trajectory top-view horizontal flip (motion_analyzer.py)
-  - Fixed viewing angle calculation showing ~170° instead of ~30-35° (auto_calibrator.py)
-    - Root cause: OpenCV → Maya coordinate system Z-axis sign
-  - Fixed camera compensation sign in blender export
 
 ### v4.8.6 (January 2025)
 - **Multi-Camera System**: Jitter-free depth through geometric triangulation
