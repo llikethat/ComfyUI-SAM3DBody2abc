@@ -280,11 +280,11 @@ class ExportAnimatedFBX:
                 # Depth handling (v4.6.9)
                 "use_depth_positioning": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Enable depth-based scaling. Required for videos where character moves toward/away from camera."
+                    "tooltip": "Enable depth-based positioning. Required for videos where character moves toward/away from camera."
                 }),
-                "depth_mode": (["Scale (Recommended)", "Position (Z Movement)", "Both (Scale + Z)", "Off (Legacy)"], {
-                    "default": "Scale (Recommended)",
-                    "tooltip": "Scale: mesh scales with depth (best for static camera). Position: character moves in Z. Both: combined."
+                "depth_mode": (["Position (Recommended)", "Scale Only", "Both (Position + Scale)", "Off (Legacy)"], {
+                    "default": "Position (Recommended)",
+                    "tooltip": "Position: character moves in Z axis (correct for 3D lighting/shadows). Scale: mesh scales with depth (2D compositing only). Both: combined."
                 }),
                 
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
@@ -341,6 +341,9 @@ class ExportAnimatedFBX:
         include_mesh: bool = True,
         include_skeleton: bool = True,
         include_camera: bool = True,
+        # Filename info
+        filename: str = "",
+        output_path: str = "",
     ) -> Dict:
         """
         Build metadata dict to be embedded in FBX as custom properties.
@@ -375,6 +378,9 @@ class ExportAnimatedFBX:
             # Build info
             "sam3dbody2abc_version": version_str,
             "export_timestamp": timestamp,
+            # File info
+            "filename": filename,
+            "output_path": output_path,
             # Export settings
             "world_translation": world_translation,
             "camera_motion": camera_motion,
@@ -782,6 +788,9 @@ class ExportAnimatedFBX:
                 "source": camera_intrinsics.get("source", "MoGe2"),
             }
         
+        # Determine output path early so we can include it in metadata
+        output_path = get_incremental_filename(output_dir, filename, ext)
+        
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
@@ -802,14 +811,20 @@ class ExportAnimatedFBX:
             "camera_intrinsics": intrinsics_export,  # From MoGe2 Intrinsics
             "extrinsics_smoothing_method": smoothing_method,
             "extrinsics_smoothing_strength": smoothing_strength,
-            # Depth positioning (v4.6.9 fix)
+            # Depth positioning (v4.6.9 fix, v4.8.8 Position is now default)
             "use_depth_positioning": use_depth_positioning,
             "depth_mode": {
+                "Position (Recommended)": "position",
+                "Scale Only": "scale",
+                "Both (Position + Scale)": "both",
+                "Off (Legacy)": "off",
+                # Backwards compatibility with old option names
                 "Scale (Recommended)": "scale",
                 "Position (Z Movement)": "position",
                 "Both (Scale + Z)": "both",
-                "Off (Legacy)": "off"
-            }.get(depth_mode, "scale"),
+            }.get(depth_mode, "position"),  # Default to position now
+            # Scale factor for consistent world coordinates (v4.8.8)
+            "scale_factor": scale_info.get("scale_factor", 1.0) if scale_info else (subject_motion.get("scale_factor", 1.0) if subject_motion else 1.0),
             "frames": [],
             # Body world trajectory for animated locator (COMPENSATED - camera effects removed)
             # Uses body_world_3d_compensated if available, falls back to raw body_world_3d
@@ -843,6 +858,9 @@ class ExportAnimatedFBX:
                 include_mesh=include_mesh,
                 include_skeleton=include_skeleton,
                 include_camera=include_camera,
+                # Filename info
+                filename=filename,
+                output_path=output_path,
             ),
         }
         
@@ -897,9 +915,6 @@ class ExportAnimatedFBX:
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(export_data, f)
             json_path = f.name
-        
-        # Get incremental filename to avoid overwriting
-        output_path = get_incremental_filename(output_dir, filename, ext)
         
         try:
             cmd = [

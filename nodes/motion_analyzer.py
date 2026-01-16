@@ -1130,7 +1130,7 @@ class MotionAnalyzer:
         num_frames = len(vertices_list)
         if num_frames == 0:
             log.info("ERROR: No frames in mesh sequence!")
-            return ({}, {}, torch.zeros(1, 64, 64, 3), "Error: No frames")
+            return ({}, {}, torch.zeros(1, 64, 64, 3), torch.zeros(1, 64, 64, 3), "Error: No frames")
         
         log.info(f"Processing {num_frames} frames...")
         
@@ -1174,7 +1174,7 @@ class MotionAnalyzer:
             log.info(f"Fallback to 18-joint keypoints_3d")
         else:
             log.info("ERROR: No 3D keypoint data available!")
-            return ({}, {}, torch.zeros(1, 64, 64, 3), "Error: No keypoint data")
+            return ({}, {}, torch.zeros(1, 64, 64, 3), torch.zeros(1, 64, 64, 3), "Error: No keypoint data")
         
         # Get image size
         image_size = (1920, 1080)  # Default
@@ -1354,25 +1354,25 @@ class MotionAnalyzer:
             if depth_source == "SAM3DBody Only (pred_cam_t)":
                 tz = tz_sam3d
                 if i == 0:
-                    log.info(f"Depth source: SAM3DBody pred_cam_t (original behavior)")
+                    log.info(f"Depth source: SAM3DBody pred_cam_t[2] = {tz * scale_factor:.2f}m (user selected)")
             elif depth_source == "Tracked Depth Only":
                 if tracked_depth is not None:
                     tz = tracked_depth / scale_factor  # Convert back to raw units
                     if i == 0:
-                        log.info(f"Depth source: Tracked Depth Only ({tracked_depth:.2f}m)")
+                        log.info(f"Depth source: Tracked Depth = {tracked_depth:.2f}m (from Character Trajectory + DepthAnything V2)")
                 else:
                     tz = tz_sam3d
                     if i == 0:
-                        log.info(f"Depth source: Tracked Depth requested but not available, using SAM3DBody")
+                        log.warning(f"Depth source: Tracked Depth requested but NOT AVAILABLE! Falling back to SAM3DBody pred_cam_t[2] = {tz * scale_factor:.2f}m")
             else:  # Auto (Tracked if available)
                 if tracked_depth is not None:
                     tz = tracked_depth / scale_factor  # Convert back to raw units
                     if i == 0:
-                        log.info(f"Depth source: Auto → Using Tracked Depth ({tracked_depth:.2f}m)")
+                        log.info(f"Depth source: Auto → Tracked Depth = {tracked_depth:.2f}m (from Character Trajectory + DepthAnything V2)")
                 else:
                     tz = tz_sam3d
                     if i == 0:
-                        log.info(f"Depth source: Auto → Using SAM3DBody (no tracked depth)")
+                        log.info(f"Depth source: Auto → SAM3DBody pred_cam_t[2] = {tz * scale_factor:.2f}m (no tracked depth in mesh_sequence)")
             
             # RAW trajectory (includes camera effects from focal length variation)
             body_world_3d_raw = np.array([

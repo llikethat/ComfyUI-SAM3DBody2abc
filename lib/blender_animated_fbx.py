@@ -2550,18 +2550,17 @@ def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset
 
 
 def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1, 
-                                 use_depth: bool = True, depth_mode: str = "scale"):
+                                 use_depth: bool = True, depth_mode: str = "position", scale_factor: float = 1.0):
     """
     Apply per-frame body offset based on pred_cam_t for each frame.
     
-    FIXED in v4.6.9: Now properly handles depth via SCALING (default).
+    FIXED in v4.8.8: Now correctly converts screen coordinates to world coordinates
+    by multiplying tx/ty by depth and scale_factor, matching Motion Analyzer calculation.
     
-    When character moves toward/away from camera with a STATIC camera:
-    - tx, ty give correct screen position (use as-is)
-    - tz gives depth - use to SCALE the mesh (closer = smaller mesh in world space)
-    
-    The key insight: With static camera, we don't move in Z. Instead, we scale
-    the mesh so it appears the correct size when rendered through the camera.
+    When character moves toward/away from camera:
+    - tx, ty are screen-space offsets
+    - tz is depth
+    - World position = screen_pos * depth * scale_factor
     
     If tracked_depth is available (from CharacterTrajectoryTracker), it will be
     used instead of pred_cam_t.tz for more accurate depth.
@@ -2572,24 +2571,27 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         frames: List of frame data with pred_cam_t
         up_axis: Up axis for coordinate system
         frame_offset: Starting frame number
-        use_depth: If True, apply depth-based scaling.
-                   If False, no scaling (legacy behavior).
+        use_depth: If True, apply depth-based positioning/scaling.
+                   If False, no depth handling (legacy behavior).
         depth_mode: How to handle depth changes:
-                   - "scale": Mesh scales with depth (RECOMMENDED for static camera)
-                   - "position": Character moves in Z axis
+                   - "position": Character moves in Z axis (RECOMMENDED)
+                   - "scale": Mesh scales with depth (2D compositing only)
                    - "both": Both Z movement AND scaling
+        scale_factor: Scale factor from Motion Analyzer for consistent world units
     """
     if not frames:
         log.info("No frames for per-frame body offset")
         return
     
     log.info(f"Applying per-frame body offset ({len(frames)} frames)...")
-    log.debug(f"  use_depth={use_depth}, depth_mode='{depth_mode}' (v4.6.9)")
+    log.info(f"  Depth settings: use_depth={use_depth}, depth_mode='{depth_mode}', scale_factor={scale_factor:.3f}")
     
     # Check if tracked depth is available (from CharacterTrajectoryTracker)
     has_tracked_depth = "tracked_depth" in frames[0] if frames else False
     if has_tracked_depth:
-        log.debug(f"  Using tracked_depth from CharacterTrajectoryTracker (more accurate)")
+        log.info(f"  Depth source: tracked_depth (from Character Trajectory Tracker + DepthAnything V2)")
+    else:
+        log.info(f"  Depth source: pred_cam_t[2] (from SAM3DBody)")
     
     # Get reference depth from first frame
     first_frame = frames[0]
@@ -2599,7 +2601,7 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         first_cam_t = first_frame.get("pred_cam_t", [0, 0, 5])
         ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
     
-    log.debug(f"  Reference depth (frame 0): {ref_depth:.3f}m")
+    log.info(f"  Reference depth (frame 0): {ref_depth:.3f}m")
     
     # Track depth range for debug
     min_depth = ref_depth
@@ -2622,9 +2624,12 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         min_depth = min(min_depth, frame_depth)
         max_depth = max(max_depth, frame_depth)
         
-        # Screen position (tx, ty) - these are correct as-is for static camera
-        world_x = tx
-        world_y = ty
+        # Convert screen position (tx, ty) to world coordinates
+        # In weak perspective: world_pos = screen_pos * depth * scale_factor
+        # This matches how body_world_3d is calculated in Motion Analyzer:
+        #   body_world_3d = [tx * tz * scale_factor, ty * tz * scale_factor, tz * scale_factor]
+        world_x = tx * frame_depth * scale_factor
+        world_y = ty * frame_depth * scale_factor
         
         # Z position (only if position mode)
         if use_depth and depth_mode in ["position", "both"]:
@@ -2633,13 +2638,17 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         else:
             world_z = 0
         
-        # Scale factor: closer = smaller mesh (to appear correct size on screen)
-        # scale = frame_depth / ref_depth
-        # When closer (frame_depth < ref_depth), scale < 1 (mesh smaller)
+        # Mesh scale factor for scale mode: closer = smaller mesh
+        # (This is separate from scale_factor parameter which is for world coordinate conversion)
         if use_depth and depth_mode in ["scale", "both"]:
-            scale_factor = frame_depth / ref_depth if ref_depth > 0 else 1.0
+            mesh_scale = frame_depth / ref_depth if ref_depth > 0 else 1.0
         else:
-            scale_factor = 1.0
+            mesh_scale = 1.0
+        
+        # Debug logging for first frame
+        if i == 0:
+            log.info(f"  Frame 0 world coords: X={world_x:.3f}m, Y={world_y:.3f}m, Z={world_z:.3f}m")
+            log.debug(f"    Calculation: tx={tx:.4f} * depth={frame_depth:.2f}m * scale={scale_factor:.3f}")
         
         # Compute body offset for this frame
         # ty is negated for camera convention (image Y is flipped)
@@ -2659,7 +2668,7 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             mesh_obj.location = offset
             mesh_obj.keyframe_insert(data_path="location", frame=frame_num)
             if use_depth and depth_mode in ["scale", "both"]:
-                mesh_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
+                mesh_obj.scale = Vector((mesh_scale, mesh_scale, mesh_scale))
                 mesh_obj.keyframe_insert(data_path="scale", frame=frame_num)
         
         # Apply to armature
@@ -2667,7 +2676,7 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             armature_obj.location = offset
             armature_obj.keyframe_insert(data_path="location", frame=frame_num)
             if use_depth and depth_mode in ["scale", "both"]:
-                armature_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
+                armature_obj.scale = Vector((mesh_scale, mesh_scale, mesh_scale))
                 armature_obj.keyframe_insert(data_path="scale", frame=frame_num)
     
     # Debug output
@@ -2684,15 +2693,14 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
     last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
     
+    log.info(f"  Depth range: {min_depth:.2f}m to {max_depth:.2f}m (change: {depth_change:+.2f}m, {depth_pct:+.1f}%)")
     log.debug(f"  Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}, depth={ref_depth:.3f}")
     log.debug(f"  Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}, depth={last_depth:.3f}")
-    log.debug(f"  Depth range: {min_depth:.2f}m to {max_depth:.2f}m")
-    log.debug(f"  Depth change: {depth_change:.3f}m ({depth_pct:+.1f}%)")
     
     if use_depth and depth_mode in ["scale", "both"]:
         min_scale = min_depth / ref_depth if ref_depth > 0 else 1.0
         max_scale = max_depth / ref_depth if ref_depth > 0 else 1.0
-        log.debug(f"  Scale range: {min_scale:.3f} to {max_scale:.3f}")
+        log.info(f"  Scale range: {min_scale:.3f} to {max_scale:.3f}")
     
     if mesh_obj:
         log.info(f"Mesh animated with {len(frames)} keyframes")
@@ -2894,6 +2902,7 @@ def main():
     # Depth handling (v4.6.9 fix)
     use_depth_positioning = data.get("use_depth_positioning", True)  # Use pred_cam_t.tz for positioning
     depth_mode = data.get("depth_mode", "position")  # How to show depth: position, scale, or both
+    scale_factor = data.get("scale_factor", 1.0)  # For consistent world coordinates (v4.8.8)
     
     # Camera data - support both old and new field names for backwards compatibility
     camera_extrinsics = data.get("camera_extrinsics") or data.get("solved_camera_rotations")
@@ -2906,7 +2915,7 @@ def main():
     log.info(f"{len(frames)} frames at {fps} fps")
     log.info(f"Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
     log.info(f"Sensor width: {sensor_width}mm")
-    log.info(f"Depth positioning: {use_depth_positioning}, mode: {depth_mode} (v4.6.9)")
+    log.info(f"Depth positioning: {use_depth_positioning}, mode: {depth_mode}, scale_factor: {scale_factor:.3f}")
     log.info(f"World translation mode: {world_translation_mode}")
     log.info(f"Skeleton mode: {skeleton_mode}")
     log.info(f"Include skeleton: {include_skeleton}")
@@ -3058,10 +3067,11 @@ def main():
     
     # Apply PER-FRAME body offset (fixes drift issue)
     # This overwrites the static offset with animated keyframes
-    # v4.6.9: Now properly uses depth (tz) for world positioning
+    # v4.8.8: Now properly converts screen coords to world using depth * scale_factor
     if world_translation_mode == "root" and root_locator and (mesh_obj or armature_obj):
         apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset,
-                                    use_depth=use_depth_positioning, depth_mode=depth_mode)
+                                    use_depth=use_depth_positioning, depth_mode=depth_mode,
+                                    scale_factor=scale_factor)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":

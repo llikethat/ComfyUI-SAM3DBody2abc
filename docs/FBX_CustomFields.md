@@ -12,6 +12,8 @@ SAM3DBody2abc embeds metadata as custom attributes in exported FBX files. These 
 |-------|------|-------------|
 | `sam3dbody2abc_version` | string | Package version (e.g., "4.8.8") |
 | `export_timestamp` | string | Export time in IST |
+| `filename` | string | Base filename used for export |
+| `output_path` | string | Full path to exported file |
 
 ---
 
@@ -38,9 +40,20 @@ SAM3DBody2abc embeds metadata as custom attributes in exported FBX files. These 
 |-------|------|--------|-------------|
 | `depth_source` | string | Motion Analyzer | "Auto", "SAM3DBody Only", or "Tracked Depth Only" |
 | `depth_positioning_enabled` | bool | Export Node | Depth positioning used |
-| `depth_mode` | string | Export Node | "Position (Z-axis)" or "Scale" |
+| `depth_mode` | string | Export Node | "position" (recommended), "scale", "both", or "off" |
 | `depth_min_m` | float | Motion Analyzer | Minimum depth in meters |
 | `depth_max_m` | float | Motion Analyzer | Maximum depth in meters |
+
+### Depth Mode Explanation
+
+| Mode | What Happens | Best For |
+|------|--------------|----------|
+| **Position (Recommended)** | Character moves in Z axis | 3D scenes with lighting/shadows |
+| Scale Only | Mesh scales (no Z movement) | 2D compositing over video |
+| Both | Position + Scale | Special cases |
+| Off | No depth handling | Legacy/flat look |
+
+**Why Position is Recommended:** Scale mode places the mesh at Z=0 and scales it - this breaks lighting/shadow interactions in 3D scenes. Position mode moves the character to the correct Z depth, ensuring proper shadow casting and light interaction.
 
 ---
 
