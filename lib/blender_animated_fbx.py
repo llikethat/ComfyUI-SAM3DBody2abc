@@ -3069,7 +3069,7 @@ def main():
         # Get body offset from frame 0 for initial setup (will be overwritten by per-frame)
         first_cam_t = frames[0].get("pred_cam_t")
         body_offset = get_body_offset_from_cam_t(first_cam_t, up_axis)
-        log.info(f"Initial body offset (frame 0): {body_offset} (disable_vert={DISABLE_VERTICAL_OFFSET}, flip_vert={FLIP_VERTICAL})")
+        log.info(f"Initial body offset (frame 0): {body_offset}")
     
     # Create mesh with shape keys
     mesh_obj = None
