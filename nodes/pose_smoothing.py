@@ -375,7 +375,18 @@ def smooth_mesh_sequence(
     Returns:
         New mesh_sequence with smoothed data
     """
-    frames = mesh_sequence.get("frames", [])
+    frames_data = mesh_sequence.get("frames", {})
+    
+    # Handle both dict and list formats
+    frames_is_dict = isinstance(frames_data, dict)
+    if frames_is_dict:
+        # Sort keys to ensure consistent frame ordering
+        frame_keys = sorted(frames_data.keys())
+        frames = [frames_data[k] for k in frame_keys]
+    else:
+        frames = frames_data
+        frame_keys = None
+    
     if not frames:
         if verbose:
             print("[Pose Smoothing] No frames to smooth")
@@ -462,7 +473,13 @@ def smooth_mesh_sequence(
     
     # Create new mesh_sequence with smoothed data
     result = mesh_sequence.copy()
-    result["frames"] = frames
+    
+    # Preserve original format (dict or list)
+    if frames_is_dict:
+        result["frames"] = dict(zip(frame_keys, frames))
+    else:
+        result["frames"] = frames
+    
     result["smoothing_applied"] = {
         "method": method,
         "window": window,

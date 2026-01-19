@@ -15,13 +15,13 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 5.1.2
+Version: 5.1.4
+- FIX: Handle dict-based frames with sorted keys for consistent ordering
+  - MESH_SEQUENCE frames can be dict (with integer keys) or list
+  - All processing nodes now sort dict keys to ensure frame order
+  - Affects: Body Shape Lock, Pose Smoothing, Foot Contact Enforcer, Character Trajectory
 - FIX: Handle variable return signatures from load_sam_3d_body()
-  - Some versions return (model, cfg), others return (model, cfg, extra...)
-  - Now handles any number of return values gracefully
 - FIX: Support path-based SAM3D_MODEL format from newer ComfyUI-SAM3DBody
-  - Now auto-loads model from ckpt_path, mhr_path, device
-  - Backwards compatible with pre-loaded model format
 - NEW: 📐 Body Shape Lock node
   - Locks SMPL beta parameters across all frames
   - Eliminates body size/proportion flickering
@@ -46,7 +46,7 @@ Version: 5.1.2
   - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "5.1.2"
+__version__ = "5.1.4"
 
 import os
 import sys

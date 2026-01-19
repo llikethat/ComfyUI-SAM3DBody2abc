@@ -107,7 +107,18 @@ class BodyShapeLock:
         Returns:
             Modified mesh_sequence with consistent body shape
         """
-        frames = mesh_sequence.get("frames", [])
+        frames_data = mesh_sequence.get("frames", {})
+        
+        # Handle both dict and list formats
+        frames_is_dict = isinstance(frames_data, dict)
+        if frames_is_dict:
+            # Sort keys to ensure consistent frame ordering
+            frame_keys = sorted(frames_data.keys())
+            frames = [frames_data[k] for k in frame_keys]
+        else:
+            frames = frames_data
+            frame_keys = None
+        
         if not frames:
             return mesh_sequence
         
@@ -133,7 +144,7 @@ class BodyShapeLock:
             print(f"[Body Shape] First 3 betas: [{locked_beta[0]:.3f}, {locked_beta[1]:.3f}, {locked_beta[2]:.3f}]")
         
         # 3. Apply locked shape to all frames
-        result = self._apply_locked_shape(mesh_sequence, locked_beta, verbose)
+        result = self._apply_locked_shape(mesh_sequence, locked_beta, verbose, frames_is_dict, frame_keys)
         
         # 4. Store metadata
         result["body_shape_locked"] = {
@@ -281,7 +292,9 @@ class BodyShapeLock:
         self,
         mesh_sequence: Dict,
         locked_beta: np.ndarray,
-        verbose: bool
+        verbose: bool,
+        frames_is_dict: bool = False,
+        frame_keys: list = None
     ) -> Dict:
         """
         Apply locked shape to all frames.
@@ -289,31 +302,64 @@ class BodyShapeLock:
         Args:
             mesh_sequence: Original mesh sequence
             locked_beta: [10] locked beta parameters
+            frames_is_dict: Whether frames are stored as dict
+            frame_keys: Original dict keys if frames were dict
         
         Returns:
             Modified mesh sequence
         """
         result = mesh_sequence.copy()
-        frames = [f.copy() for f in mesh_sequence.get("frames", [])]
+        frames_data = mesh_sequence.get("frames", {})
         
-        for frame in frames:
-            # Update pose_params.shape
-            if "pose_params" in frame:
-                if frame["pose_params"] is None:
-                    frame["pose_params"] = {}
-                frame["pose_params"]["shape"] = locked_beta.tolist()
-                frame["pose_params"]["betas"] = locked_beta.tolist()
+        # Handle both dict and list formats
+        if frames_is_dict or isinstance(frames_data, dict):
+            # Process dict format
+            new_frames = {}
+            for key, frame in frames_data.items():
+                new_frame = frame.copy() if isinstance(frame, dict) else frame
+                if isinstance(new_frame, dict):
+                    # Update pose_params.shape
+                    if "pose_params" in new_frame:
+                        if new_frame["pose_params"] is None:
+                            new_frame["pose_params"] = {}
+                        new_frame["pose_params"]["shape"] = locked_beta.tolist()
+                        new_frame["pose_params"]["betas"] = locked_beta.tolist()
+                    
+                    # Update direct beta fields if present
+                    if "betas" in new_frame:
+                        new_frame["betas"] = locked_beta.tolist()
+                    if "shape" in new_frame:
+                        new_frame["shape"] = locked_beta.tolist()
+                
+                new_frames[key] = new_frame
+            result["frames"] = new_frames
             
-            # Update direct beta fields if present
-            if "betas" in frame:
-                frame["betas"] = locked_beta.tolist()
-            if "shape" in frame:
-                frame["shape"] = locked_beta.tolist()
-        
-        result["frames"] = frames
-        
-        if verbose:
-            print(f"[Body Shape] Applied locked shape to {len(frames)} frames")
+            if verbose:
+                print(f"[Body Shape] Applied locked shape to {len(new_frames)} frames")
+        else:
+            # Process list format
+            frames = [f.copy() if isinstance(f, dict) else f for f in frames_data]
+            
+            for frame in frames:
+                if not isinstance(frame, dict):
+                    continue
+                # Update pose_params.shape
+                if "pose_params" in frame:
+                    if frame["pose_params"] is None:
+                        frame["pose_params"] = {}
+                    frame["pose_params"]["shape"] = locked_beta.tolist()
+                    frame["pose_params"]["betas"] = locked_beta.tolist()
+                
+                # Update direct beta fields if present
+                if "betas" in frame:
+                    frame["betas"] = locked_beta.tolist()
+                if "shape" in frame:
+                    frame["shape"] = locked_beta.tolist()
+            
+            result["frames"] = frames
+            
+            if verbose:
+                print(f"[Body Shape] Applied locked shape to {len(frames)} frames")
         
         return result
 
@@ -371,11 +417,21 @@ def analyze_shape_variance(mesh_sequence: Dict) -> Dict:
     Returns:
         Analysis dict with variance statistics
     """
-    frames = mesh_sequence.get("frames", [])
+    frames_data = mesh_sequence.get("frames", {})
+    
+    # Handle both dict and list formats for frames
+    if isinstance(frames_data, dict):
+        # Sort keys to ensure consistent frame ordering
+        frame_keys = sorted(frames_data.keys())
+        frames = [frames_data[k] for k in frame_keys]
+    else:
+        frames = frames_data
     
     # Extract betas
     betas = []
     for frame in frames:
+        if not isinstance(frame, dict):
+            continue
         beta = None
         if "pose_params" in frame and frame["pose_params"]:
             beta = frame["pose_params"].get("shape")

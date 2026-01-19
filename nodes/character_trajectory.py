@@ -722,13 +722,28 @@ class CharacterTrajectoryTracker:
         
         # === Step 1: Get reference depth from SAM3DBody or use provided ===
         if mesh_sequence is not None:
-            frames = mesh_sequence.get("frames", [])
-            if frames and "pred_cam_t" in frames[0]:
-                ref_depth = abs(frames[0]["pred_cam_t"][2])
-                log.info(f"Reference depth from SAM3DBody: {ref_depth:.2f}m")
+            frames = mesh_sequence.get("frames", {})
+            # Handle both dict and list formats
+            if isinstance(frames, dict):
+                if frames:
+                    first_key = sorted(frames.keys())[0]
+                    first_frame = frames[first_key]
+                    if "pred_cam_t" in first_frame:
+                        ref_depth = abs(first_frame["pred_cam_t"][2])
+                        log.info(f"Reference depth from SAM3DBody: {ref_depth:.2f}m")
+                    else:
+                        ref_depth = reference_depth_m
+                        log.info(f"Using provided reference depth: {ref_depth:.2f}m")
+                else:
+                    ref_depth = reference_depth_m
+                    log.info(f"Using provided reference depth: {ref_depth:.2f}m")
             else:
-                ref_depth = reference_depth_m
-                log.info(f"Using provided reference depth: {ref_depth:.2f}m")
+                if frames and "pred_cam_t" in frames[0]:
+                    ref_depth = abs(frames[0]["pred_cam_t"][2])
+                    log.info(f"Reference depth from SAM3DBody: {ref_depth:.2f}m")
+                else:
+                    ref_depth = reference_depth_m
+                    log.info(f"Using provided reference depth: {ref_depth:.2f}m")
         else:
             ref_depth = reference_depth_m
             log.info(f"Using provided reference depth: {ref_depth:.2f}m")

@@ -184,7 +184,18 @@ class FootContactEnforcer:
         Returns:
             Modified mesh_sequence with adjusted root translations
         """
-        frames = mesh_sequence.get("frames", [])
+        frames_data = mesh_sequence.get("frames", {})
+        
+        # Handle both dict and list formats
+        frames_is_dict = isinstance(frames_data, dict)
+        if frames_is_dict:
+            # Sort keys to ensure consistent frame ordering
+            frame_keys = sorted(frames_data.keys())
+            frames = [frames_data[k] for k in frame_keys]
+        else:
+            frames = frames_data
+            frame_keys = None
+        
         if not frames:
             return mesh_sequence
         
@@ -225,11 +236,20 @@ class FootContactEnforcer:
         
         # 7. Update mesh sequence
         result = mesh_sequence.copy()
-        result["frames"] = frames.copy()
         
-        for i, frame in enumerate(result["frames"]):
-            frame["pred_cam_t"] = adjusted_translations[i].tolist()
-            frame["foot_contact_adjusted"] = True
+        # Create updated frames list
+        updated_frames = [f.copy() if isinstance(f, dict) else f for f in frames]
+        
+        for i, frame in enumerate(updated_frames):
+            if isinstance(frame, dict):
+                frame["pred_cam_t"] = adjusted_translations[i].tolist()
+                frame["foot_contact_adjusted"] = True
+        
+        # Preserve original format (dict or list)
+        if frames_is_dict:
+            result["frames"] = dict(zip(frame_keys, updated_frames))
+        else:
+            result["frames"] = updated_frames
         
         # Store contact info
         result["foot_contacts"] = {
