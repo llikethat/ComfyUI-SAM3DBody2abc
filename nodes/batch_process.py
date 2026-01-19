@@ -191,37 +191,59 @@ class BatchProcess:
         # Handle different SAM3D_MODEL formats
         print(f"[SAM3DBody2abc] Model input type: {type(model)}")
         
+        sam_3d_model = None
+        model_cfg = None
+        
         if isinstance(model, dict):
             print(f"[SAM3DBody2abc] Model dict keys: {list(model.keys())}")
             
-            sam_3d_model = None
-            model_cfg = None
+            # NEW FORMAT: Dict contains paths, not loaded model
+            # Keys: model_path, ckpt_path, mhr_path, device
+            if "ckpt_path" in model or "model_path" in model:
+                print("[SAM3DBody2abc] Detected path-based SAM3D_MODEL format - loading model...")
+                
+                # Get paths
+                ckpt_path = model.get("ckpt_path") or model.get("model_path")
+                mhr_path = model.get("mhr_path", "")
+                device = model.get("device", "cuda")
+                
+                if not ckpt_path:
+                    raise ValueError("SAM3D_MODEL missing checkpoint path")
+                
+                print(f"[SAM3DBody2abc] Loading model from: {ckpt_path}")
+                
+                # Load the model using SAM3DBody's build function
+                from sam_3d_body import load_sam_3d_body
+                sam_3d_model, model_cfg = load_sam_3d_body(
+                    checkpoint_path=ckpt_path,
+                    device=device,
+                    mhr_path=mhr_path
+                )
+                print("[SAM3DBody2abc] Model loaded successfully!")
             
-            # Check for model
-            for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
-                if key in model:
-                    sam_3d_model = model[key]
-                    print(f"[SAM3DBody2abc] Found model at key: '{key}'")
-                    break
-            
-            # Check for config
-            for key in ["model_cfg", "cfg", "config"]:
-                if key in model:
-                    model_cfg = model[key]
-                    break
-            
-            if sam_3d_model is None:
-                for k, v in model.items():
-                    if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
-                        sam_3d_model = v
+            # OLD FORMAT: Dict contains actual model object
+            else:
+                for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
+                    if key in model:
+                        sam_3d_model = model[key]
+                        break
+                
+                for key in ["model_cfg", "cfg", "config"]:
+                    if key in model:
+                        model_cfg = model[key]
                         break
                 
                 if sam_3d_model is None:
-                    raise KeyError(f"SAM3D_MODEL must contain model. Got keys: {list(model.keys())}")
+                    for k, v in model.items():
+                        if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
+                            sam_3d_model = v
+                            break
+                    
+                    if sam_3d_model is None:
+                        raise KeyError(f"SAM3D_MODEL must contain model or paths. Got keys: {list(model.keys())}")
         
         elif hasattr(model, 'eval') and callable(getattr(model, 'eval')):
             sam_3d_model = model
-            model_cfg = None
         
         else:
             raise TypeError(f"SAM3D_MODEL has unexpected type: {type(model)}")

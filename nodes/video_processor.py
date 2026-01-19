@@ -276,56 +276,77 @@ class VideoBatchProcessor:
         # Format may vary depending on the wrapper version
         log.info(f"Model input type: {type(model)}")
         
+        sam_3d_model = None
+        model_cfg = None
+        mhr_path = None
+        
         if isinstance(model, dict):
             log.info(f"Model dict keys: {list(model.keys())}")
             
-            # Try common key names
-            sam_3d_model = None
-            model_cfg = None
-            mhr_path = None
+            # NEW FORMAT: Dict contains paths, not loaded model
+            # Keys: model_path, ckpt_path, mhr_path, device
+            if "ckpt_path" in model or "model_path" in model:
+                log.info("Detected path-based SAM3D_MODEL format - loading model...")
+                
+                # Get paths
+                ckpt_path = model.get("ckpt_path") or model.get("model_path")
+                mhr_path = model.get("mhr_path", "")
+                device = model.get("device", "cuda")
+                
+                if not ckpt_path:
+                    raise ValueError("SAM3D_MODEL missing checkpoint path (ckpt_path or model_path)")
+                
+                log.info(f"Loading model from: {ckpt_path}")
+                log.info(f"MHR path: {mhr_path}")
+                log.info(f"Device: {device}")
+                
+                # Load the model using SAM3DBody's build function
+                from sam_3d_body import load_sam_3d_body
+                sam_3d_model, model_cfg = load_sam_3d_body(
+                    checkpoint_path=ckpt_path,
+                    device=device,
+                    mhr_path=mhr_path
+                )
+                log.info("Model loaded successfully!")
             
-            # Check for model
-            for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
-                if key in model:
-                    sam_3d_model = model[key]
-                    log.info(f"Found model at key: '{key}'")
-                    break
-            
-            # Check for config
-            for key in ["model_cfg", "cfg", "config"]:
-                if key in model:
-                    model_cfg = model[key]
-                    log.info(f"Found config at key: '{key}'")
-                    break
-            
-            # Check for MHR path
-            for key in ["mhr_path", "model_path", "mhr_model_path"]:
-                if key in model:
-                    mhr_path = model[key]
-                    break
-            
-            if sam_3d_model is None:
-                # Maybe the dict values themselves contain the model
-                log.info(f"Inspecting dict values...")
-                for k, v in model.items():
-                    log.info(f"  {k}: {type(v)}")
-                    if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
-                        # Looks like a PyTorch model
-                        log.info(f"  -> Found model-like object at key '{k}'")
-                        sam_3d_model = v
+            # OLD FORMAT: Dict contains actual model object
+            else:
+                # Try common key names for pre-loaded model
+                for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
+                    if key in model:
+                        sam_3d_model = model[key]
+                        log.info(f"Found pre-loaded model at key: '{key}'")
+                        break
+                
+                # Check for config
+                for key in ["model_cfg", "cfg", "config"]:
+                    if key in model:
+                        model_cfg = model[key]
+                        break
+                
+                # Check for MHR path
+                for key in ["mhr_path", "model_path", "mhr_model_path"]:
+                    if key in model:
+                        mhr_path = model[key]
                         break
                 
                 if sam_3d_model is None:
-                    log.error(f"SAM3D_MODEL dict has unexpected keys: {list(model.keys())}")
-                    raise KeyError(f"SAM3D_MODEL must contain model. Got keys: {list(model.keys())}. "
-                                   f"Please check ComfyUI-SAM3DBody version compatibility.")
+                    # Maybe the dict values themselves contain the model
+                    log.info(f"Inspecting dict values...")
+                    for k, v in model.items():
+                        log.info(f"  {k}: {type(v)}")
+                        if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
+                            sam_3d_model = v
+                            break
+                    
+                    if sam_3d_model is None:
+                        log.error(f"SAM3D_MODEL dict has unexpected keys: {list(model.keys())}")
+                        raise KeyError(f"SAM3D_MODEL must contain model or paths. Got keys: {list(model.keys())}")
         
         elif hasattr(model, 'eval') and callable(getattr(model, 'eval')):
             # Model passed directly
             sam_3d_model = model
-            model_cfg = None
-            mhr_path = None
-            log.warn("SAM3D_MODEL passed as direct model object")
+            log.info("SAM3D_MODEL passed as direct model object")
         
         else:
             log.error(f"Unexpected model type: {type(model)}")

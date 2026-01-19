@@ -15,7 +15,10 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 5.1.0
+Version: 5.1.1
+- FIX: Support path-based SAM3D_MODEL format from newer ComfyUI-SAM3DBody
+  - Now auto-loads model from ckpt_path, mhr_path, device
+  - Backwards compatible with pre-loaded model format
 - NEW: 📐 Body Shape Lock node
   - Locks SMPL beta parameters across all frames
   - Eliminates body size/proportion flickering
@@ -40,7 +43,7 @@ Version: 5.1.0
   - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "5.1.0"
+__version__ = "5.1.1"
 
 import os
 import sys
