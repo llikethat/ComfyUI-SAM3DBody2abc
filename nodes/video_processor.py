@@ -302,11 +302,24 @@ class VideoBatchProcessor:
                 
                 # Load the model using SAM3DBody's build function
                 from sam_3d_body import load_sam_3d_body
-                sam_3d_model, model_cfg = load_sam_3d_body(
+                
+                # Handle different return signatures from load_sam_3d_body
+                # Some versions return (model, cfg), others return (model, cfg, extra...)
+                result = load_sam_3d_body(
                     checkpoint_path=ckpt_path,
                     device=device,
                     mhr_path=mhr_path
                 )
+                
+                if isinstance(result, tuple):
+                    sam_3d_model = result[0]
+                    model_cfg = result[1] if len(result) > 1 else None
+                    log.info(f"Model loaded (returned {len(result)} values)")
+                else:
+                    sam_3d_model = result
+                    model_cfg = None
+                    log.info("Model loaded (single return value)")
+                
                 log.info("Model loaded successfully!")
             
             # OLD FORMAT: Dict contains actual model object

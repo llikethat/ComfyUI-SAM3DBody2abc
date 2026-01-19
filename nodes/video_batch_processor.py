@@ -536,11 +536,22 @@ class SAM3DBodyBatchProcessor:
                     
                     # Load the model using SAM3DBody's build function
                     from sam_3d_body import load_sam_3d_body
-                    sam_3d_model, model_cfg = load_sam_3d_body(
+                    
+                    # Handle different return signatures
+                    result = load_sam_3d_body(
                         checkpoint_path=ckpt_path,
                         device=device,
                         mhr_path=mhr_path
                     )
+                    
+                    if isinstance(result, tuple):
+                        sam_3d_model = result[0]
+                        model_cfg = result[1] if len(result) > 1 else None
+                        print(f"[SAM3DBody2abc] Model loaded (returned {len(result)} values)")
+                    else:
+                        sam_3d_model = result
+                        model_cfg = None
+                    
                     print("[SAM3DBody2abc] Model loaded successfully!")
                 
                 # OLD FORMAT: Dict contains actual model object
