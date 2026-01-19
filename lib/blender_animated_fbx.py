@@ -18,6 +18,7 @@ import bpy
 import json
 import sys
 import os
+import numpy as np
 from mathutils import Vector, Matrix, Euler, Quaternion
 import math
 
@@ -857,13 +858,9 @@ def transform_rotation_matrix(rot_3x3, up_axis):
     return transformed
 
 
-# Global flip_x setting (set by main)
+# Global settings (set by main)
 FLIP_X = False
-DISABLE_VERTICAL_OFFSET = False  # v5.1.9: Disable Y offset from pred_cam_t
-DISABLE_HORIZONTAL_OFFSET = False  # v5.1.10: Disable X offset from pred_cam_t
-DISABLE_ALL_OFFSETS = False  # v5.1.10: Disable all offsets from pred_cam_t
-FLIP_VERTICAL = False  # v5.1.9: Flip Y offset sign
-FLIP_HORIZONTAL = False  # v5.1.10: Flip X offset sign
+ALIGN_MESH_TO_SKELETON = True  # v5.2.0: Align mesh vertices to skeleton origin
 
 
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
@@ -889,59 +886,68 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
     - ty: vertical offset (positive = body above center IN IMAGE SPACE)
     - tz: depth (camera distance)
     
-    Uses global settings:
-    - DISABLE_ALL_OFFSETS: Return (0,0,0) - character at origin
-    - DISABLE_VERTICAL_OFFSET: Zero out vertical component
-    - DISABLE_HORIZONTAL_OFFSET: Zero out horizontal component
-    - FLIP_VERTICAL: Flip Y sign
-    - FLIP_HORIZONTAL: Flip X sign
+    For Maya (Y-up) with camera looking down -Z:
+    - tx maps to X (horizontal)
+    - ty maps to Y but NEGATED (image Y is inverted relative to world Y)
     """
-    # If all offsets disabled, return origin
-    if DISABLE_ALL_OFFSETS:
-        return Vector((0, 0, 0))
-    
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
     
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
-    # Apply horizontal offset options
-    if DISABLE_HORIZONTAL_OFFSET:
-        tx_adjusted = 0
-    elif FLIP_HORIZONTAL:
-        tx_adjusted = -tx  # Flip sign
-    else:
-        tx_adjusted = tx  # Default
-    
-    # Apply vertical offset options
-    if DISABLE_VERTICAL_OFFSET:
-        ty_adjusted = 0
-    elif FLIP_VERTICAL:
-        ty_adjusted = ty  # Don't negate (flipped)
-    else:
-        ty_adjusted = -ty  # Default: negate for camera convention
+    # ty is negated: in image space, +Y is down, but in world space +Y is up
+    ty_world = -ty
     
     # Apply based on up_axis
     if up_axis == "Y":
-        return Vector((tx_adjusted, ty_adjusted, 0))
+        return Vector((tx, ty_world, 0))
     elif up_axis == "Z":
-        return Vector((tx_adjusted, 0, ty_adjusted))
+        return Vector((tx, 0, ty_world))
     elif up_axis == "-Y":
-        return Vector((tx_adjusted, -ty_adjusted, 0))
+        return Vector((tx, -ty_world, 0))
     elif up_axis == "-Z":
-        return Vector((tx_adjusted, 0, -ty_adjusted))
+        return Vector((tx, 0, -ty_world))
     else:
-        return Vector((tx_adjusted, ty_adjusted, 0))
+        return Vector((tx, ty_world, 0))
 
 
 
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):
     """
     Create mesh with per-vertex animation using shape keys.
+    
+    v5.2.0: Properly aligns mesh to skeleton by calculating offset from pelvis joint.
+    New SAM3DBody uses ground-centered mesh coordinates, but skeleton is pelvis-centered.
     """
     first_verts = all_frames[0].get("vertices")
     if not first_verts:
         return None
+    
+    # Calculate mesh-to-skeleton alignment offset (v5.2.0)
+    # New SAM3DBody: mesh is ground-centered, skeleton is pelvis-centered
+    # We need to align the mesh to the skeleton by finding the offset
+    mesh_offset = [0, 0, 0]
+    if ALIGN_MESH_TO_SKELETON:
+        first_joints = all_frames[0].get("joint_coords")
+        if first_joints is not None:
+            # Get pelvis position (joint 0)
+            pelvis = np.array(first_joints[0]) if len(first_joints) > 0 else np.zeros(3)
+            
+            # Get mesh center
+            first_verts_np = np.array(first_verts)
+            mesh_center = np.mean(first_verts_np, axis=0)
+            
+            # The offset needed to align mesh center to pelvis
+            # Since pelvis is at origin (0,0,0), we just need to subtract mesh_center
+            offset_from_pelvis = mesh_center - pelvis
+            
+            # Only apply if there's a significant offset (> 10cm)
+            if np.linalg.norm(offset_from_pelvis) > 0.1:
+                mesh_offset = offset_from_pelvis.tolist()
+                log.info(f"Mesh-to-skeleton alignment:")
+                log.info(f"  Pelvis (joint 0): [{pelvis[0]:.3f}, {pelvis[1]:.3f}, {pelvis[2]:.3f}]")
+                log.info(f"  Mesh center: [{mesh_center[0]:.3f}, {mesh_center[1]:.3f}, {mesh_center[2]:.3f}]")
+                log.info(f"  Alignment offset: [{mesh_offset[0]:.3f}, {mesh_offset[1]:.3f}, {mesh_offset[2]:.3f}]")
     
     # Get first frame world offset for initial position
     first_world_offset = Vector((0, 0, 0))
@@ -953,7 +959,11 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     mesh = bpy.data.meshes.new("body_mesh")
     verts = []
     for v in first_verts:
-        pos = Vector(transform_func(v))
+        # Apply mesh-to-skeleton alignment offset
+        v_aligned = [v[0] - mesh_offset[0], 
+                     v[1] - mesh_offset[1], 
+                     v[2] - mesh_offset[2]]
+        pos = Vector(transform_func(v_aligned))
         if world_translation_mode == "baked":
             pos += first_world_offset
         verts.append(pos)
@@ -990,7 +1000,11 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
         
         for j, v in enumerate(frame_verts):
             if j < len(sk.data):
-                pos = Vector(transform_func(v))
+                # Apply mesh-to-skeleton alignment offset (calculated from first frame)
+                v_aligned = [v[0] - mesh_offset[0], 
+                             v[1] - mesh_offset[1], 
+                             v[2] - mesh_offset[2]]
+                pos = Vector(transform_func(v_aligned))
                 if world_translation_mode == "baked":
                     pos += frame_world_offset
                 sk.data[j].co = pos
@@ -2663,37 +2677,19 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             log.debug(f"    Calculation: tx={tx:.4f} * depth={frame_depth:.2f}m * scale={scale_factor:.3f}")
         
         # Compute body offset for this frame
-        # Apply offset options from globals
-        if DISABLE_ALL_OFFSETS:
-            world_x_adjusted = 0
-            world_y_adjusted = 0
-        else:
-            # Horizontal
-            if DISABLE_HORIZONTAL_OFFSET:
-                world_x_adjusted = 0
-            elif FLIP_HORIZONTAL:
-                world_x_adjusted = -world_x
-            else:
-                world_x_adjusted = world_x
-            
-            # Vertical - also negate by default for camera convention
-            if DISABLE_VERTICAL_OFFSET:
-                world_y_adjusted = 0
-            elif FLIP_VERTICAL:
-                world_y_adjusted = world_y  # Don't negate
-            else:
-                world_y_adjusted = -world_y  # Default: negate for camera convention
+        # ty is negated: in image space +Y is down, in world space +Y is up
+        world_y_world = -world_y
         
         if up_axis == "Y":
-            offset = Vector((world_x_adjusted, world_y_adjusted, world_z))
+            offset = Vector((world_x, world_y_world, world_z))
         elif up_axis == "Z":
-            offset = Vector((world_x_adjusted, world_z, world_y_adjusted))
+            offset = Vector((world_x, world_z, world_y_world))
         elif up_axis == "-Y":
-            offset = Vector((world_x_adjusted, -world_y_adjusted, -world_z))
+            offset = Vector((world_x, -world_y_world, -world_z))
         elif up_axis == "-Z":
-            offset = Vector((world_x_adjusted, -world_z, -world_y_adjusted))
+            offset = Vector((world_x, -world_z, -world_y_world))
         else:
-            offset = Vector((world_x_adjusted, world_y_adjusted, world_z))
+            offset = Vector((world_x, world_y_world, world_z))
         
         # Apply to mesh
         if mesh_obj:
@@ -2923,14 +2919,7 @@ def main():
     world_translation_mode = data.get("world_translation_mode", "none")
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     flip_x = data.get("flip_x", False)  # Mirror on X axis
-    disable_vertical_offset = data.get("disable_vertical_offset", False)  # v5.1.9: Disable Y offset
-    disable_horizontal_offset = data.get("disable_horizontal_offset", False)  # v5.1.10: Disable X offset
-    disable_all_offsets = data.get("disable_all_offsets", False)  # v5.1.10: Disable all offsets
-    flip_vertical = data.get("flip_vertical", False)  # v5.1.9: Flip Y offset sign
-    flip_horizontal = data.get("flip_horizontal", False)  # v5.1.10: Flip X offset sign
-    # Backwards compatibility with old flip_ty option
-    if data.get("flip_ty", False):
-        flip_vertical = True
+    align_mesh_to_skeleton = data.get("align_mesh_to_skeleton", True)  # v5.2.0: Align mesh to skeleton
     frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
     include_skeleton = data.get("include_skeleton", True)  # v4.6.10: Option to exclude skeleton
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
@@ -3038,17 +3027,12 @@ def main():
             world_translation_mode = "none"
     
     # Get transformation
-    global FLIP_X, DISABLE_VERTICAL_OFFSET, DISABLE_HORIZONTAL_OFFSET, DISABLE_ALL_OFFSETS, FLIP_VERTICAL, FLIP_HORIZONTAL
+    global FLIP_X, ALIGN_MESH_TO_SKELETON
     FLIP_X = flip_x
-    DISABLE_VERTICAL_OFFSET = disable_vertical_offset
-    DISABLE_HORIZONTAL_OFFSET = disable_horizontal_offset
-    DISABLE_ALL_OFFSETS = disable_all_offsets
-    FLIP_VERTICAL = flip_vertical
-    FLIP_HORIZONTAL = flip_horizontal
+    ALIGN_MESH_TO_SKELETON = align_mesh_to_skeleton
     transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis, flip_x)
     
-    log.info(f"Position offsets: disable_all={DISABLE_ALL_OFFSETS}, disable_vert={DISABLE_VERTICAL_OFFSET}, disable_horiz={DISABLE_HORIZONTAL_OFFSET}")
-    log.info(f"Position flips: flip_vert={FLIP_VERTICAL}, flip_horiz={FLIP_HORIZONTAL}")
+    log.info(f"Mesh alignment: {'enabled' if ALIGN_MESH_TO_SKELETON else 'disabled'}")
     
     clear_scene()
     

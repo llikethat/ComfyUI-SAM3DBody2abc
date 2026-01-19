@@ -317,26 +317,10 @@ class ExportAnimatedFBX:
                     "tooltip": "Position: character moves in Z axis (correct for 3D lighting/shadows). Scale: mesh scales with depth (2D compositing only). Both: combined."
                 }),
                 
-                # SAM3DBody compatibility (v5.1.9)
-                "disable_vertical_offset": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Disable vertical (Y) offset from pred_cam_t. Use if character has unwanted up/down movement."
-                }),
-                "disable_horizontal_offset": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Disable horizontal (X) offset from pred_cam_t. Use if character has unwanted left/right movement."
-                }),
-                "disable_all_offsets": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Disable ALL position offsets from pred_cam_t. Character stays at origin. Use for new SAM3DBody versions where pred_cam_t causes misalignment."
-                }),
-                "flip_vertical": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Flip vertical offset sign. Try if character moves in wrong vertical direction."
-                }),
-                "flip_horizontal": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Flip horizontal offset sign. Try if character moves in wrong horizontal direction."
+                # SAM3DBody mesh alignment (v5.2.0)
+                "align_mesh_to_skeleton": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Align mesh vertices to skeleton origin (pelvis). Required for new SAM3DBody where mesh uses ground-centered coordinates."
                 }),
                 
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
@@ -640,11 +624,7 @@ class ExportAnimatedFBX:
         scale_info: Optional[Dict] = None,
         use_depth_positioning: bool = True,
         depth_mode: str = "Position (Z-axis)",
-        disable_vertical_offset: bool = False,
-        disable_horizontal_offset: bool = False,
-        disable_all_offsets: bool = False,
-        flip_vertical: bool = False,
-        flip_horizontal: bool = False,
+        align_mesh_to_skeleton: bool = True,
         source_video_fps: float = 0.0,
         skip_first_frames: int = 0,
         output_dir: str = "",
@@ -902,11 +882,7 @@ Or specify the path in the blender_path input."""
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
-            "disable_vertical_offset": disable_vertical_offset,  # v5.1.9: Disable Y offset
-            "disable_horizontal_offset": disable_horizontal_offset,  # v5.1.10: Disable X offset
-            "disable_all_offsets": disable_all_offsets,  # v5.1.10: Disable all offsets
-            "flip_vertical": flip_vertical,  # v5.1.9: Flip Y offset sign
-            "flip_horizontal": flip_horizontal,  # v5.1.10: Flip X offset sign
+            "align_mesh_to_skeleton": align_mesh_to_skeleton,  # v5.2.0: Align mesh to skeleton origin
             "include_skeleton": include_skeleton,  # v4.6.10: Option to exclude skeleton
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
