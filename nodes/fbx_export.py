@@ -11,7 +11,7 @@ Settings:
                  "Positions" uses joint positions (legacy)
 
 Export Methods:
-- Primary: Direct bpy module (no external Blender needed)
+- Primary: Direct bpy module (no external Blender needed) - requires Python 3.11 + bpy
 - Fallback: Blender subprocess (requires blender installation)
 """
 
@@ -21,6 +21,7 @@ import subprocess
 import shutil
 import glob
 import tempfile
+import sys
 import numpy as np
 import torch
 from typing import Dict, Tuple, Any, Optional
@@ -28,13 +29,47 @@ import folder_paths
 
 # Try to import bpy exporter module
 BPY_AVAILABLE = False
+BPY_INSTALL_HELP = """
+To enable direct bpy export (no Blender subprocess needed):
+
+1. Check your Python version: python --version
+   - bpy 4.1+ requires Python 3.11.x EXACTLY
+   - bpy 4.0.0 requires Python 3.10.x EXACTLY
+
+2. Install bpy for your Python version:
+   
+   For Python 3.11:
+     pip install bpy
+   
+   For Python 3.10:
+     pip install bpy==4.0.0
+
+3. Alternative: Use Blender subprocess (current method)
+   Install Blender 4.2:
+     cd /workspace
+     wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
+     tar -xf blender-4.2.0-linux-x64.tar.xz
+     ln -sf /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender
+"""
+
 try:
     from ..lib.bpy_exporter import export_animated_fbx, is_bpy_available
     BPY_AVAILABLE = is_bpy_available()
     if BPY_AVAILABLE:
-        print("[FBX Export] bpy module available - will use direct export (no Blender subprocess needed)")
-except ImportError:
-    print("[FBX Export] bpy module not available - will use Blender subprocess")
+        print("[FBX Export] ✓ bpy module available - direct export enabled (no Blender subprocess needed)")
+    else:
+        print(f"[FBX Export] bpy module imported but not functional (Python {sys.version_info.major}.{sys.version_info.minor})")
+        print("[FBX Export] Will use Blender subprocess for export")
+except ImportError as e:
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    print(f"[FBX Export] bpy module not available (Python {py_ver})")
+    if sys.version_info >= (3, 12):
+        print("[FBX Export] ⚠️  Python 3.12+ not supported by bpy - must use Blender subprocess")
+    elif sys.version_info < (3, 10):
+        print("[FBX Export] ⚠️  Python < 3.10 not supported by bpy - must use Blender subprocess")
+    else:
+        print(f"[FBX Export] Install bpy with: pip install bpy" + ("==4.0.0" if sys.version_info.minor == 10 else ""))
+    print("[FBX Export] Will use Blender subprocess for export")
 
 # Import version and logger from package
 try:
@@ -754,20 +789,43 @@ class ExportAnimatedFBX:
             blender_exe = find_blender()
         
         log.info(f"Blender path: {blender_exe}")
-        if not blender_exe:
-            error_msg = """Error: Blender not found!
+        if not blender_exe and not BPY_AVAILABLE:
+            python_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+            
+            # Python 3.12+ specific message
+            if sys.version_info >= (3, 12):
+                bpy_note = f"""
+  ⚠️  Your Python {python_ver} is NOT supported by bpy module.
+  bpy only works with Python 3.10.x or 3.11.x (exact version match required).
+  
+  → You MUST use Blender subprocess method (Option 2 below)."""
+            else:
+                bpy_note = f"""
+  For Python 3.11.x: pip install bpy
+  For Python 3.10.x: pip install bpy==4.0.0
+  
+  Note: bpy requires EXACT Python version match."""
+            
+            error_msg = f"""Error: No export method available!
 
-To install Blender on RunPod/Linux:
+OPTION 1: Install bpy Python module (faster, no Blender needed)
+  Your Python: {python_ver}
+  {bpy_note}
+
+OPTION 2: Install Blender (works with any Python version):
   cd /workspace
   wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
   tar -xf blender-4.2.0-linux-x64.tar.xz
   ln -sf /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender
 
-Or specify the path in the blender_path input."""
+OPTION 3: Specify Blender path in the blender_path input."""
             log.info(error_msg)
-            return ("", "Error: Blender not found. See console for installation instructions.", 0, fps)
+            return ("", "Error: No export method available. See console for installation instructions.", 0, fps)
         
-        if not os.path.exists(BLENDER_SCRIPT):
+        # If bpy is not available but blender_exe is also not found, we already returned above
+        # If blender_exe is None but BPY_AVAILABLE is True, we'll use bpy (handled later)
+        
+        if not os.path.exists(BLENDER_SCRIPT) and not BPY_AVAILABLE:
             log.info(f"Script not found: {BLENDER_SCRIPT}")
             return ("", f"Error: Script not found: {BLENDER_SCRIPT}", 0, fps)
         

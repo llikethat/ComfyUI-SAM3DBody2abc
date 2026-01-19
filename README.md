@@ -163,19 +163,34 @@ FBX File:
 
 The FBX export uses one of two methods:
 
-### Primary: Direct bpy Export (Recommended)
+### Method 1: Direct bpy Export (Recommended if Python 3.11)
 - No external Blender installation needed
 - Faster (no subprocess overhead)
-- Requires bpy Python module: `pip install bpy==4.2`
+- **Requires Python 3.11.x exactly** + bpy module
 
-### Fallback: Blender Subprocess
-- Used when bpy module not available
+```bash
+# Check your Python version first
+python --version
+
+# For Python 3.11.x:
+pip install bpy
+
+# For Python 3.10.x:
+pip install bpy==4.0.0
+```
+
+**Note:** bpy has strict Python version requirements. It will NOT install on Python 3.9 or 3.12.
+
+### Method 2: Blender Subprocess (Works with any Python)
+- Used automatically when bpy module not available
 - Requires Blender 4.2+ installed on system
 
-To install bpy:
 ```bash
-# Requires Python 3.11 (bpy 4.2 limitation)
-pip install bpy==4.2
+# Install Blender on Linux/RunPod:
+cd /workspace
+wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
+tar -xf blender-4.2.0-linux-x64.tar.xz
+ln -sf /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender
 ```
 
 The export will automatically detect which method is available and use the best option.

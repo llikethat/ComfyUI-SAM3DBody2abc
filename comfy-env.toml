@@ -3,10 +3,17 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ISOLATED ENVIRONMENT FOR BLENDER PYTHON (bpy)
+# 
+# NOTE: bpy has STRICT Python version requirements:
+#   - bpy 4.1+ requires Python 3.11.x EXACTLY
+#   - bpy 4.0.0 requires Python 3.10.x EXACTLY
+#
+# If bpy installation fails, the system will automatically fall back to
+# using Blender subprocess for FBX export.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 [sam3dbody2abc]
-python = "3.11"  # bpy 4.2 only supports Python 3.11
+python = "3.11"  # bpy 4.1+ requires Python 3.11.x
 cuda_version = "auto"
 pytorch_version = "auto"
 
@@ -16,7 +23,9 @@ pytorch_version = "auto"
         "numpy>=1.21.0,<2.0.0",
         
         # Blender Python module (headless) - for FBX export
-        "bpy==4.2",
+        # NOTE: Will only work with Python 3.11.x
+        # Falls back to Blender subprocess if not available
+        "bpy>=4.1.0",
         
         # Math utilities
         "scipy>=1.10.0",

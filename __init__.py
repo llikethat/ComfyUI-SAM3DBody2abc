@@ -15,7 +15,31 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 5.1.8
+Version: 5.3.0
+
+CHANGELOG:
+----------
+
+v5.3.0 (2026-01-19)
+- NEW: Direct bpy module support for FBX export (no Blender subprocess needed)
+  - Adds lib/bpy_exporter.py with complete export functionality
+  - Automatically detects if bpy is available and uses it
+  - Falls back to Blender subprocess if bpy not installed
+  - NOTE: bpy requires Python 3.11.x (for bpy 4.1+) or 3.10.x (for bpy 4.0.0)
+  - Python 3.12+ not supported by bpy - use Blender subprocess instead
+- NEW: Added comfy-env.toml for isolated environment support
+- IMPROVED: Better error messages when no export method available
+  - Shows Python version and installation options for both bpy and Blender
+- IMPROVED: README updated with accurate bpy installation instructions
+
+v5.2.0
+- NEW: Mesh-to-skeleton alignment for SAM3DBody v5.2.0
+  - Handles ground-centered mesh vs pelvis-centered skeleton
+  - Automatic offset calculation and application
+- IMPROVED: Depth-based positioning now default mode
+- IMPROVED: Scale factor integration from Motion Analyzer
+
+v5.1.8
 - NEW: Added flip_ty option to FBX Export for newer SAM3DBody versions
   - If character appears vertically inverted, enable flip_ty
   - This compensates for coordinate system changes in SAM3DBody updates
@@ -51,7 +75,7 @@ Version: 5.1.8
   - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "5.2.0"
+__version__ = "5.3.0"
 
 import os
 import sys
