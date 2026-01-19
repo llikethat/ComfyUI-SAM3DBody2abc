@@ -785,7 +785,9 @@ class CharacterTrajectoryTracker:
                 
                 # Try joints_2d (SMPL-H projected)
                 if joint_2d is None and joint_key == "joints_2d":
-                    j_2d = frame_data.get("joints_2d") or frame_data.get("pred_joint_coords_2d")
+                    j_2d = frame_data.get("joints_2d")
+                    if j_2d is None:
+                        j_2d = frame_data.get("pred_joint_coords_2d")
                     if j_2d is not None:
                         j_2d = np.array(j_2d)
                         if j_2d.ndim == 3:
@@ -795,7 +797,9 @@ class CharacterTrajectoryTracker:
                 
                 # Fallback: project 3D joint to 2D if we have camera params
                 if joint_2d is None:
-                    kp_3d = frame_data.get("pred_keypoints_3d") or frame_data.get("joint_coords")
+                    kp_3d = frame_data.get("pred_keypoints_3d")
+                    if kp_3d is None:
+                        kp_3d = frame_data.get("joint_coords")
                     cam_t = frame_data.get("pred_cam_t")
                     focal = frame_data.get("focal_length", 1000.0)
                     

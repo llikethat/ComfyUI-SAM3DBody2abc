@@ -15,7 +15,10 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 5.1.4
+Version: 5.1.5
+- FIX: Character Trajectory numpy array boolean evaluation error
+  - Fixed "truth value of an array is ambiguous" error when getting joint data
+  - Replaced `a or b` pattern with explicit None checks for numpy arrays
 - FIX: Handle dict-based frames with sorted keys for consistent ordering
   - MESH_SEQUENCE frames can be dict (with integer keys) or list
   - All processing nodes now sort dict keys to ensure frame order
@@ -46,7 +49,7 @@ Version: 5.1.4
   - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "5.1.4"
+__version__ = "5.1.5"
 
 import os
 import sys
