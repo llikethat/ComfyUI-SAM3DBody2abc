@@ -23,14 +23,29 @@ import cv2
 from scipy import ndimage
 from scipy.signal import savgol_filter
 
+# Import logger
+try:
+    from ..lib.logger import log, set_module
+    set_module("Character Trajectory")
+except ImportError:
+    class _FallbackLog:
+        def info(self, msg): print(f"[Character Trajectory] {msg}")
+        def debug(self, msg): pass
+        def warn(self, msg): print(f"[Character Trajectory] WARN: {msg}")
+        def error(self, msg): print(f"[Character Trajectory] ERROR: {msg}")
+        def progress(self, c, t, task="", interval=10): 
+            if c == 0 or c == t - 1 or (c + 1) % interval == 0:
+                print(f"[Character Trajectory] {task}: {c + 1}/{t}")
+    log = _FallbackLog()
+
 # Try to import TAPIR
 TAPIR_AVAILABLE = False
 try:
     from tapnet.torch import tapir_model
     TAPIR_AVAILABLE = True
-    print("[CharacterTracker] TAPIR (tapnet) available")
+    log.info("TAPIR (tapnet) available")
 except ImportError:
-    print("[CharacterTracker] TAPIR not found - will use external TAPIR tracks or optical flow fallback")
+    log.info("TAPIR not found - will use external TAPIR tracks or optical flow fallback")
 
 
 class CharacterTrajectoryTracker:
@@ -39,9 +54,31 @@ class CharacterTrajectoryTracker:
     
     This provides accurate 3D trajectory even when character moves toward/away
     from camera, which SAM3DBody's weak perspective model struggles with.
+    
+    v4.8.8: Added joint-based tracking using actual SAM3DBody joint positions.
     """
     
-    TRACKING_MODES = ["Pelvis (Center)", "Feet (Ground Contact)", "Full Body (Average)", "Custom Points"]
+    # Joint definitions for reference
+    COCO_JOINT_NAMES = [
+        "0: Nose", "1: L_Eye", "2: R_Eye", "3: L_Ear", "4: R_Ear",
+        "5: L_Shoulder", "6: R_Shoulder", "7: L_Elbow", "8: R_Elbow",
+        "9: L_Wrist", "10: R_Wrist", "11: L_Hip (Pelvis Proxy)", "12: R_Hip",
+        "13: L_Knee", "14: R_Knee", "15: L_Ankle", "16: R_Ankle"
+    ]
+    
+    SMPLH_JOINT_NAMES = [
+        "0: Pelvis", "1: L_Hip", "2: R_Hip", "3: Spine1", "4: L_Knee", "5: R_Knee",
+        "6: Spine2", "7: L_Ankle", "8: R_Ankle", "9: Spine3", "10: L_Foot", "11: R_Foot",
+        "12: Neck", "13: L_Collar", "14: R_Collar", "15: Head", "16: L_Shoulder", "17: R_Shoulder",
+        "18: L_Elbow", "19: R_Elbow", "20: L_Wrist", "21: R_Wrist"
+    ]
+    
+    TRACKING_MODES = [
+        "Joint Position (Recommended)",  # NEW - uses actual joint
+        "Pelvis Region (Legacy)",         # Old region-based
+        "Feet Region (Ground Contact)", 
+        "Full Body (Average)", 
+    ]
     DEPTH_MODES = ["Relative (Normalized)", "Metric (Estimated)", "Reference Scale (SAM3DBody)"]
     SMOOTHING_METHODS = ["None", "Gaussian", "Savitzky-Golay", "Moving Average"]
     
@@ -80,8 +117,20 @@ class CharacterTrajectoryTracker:
                 
                 # === Tracking Settings ===
                 "tracking_mode": (cls.TRACKING_MODES, {
-                    "default": "Pelvis (Center)",
-                    "tooltip": "Which body part(s) to track for trajectory"
+                    "default": "Joint Position (Recommended)",
+                    "tooltip": "Joint Position uses actual SAM3DBody joint. Legacy modes use mask region approximation."
+                }),
+                "skeleton_format": (["COCO (keypoints_2d)", "SMPL-H (joint_coords)"], {
+                    "default": "COCO (keypoints_2d)",
+                    "tooltip": "Which skeleton format to use for joint tracking"
+                }),
+                "reference_joint_coco": (cls.COCO_JOINT_NAMES, {
+                    "default": "11: L_Hip (Pelvis Proxy)",
+                    "tooltip": "Joint to track for COCO format. L_Hip (11) is closest to pelvis."
+                }),
+                "reference_joint_smplh": (cls.SMPLH_JOINT_NAMES, {
+                    "default": "0: Pelvis",
+                    "tooltip": "Joint to track for SMPL-H format. 0 is true pelvis."
                 }),
                 
                 # === TAPIR Settings ===
@@ -156,7 +205,7 @@ class CharacterTrajectoryTracker:
                     break
             
             if checkpoint_path is None:
-                print("[CharacterTracker] TAPIR checkpoint not found")
+                log.info("TAPIR checkpoint not found")
                 return False
             
             self.tapir_model = tapir_model.TAPIR(pyramid_level=1)
@@ -164,11 +213,11 @@ class CharacterTrajectoryTracker:
             self.tapir_model.to(self.device)
             self.tapir_model.eval()
             
-            print(f"[CharacterTracker] TAPIR loaded from {checkpoint_path}")
+            log.info(f"TAPIR loaded from {checkpoint_path}")
             return True
             
         except Exception as e:
-            print(f"[CharacterTracker] Error loading TAPIR: {e}")
+            log.info(f"Error loading TAPIR: {e}")
             return False
     
     def _get_mask_centroid(self, mask: np.ndarray, tracking_mode: str) -> Tuple[float, float]:
@@ -192,7 +241,7 @@ class CharacterTrajectoryTracker:
         y_min, y_max = y_coords.min(), y_coords.max()
         mask_height = y_max - y_min
         
-        if tracking_mode == "Pelvis (Center)":
+        if tracking_mode == "Pelvis (Center)" or tracking_mode == "Pelvis Region (Legacy)":
             # Focus on middle region (pelvis area)
             pelvis_y_min = y_min + int(mask_height * 0.35)
             pelvis_y_max = y_min + int(mask_height * 0.55)
@@ -202,7 +251,7 @@ class CharacterTrajectoryTracker:
                 x_coords = x_coords[pelvis_mask]
                 y_coords = y_coords[pelvis_mask]
         
-        elif tracking_mode == "Feet (Ground Contact)":
+        elif tracking_mode == "Feet (Ground Contact)" or tracking_mode == "Feet Region (Ground Contact)":
             # Focus on bottom region (feet)
             feet_y_min = y_min + int(mask_height * 0.85)
             
@@ -242,13 +291,13 @@ class CharacterTrajectoryTracker:
         mask_height = y_max - y_min
         
         # Create region mask based on tracking mode
-        if tracking_mode == "Pelvis (Center)":
+        if tracking_mode == "Pelvis (Center)" or tracking_mode == "Pelvis Region (Legacy)":
             pelvis_y_min = y_min + int(mask_height * 0.35)
             pelvis_y_max = y_min + int(mask_height * 0.55)
             region_mask = mask.copy()
             region_mask[:pelvis_y_min, :] = 0
             region_mask[pelvis_y_max:, :] = 0
-        elif tracking_mode == "Feet (Ground Contact)":
+        elif tracking_mode == "Feet (Ground Contact)" or tracking_mode == "Feet Region (Ground Contact)":
             feet_y_min = y_min + int(mask_height * 0.85)
             region_mask = mask.copy()
             region_mask[:feet_y_min, :] = 0
@@ -391,11 +440,11 @@ class CharacterTrajectoryTracker:
         N, H, W, _ = images.shape
         num_points = grid_size * grid_size
         
-        print(f"[CharacterTracker] TAPIR settings: grid={grid_size}x{grid_size}={num_points}pts, batch_frames={batch_frames}")
+        log.info(f"TAPIR settings: grid={grid_size}x{grid_size}={num_points}pts, batch_frames={batch_frames}")
         
         # Get initial points from first frame mask
         init_points = self._sample_points_from_mask(masks[0], tracking_mode, grid_size)
-        print(f"[CharacterTracker] Tracking {len(init_points)} points (requested {num_points})")
+        log.info(f"Tracking {len(init_points)} points (requested {num_points})")
         
         # Result array
         all_tracks = np.zeros((N, 2))
@@ -408,7 +457,7 @@ class CharacterTrajectoryTracker:
             end_frame = min(start_frame + batch_frames, N)
             batch_size = end_frame - start_frame
             
-            print(f"[CharacterTracker] Processing batch {batch_idx + 1}/{num_batches} (frames {start_frame}-{end_frame-1})")
+            log.info(f"Processing batch {batch_idx + 1}/{num_batches} (frames {start_frame}-{end_frame-1})")
             
             # Get batch of frames
             batch_images = images[start_frame:end_frame]
@@ -457,11 +506,11 @@ class CharacterTrajectoryTracker:
                         
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
-                    print(f"[CharacterTracker] WARNING: GPU OOM in batch {batch_idx + 1}. Try reducing:")
-                    print(f"  - tapir_batch_frames (current: {batch_frames})")
-                    print(f"  - tapir_grid_size (current: {grid_size}, points: {num_points})")
+                    log.info(f"WARNING: GPU OOM in batch {batch_idx + 1}. Try reducing:")
+                    log.debug(f" - tapir_batch_frames (current: {batch_frames})")
+                    log.debug(f" - tapir_grid_size (current: {grid_size}, points: {num_points})")
                     # Fall back to optical flow for this batch
-                    print(f"[CharacterTracker] Falling back to optical flow for this batch...")
+                    log.info(f"Falling back to optical flow for this batch...")
                     batch_tracks = self._track_with_optical_flow(
                         batch_images, masks[start_frame:end_frame], tracking_mode
                     )
@@ -480,7 +529,7 @@ class CharacterTrajectoryTracker:
                 torch.cuda.empty_cache()
                 gc.collect()
         
-        print(f"[CharacterTracker] TAPIR tracking complete for {N} frames")
+        log.info(f"TAPIR tracking complete for {N} frames")
         return all_tracks
     
     def _sample_points_from_mask(self, mask: np.ndarray, tracking_mode: str, 
@@ -510,13 +559,13 @@ class CharacterTrajectoryTracker:
         mask_width = x_max - x_min
         
         # Filter by tracking mode to get the region of interest
-        if tracking_mode == "Pelvis (Center)":
+        if tracking_mode == "Pelvis (Center)" or tracking_mode == "Pelvis Region (Legacy)":
             # Focus on middle region (pelvis area)
             roi_y_min = y_min + int(mask_height * 0.35)
             roi_y_max = y_min + int(mask_height * 0.55)
             roi_x_min = x_min
             roi_x_max = x_max
-        elif tracking_mode == "Feet (Ground Contact)":
+        elif tracking_mode == "Feet (Ground Contact)" or tracking_mode == "Feet Region (Ground Contact)":
             # Focus on bottom region (feet)
             roi_y_min = y_min + int(mask_height * 0.85)
             roi_y_max = y_max
@@ -606,7 +655,10 @@ class CharacterTrajectoryTracker:
                         mesh_sequence=None,
                         depth_is_inverted=False,
                         reference_depth_m=5.0,
-                        tracking_mode="Pelvis (Center)",
+                        tracking_mode="Joint Position (Recommended)",
+                        skeleton_format="COCO (keypoints_2d)",
+                        reference_joint_coco="11: L_Hip (Pelvis Proxy)",
+                        reference_joint_smplh="0: Pelvis",
                         tapir_grid_size=4,
                         tapir_batch_frames=25,
                         use_tapir=True,
@@ -618,8 +670,24 @@ class CharacterTrajectoryTracker:
         
         Combines 2D tracking (TAPIR or optical flow) with depth maps to produce
         accurate 3D trajectory.
+        
+        v4.8.8: Added joint-based tracking using actual SAM3DBody joint positions.
         """
-        print(f"[CharacterTracker] Starting character trajectory tracking...")
+        log.info(f"Starting character trajectory tracking...")
+        
+        # Parse joint index from selection string
+        if skeleton_format == "COCO (keypoints_2d)":
+            joint_idx = int(reference_joint_coco.split(":")[0])
+            joint_key = "pred_keypoints_2d"
+            joint_name = reference_joint_coco.split(": ")[1] if ": " in reference_joint_coco else f"Joint {joint_idx}"
+        else:
+            joint_idx = int(reference_joint_smplh.split(":")[0])
+            joint_key = "joints_2d"  # SMPL-H 2D projections
+            joint_name = reference_joint_smplh.split(": ")[1] if ": " in reference_joint_smplh else f"Joint {joint_idx}"
+        
+        log.info(f"Tracking mode: {tracking_mode}")
+        if "Joint" in tracking_mode:
+            log.info(f"Using joint: {joint_idx} ({joint_name}) from {skeleton_format}")
         
         # Convert inputs to numpy
         if isinstance(images, torch.Tensor):
@@ -650,42 +718,150 @@ class CharacterTrajectoryTracker:
         
         num_points = tapir_grid_size * tapir_grid_size
         
-        print(f"[CharacterTracker] Processing {N} frames at {W}x{H}")
-        print(f"[CharacterTracker] Tracking mode: {tracking_mode}")
+        log.info(f"Processing {N} frames at {W}x{H}")
         
         # === Step 1: Get reference depth from SAM3DBody or use provided ===
         if mesh_sequence is not None:
-            frames = mesh_sequence.get("frames", [])
-            if frames and "pred_cam_t" in frames[0]:
-                ref_depth = abs(frames[0]["pred_cam_t"][2])
-                print(f"[CharacterTracker] Reference depth from SAM3DBody: {ref_depth:.2f}m")
+            frames = mesh_sequence.get("frames", {})
+            # Handle both dict and list formats
+            if isinstance(frames, dict):
+                if frames:
+                    first_key = sorted(frames.keys())[0]
+                    first_frame = frames[first_key]
+                    if "pred_cam_t" in first_frame:
+                        ref_depth = abs(first_frame["pred_cam_t"][2])
+                        log.info(f"Reference depth from SAM3DBody: {ref_depth:.2f}m")
+                    else:
+                        ref_depth = reference_depth_m
+                        log.info(f"Using provided reference depth: {ref_depth:.2f}m")
+                else:
+                    ref_depth = reference_depth_m
+                    log.info(f"Using provided reference depth: {ref_depth:.2f}m")
             else:
-                ref_depth = reference_depth_m
-                print(f"[CharacterTracker] Using provided reference depth: {ref_depth:.2f}m")
+                if frames and "pred_cam_t" in frames[0]:
+                    ref_depth = abs(frames[0]["pred_cam_t"][2])
+                    log.info(f"Reference depth from SAM3DBody: {ref_depth:.2f}m")
+                else:
+                    ref_depth = reference_depth_m
+                    log.info(f"Using provided reference depth: {ref_depth:.2f}m")
         else:
             ref_depth = reference_depth_m
-            print(f"[CharacterTracker] Using provided reference depth: {ref_depth:.2f}m")
+            log.info(f"Using provided reference depth: {ref_depth:.2f}m")
         
         # === Step 2: Track 2D position ===
-        print(f"[CharacterTracker] Tracking 2D position...")
+        log.info(f"Tracking 2D position...")
         
-        tapir_loaded = self._load_tapir() if use_tapir else False
+        # Check if we should use joint-based tracking
+        use_joint_tracking = False
+        joint_tracks_2d = None
         
-        if tapir_loaded and use_tapir:
-            print(f"[CharacterTracker] Using TAPIR for tracking")
-            tracks_2d = self._track_with_tapir(
-                images_np, masks_np, tracking_mode,
-                grid_size=tapir_grid_size, batch_frames=tapir_batch_frames
-            )
-        else:
-            if not use_tapir:
-                print(f"[CharacterTracker] TAPIR disabled, using optical flow")
+        if "Joint" in tracking_mode and mesh_sequence is not None:
+            # Try to extract joint positions from mesh_sequence
+            frames = mesh_sequence.get("frames", {})
+            if isinstance(frames, dict):
+                frame_indices = sorted([int(k) for k in frames.keys() if str(k).isdigit()])
             else:
-                print(f"[CharacterTracker] TAPIR not available, using optical flow fallback")
-            tracks_2d = self._track_with_optical_flow(images_np, masks_np, tracking_mode)
+                frame_indices = list(range(len(frames)))
+            
+            joint_tracks_2d = []
+            valid_joint_frames = 0
+            
+            for i in range(N):
+                frame_key = frame_indices[i] if i < len(frame_indices) else frame_indices[-1]
+                frame_data = frames.get(frame_key, frames.get(str(frame_key), {})) if isinstance(frames, dict) else (frames[i] if i < len(frames) else frames[-1])
+                
+                # Try to get joint 2D position
+                joint_2d = None
+                
+                # Try pred_keypoints_2d first (COCO format)
+                if joint_key == "pred_keypoints_2d":
+                    kp_2d = frame_data.get("pred_keypoints_2d")
+                    if kp_2d is not None:
+                        kp_2d = np.array(kp_2d)
+                        if kp_2d.ndim == 3:
+                            kp_2d = kp_2d.squeeze(0)
+                        if joint_idx < len(kp_2d):
+                            joint_2d = kp_2d[joint_idx][:2]  # Get x, y
+                
+                # Try joints_2d (SMPL-H projected)
+                if joint_2d is None and joint_key == "joints_2d":
+                    j_2d = frame_data.get("joints_2d")
+                    if j_2d is None:
+                        j_2d = frame_data.get("pred_joint_coords_2d")
+                    if j_2d is not None:
+                        j_2d = np.array(j_2d)
+                        if j_2d.ndim == 3:
+                            j_2d = j_2d.squeeze(0)
+                        if joint_idx < len(j_2d):
+                            joint_2d = j_2d[joint_idx][:2]
+                
+                # Fallback: project 3D joint to 2D if we have camera params
+                if joint_2d is None:
+                    kp_3d = frame_data.get("pred_keypoints_3d")
+                    if kp_3d is None:
+                        kp_3d = frame_data.get("joint_coords")
+                    cam_t = frame_data.get("pred_cam_t")
+                    focal = frame_data.get("focal_length", 1000.0)
+                    
+                    if kp_3d is not None and cam_t is not None:
+                        kp_3d = np.array(kp_3d)
+                        if kp_3d.ndim == 3:
+                            kp_3d = kp_3d.squeeze(0)
+                        cam_t = np.array(cam_t).flatten()
+                        
+                        if joint_idx < len(kp_3d):
+                            # Project 3D to 2D
+                            joint_3d = kp_3d[joint_idx]
+                            # Apply camera translation
+                            joint_cam = joint_3d + cam_t[:3]
+                            # Project
+                            if isinstance(focal, (list, tuple)):
+                                focal = focal[0]
+                            focal = float(focal)
+                            if joint_cam[2] > 0:
+                                x_2d = focal * joint_cam[0] / joint_cam[2] + W / 2
+                                y_2d = focal * joint_cam[1] / joint_cam[2] + H / 2
+                                joint_2d = np.array([x_2d, y_2d])
+                
+                if joint_2d is not None:
+                    joint_tracks_2d.append(joint_2d)
+                    valid_joint_frames += 1
+                else:
+                    # Use last known position or center
+                    if joint_tracks_2d:
+                        joint_tracks_2d.append(joint_tracks_2d[-1])
+                    else:
+                        joint_tracks_2d.append(np.array([W / 2, H / 2]))
+            
+            if valid_joint_frames > N * 0.5:  # At least 50% valid
+                joint_tracks_2d = np.array(joint_tracks_2d)
+                use_joint_tracking = True
+                log.info(f"✓ Using joint-based tracking: {valid_joint_frames}/{N} frames with valid joint data")
+            else:
+                log.warning(f"Only {valid_joint_frames}/{N} frames have valid joint data, falling back to mask tracking")
+        
+        if use_joint_tracking:
+            tracks_2d = joint_tracks_2d
+            tapir_loaded = False  # Not used for joint tracking
+        else:
+            # Fall back to TAPIR or optical flow
+            tapir_loaded = self._load_tapir() if use_tapir else False
+            
+            if tapir_loaded and use_tapir:
+                log.info(f"Using TAPIR for tracking")
+                tracks_2d = self._track_with_tapir(
+                    images_np, masks_np, tracking_mode,
+                    grid_size=tapir_grid_size, batch_frames=tapir_batch_frames
+                )
+            else:
+                if not use_tapir:
+                    log.info(f"TAPIR disabled, using optical flow")
+                else:
+                    log.info(f"TAPIR not available, using optical flow fallback")
+                tracks_2d = self._track_with_optical_flow(images_np, masks_np, tracking_mode)
         
         # === Step 3: Sample depth at tracked positions ===
-        print(f"[CharacterTracker] Sampling depth values...")
+        log.info(f"Sampling depth values...")
         
         depths_raw = np.zeros(N)
         for i in range(N):
@@ -697,11 +873,30 @@ class CharacterTrajectoryTracker:
             else:
                 depth_frame = depth_np[i]
             
-            # Sample depth at mask region
-            if i < len(masks_np):
-                depths_raw[i] = self._sample_depth_at_mask(depth_frame, masks_np[i], tracking_mode)
+            if use_joint_tracking:
+                # Sample depth at joint 2D position
+                x, y = int(tracks_2d[i, 0]), int(tracks_2d[i, 1])
+                # Clamp to image bounds
+                x = max(0, min(x, depth_frame.shape[1] - 1))
+                y = max(0, min(y, depth_frame.shape[0] - 1))
+                
+                # Sample with small neighborhood for robustness
+                y_min = max(0, y - 2)
+                y_max = min(depth_frame.shape[0], y + 3)
+                x_min = max(0, x - 2)
+                x_max = min(depth_frame.shape[1], x + 3)
+                
+                neighborhood = depth_frame[y_min:y_max, x_min:x_max]
+                if neighborhood.size > 0:
+                    depths_raw[i] = float(np.median(neighborhood))
+                else:
+                    depths_raw[i] = float(depth_frame[y, x])
             else:
-                depths_raw[i] = self._sample_depth_at_mask(depth_frame, masks_np[-1], tracking_mode)
+                # Sample depth at mask region (legacy)
+                if i < len(masks_np):
+                    depths_raw[i] = self._sample_depth_at_mask(depth_frame, masks_np[i], tracking_mode)
+                else:
+                    depths_raw[i] = self._sample_depth_at_mask(depth_frame, masks_np[-1], tracking_mode)
         
         # Invert if needed (so that larger value = farther)
         if depth_is_inverted:
@@ -715,7 +910,7 @@ class CharacterTrajectoryTracker:
         # depth_metric = ref_depth * (depth_value / ref_depth_value)
         depths_metric = ref_depth * (depths_raw / ref_depth_value)
         
-        print(f"[CharacterTracker] Depth range: {depths_metric.min():.2f}m to {depths_metric.max():.2f}m")
+        log.info(f"Depth range: {depths_metric.min():.2f}m to {depths_metric.max():.2f}m")
         
         # === Step 5: Convert 2D + depth to 3D ===
         # X, Y in screen space, Z from depth
@@ -739,7 +934,7 @@ class CharacterTrajectoryTracker:
         
         # === Step 6: Apply smoothing ===
         if smoothing_method != "None":
-            print(f"[CharacterTracker] Applying {smoothing_method} smoothing (window={smoothing_window})")
+            log.info(f"Applying {smoothing_method} smoothing (window={smoothing_window})")
             trajectory_3d = self._smooth_trajectory(trajectory_3d, smoothing_method, smoothing_window)
             depths_metric = self._smooth_trajectory(depths_metric, smoothing_method, smoothing_window)
         
@@ -804,17 +999,17 @@ class CharacterTrajectoryTracker:
                     frame_data["tracked_position_3d"] = trajectory_3d[i].tolist()
                     frame_data["tracked_depth"] = float(depths_metric[i])
                     
-                print(f"[CharacterTracker] Updated {len(frame_items)} frames with depth data")
+                log.info(f"Updated {len(frame_items)} frames with depth data")
                     
             except Exception as e:
-                print(f"[CharacterTracker] Warning: Could not update mesh_sequence: {e}")
+                log.info(f"Warning: Could not update mesh_sequence: {e}")
                 import traceback
                 traceback.print_exc()
                 mesh_sequence_updated = mesh_sequence
         
         # === Step 9: Create debug video ===
         if output_debug_video:
-            print(f"[CharacterTracker] Creating debug visualization...")
+            log.info(f"Creating debug visualization...")
             debug_video = self._create_debug_video(images_np, masks_np, tracks_2d, 
                                                    depths_metric, trajectory_3d)
             debug_video = torch.from_numpy(debug_video)
@@ -825,8 +1020,13 @@ class CharacterTrajectoryTracker:
         depth_change = depths_metric[-1] - depths_metric[0]
         depth_pct = (depth_change / ref_depth) * 100
         
-        tracker_info = "TAPIR" if (tapir_loaded and use_tapir) else "Optical Flow"
-        tapir_settings = f"\n  Grid: {tapir_grid_size}x{tapir_grid_size} = {num_points} points\n  Batch Frames: {tapir_batch_frames}" if (tapir_loaded and use_tapir) else ""
+        # Determine tracker info
+        if use_joint_tracking:
+            tracker_info = f"Joint-Based ({joint_name})"
+            tapir_settings = f"\n  Skeleton: {skeleton_format}\n  Joint Index: {joint_idx}"
+        else:
+            tracker_info = "TAPIR" if (tapir_loaded and use_tapir) else "Optical Flow"
+            tapir_settings = f"\n  Grid: {tapir_grid_size}x{tapir_grid_size} = {num_points} points\n  Batch Frames: {tapir_batch_frames}" if (tapir_loaded and use_tapir) else ""
         
         info = f"""Character Trajectory Tracking Results
 =====================================
@@ -853,8 +1053,24 @@ Tips for GPU Memory (if OOM):
 Use the updated mesh_sequence for FBX export with corrected depth values.
 """
         
-        print(f"[CharacterTracker] Tracking complete!")
-        print(f"[CharacterTracker] Depth change: {depth_change:+.2f}m ({depth_pct:+.1f}%)")
+        # Store settings in mesh_sequence for FBX metadata
+        if mesh_sequence_updated is not None:
+            mesh_sequence_updated["character_trajectory_settings"] = {
+                "tracking_mode": tracking_mode,
+                "tracker_type": "joint" if use_joint_tracking else ("tapir" if (tapir_loaded and use_tapir) else "optical_flow"),
+                "joint_index": joint_idx if use_joint_tracking else -1,
+                "joint_name": joint_name if use_joint_tracking else "",
+                "skeleton_format": skeleton_format if use_joint_tracking else "",
+                "smoothing_method": smoothing_method,
+                "smoothing_window": smoothing_window,
+                "reference_depth_m": ref_depth,
+            }
+        else:
+            log.info("WARNING: mesh_sequence input was not connected - mesh_sequence_updated output will be None!")
+            log.info("         Connect a MESH_SEQUENCE from Video Processor or processing nodes to this input.")
+        
+        log.info(f"Tracking complete!")
+        log.info(f"Depth change: {depth_change:+.2f}m ({depth_pct:+.1f}%)")
         
         return (trajectory_output, mesh_sequence_updated, debug_video, info)
 

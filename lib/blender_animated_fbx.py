@@ -22,6 +22,59 @@ from mathutils import Vector, Matrix, Euler, Quaternion
 import math
 
 
+# =============================================================================
+# EMBEDDED LOGGER - Verbosity-controlled logging for Blender script
+# =============================================================================
+from datetime import datetime
+
+class LogLevel:
+    SILENT = 0
+    ERROR = 1
+    WARN = 2
+    INFO = 3
+    STATUS = 4
+    DEBUG = 5
+
+class Log:
+    """Simple logger with verbosity control and timestamps."""
+    
+    def __init__(self, level=LogLevel.INFO):
+        self.level = level
+        self.prefix = "Blender"
+    
+    def _ts(self):
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    
+    def error(self, msg): 
+        if self.level >= LogLevel.ERROR: print(f"[{self._ts()}] [{self.prefix}] ERROR: {msg}")
+    
+    def warn(self, msg): 
+        if self.level >= LogLevel.WARN: print(f"[{self._ts()}] [{self.prefix}] WARN: {msg}")
+    
+    def info(self, msg): 
+        if self.level >= LogLevel.INFO: print(f"[{self._ts()}] [{self.prefix}] {msg}")
+    
+    def status(self, msg): 
+        if self.level >= LogLevel.STATUS: print(f"[{self._ts()}] [{self.prefix}] {msg}")
+    
+    def debug(self, msg): 
+        if self.level >= LogLevel.DEBUG: print(f"[{self._ts()}] [{self.prefix}] DEBUG: {msg}")
+    
+    def progress(self, current, total, task="", interval=10):
+        """Log progress at intervals."""
+        if self.level < LogLevel.STATUS: return
+        if current == 0 or current == total - 1 or (current + 1) % interval == 0:
+            pct = (current + 1) / total * 100
+            msg = f"{task}: {current + 1}/{total} ({pct:.0f}%)" if task else f"Progress: {current + 1}/{total}"
+            print(f"[{self._ts()}] [{self.prefix}] {msg}")
+
+# Global logger - set level via environment or default to INFO
+_log_level = os.environ.get("SAM3DBODY_LOG_LEVEL", "INFO").upper()
+_level_map = {"SILENT": 0, "ERROR": 1, "WARN": 2, "INFO": 3, "STATUS": 4, "DEBUG": 5}
+log = Log(level=_level_map.get(_log_level, LogLevel.INFO))
+# =============================================================================
+
+
 def smooth_array(values, window):
     """Moving average smoothing for camera animation to reduce jitter.
     
@@ -147,7 +200,7 @@ def kalman_filter_camera_data(camera_rotations, process_noise=0.01, measurement_
     import numpy as np
     
     n = len(camera_rotations)
-    print(f"[Blender] Applying Kalman filter to {n} camera frames (Q={process_noise}, R={measurement_noise})...")
+    log.info(f"Applying Kalman filter to {n} camera frames (Q={process_noise}, R={measurement_noise})...")
     
     # State: [pan, tilt, roll, tx, ty, tz, d_pan, d_tilt, d_roll, d_tx, d_ty, d_tz]
     # We track both position and velocity for smoother predictions
@@ -223,7 +276,7 @@ def kalman_filter_camera_data(camera_rotations, process_noise=0.01, measurement_
             "tz": float(x[5]),
         })
     
-    print(f"[Blender] Kalman filter complete")
+    log.info(f"Kalman filter complete")
     return filtered
 
 
@@ -250,13 +303,13 @@ def spline_fit_camera_data(camera_rotations, smoothing_factor=0.5):
     try:
         from scipy.interpolate import UnivariateSpline
     except ImportError:
-        print("[Blender] scipy not available for spline fitting, using Gaussian smoothing fallback")
+        log.info("scipy not available for spline fitting, using Gaussian smoothing fallback")
         return smooth_camera_data(camera_rotations, window=9)
     
     import numpy as np
     
     n = len(camera_rotations)
-    print(f"[Blender] Applying spline fitting to {n} camera frames (smoothing={smoothing_factor})...")
+    log.info(f"Applying spline fitting to {n} camera frames (smoothing={smoothing_factor})...")
     
     # Extract channels
     frames = np.array([r.get("frame", i) for i, r in enumerate(camera_rotations)])
@@ -276,7 +329,7 @@ def spline_fit_camera_data(camera_rotations, smoothing_factor=0.5):
             spline = UnivariateSpline(frames, y, s=s, k=3)
             return spline(frames)
         except Exception as e:
-            print(f"[Blender] Spline fit failed: {e}, using original")
+            log.info(f"Spline fit failed: {e}, using original")
             return y
     
     smooth_pans = fit_channel(pans)
@@ -299,7 +352,7 @@ def spline_fit_camera_data(camera_rotations, smoothing_factor=0.5):
             "tz": float(smooth_tzs[i]),
         })
     
-    print(f"[Blender] Spline fitting complete")
+    log.info(f"Spline fitting complete")
     return filtered
 
 
@@ -332,7 +385,7 @@ def smooth_camera_data_combined(camera_rotations, method="kalman", **kwargs):
         return smooth_camera_data(camera_rotations, window)
     
     else:
-        print(f"[Blender] Unknown smoothing method: {method}, using Kalman")
+        log.info(f"Unknown smoothing method: {method}, using Kalman")
         return kalman_filter_camera_data(camera_rotations)
 
 
@@ -362,7 +415,7 @@ def bake_camera_to_geometry(frames, solved_camera_rotations, up_axis="Y",
     import copy
     
     if not solved_camera_rotations or len(solved_camera_rotations) == 0:
-        print("[Blender] No camera rotations to bake - returning original frames")
+        log.info("No camera rotations to bake - returning original frames")
         return frames
     
     # Apply smoothing FIRST before baking
@@ -375,7 +428,7 @@ def bake_camera_to_geometry(frames, solved_camera_rotations, up_axis="Y",
         **smoothing_params
     )
     
-    print(f"[Blender] Baking camera motion into geometry ({len(frames)} frames, smoothing={smoothing_method})...")
+    log.info(f"Baking camera motion into geometry ({len(frames)} frames, smoothing={smoothing_method})...")
     
     baked_frames = []
     
@@ -486,10 +539,9 @@ def bake_camera_to_geometry(frames, solved_camera_rotations, up_axis="Y",
         
         baked_frames.append(baked_frame)
         
-        if (frame_idx + 1) % 50 == 0:
-            print(f"[Blender] Baked {frame_idx + 1}/{len(frames)} frames")
+        log.progress(frame_idx, len(frames), "Baking camera to geometry", interval=50)
     
-    print(f"[Blender] Camera motion baked into geometry complete")
+    log.info(f"Camera motion baked into geometry complete")
     return baked_frames
 
 
@@ -512,7 +564,7 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     Returns:
         Camera object
     """
-    print("[Blender] Creating static camera with intrinsics...")
+    log.info("Creating static camera with intrinsics...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -559,8 +611,17 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     # Convert focal length: focal_mm = focal_px * sensor_width / image_width
     focal_mm = focal_px * (sensor_width / image_width)
     cam_data.lens = focal_mm
-    print(f"[Blender] Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length (source: {focal_source})")
-    print(f"[Blender] Image: {image_width}x{image_height}, sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    log.info(f"Static camera: {focal_px:.0f}px -> {focal_mm:.1f}mm focal length (source: {focal_source})")
+    log.debug(f"Image: {image_width}x{image_height}, sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    
+    # Add custom properties for Maya (exported as Extra Attributes)
+    camera["sensor_width_mm"] = sensor_width
+    camera["sensor_height_mm"] = cam_data.sensor_height
+    camera["focal_length_mm"] = focal_mm
+    camera["focal_length_px"] = focal_px
+    camera["image_width"] = image_width
+    camera["image_height"] = image_height
+    camera["aspect_ratio"] = aspect_ratio
     
     # ============================================================
     # FILM OFFSET (from principal point cx, cy)
@@ -601,19 +662,19 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
         cam_data.shift_x = shift_x
         cam_data.shift_y = shift_y
         
-        print(f"[Blender] Principal point: cx={cx:.2f}px, cy={cy:.2f}px")
-        print(f"[Blender] Image center: ({center_x:.1f}, {center_y:.1f})")
-        print(f"[Blender] Principal point offset: dx={offset_x_px:.2f}px, dy={offset_y_px:.2f}px")
-        print(f"[Blender] Film offset (Blender shift): X={shift_x:.4f}, Y={shift_y:.4f}")
+        log.debug(f"Principal point: cx={cx:.2f}px, cy={cy:.2f}px")
+        log.debug(f"Image center: ({center_x:.1f}, {center_y:.1f})")
+        log.debug(f"Principal point offset: dx={offset_x_px:.2f}px, dy={offset_y_px:.2f}px")
+        log.debug(f"Film offset (Blender shift): X={shift_x:.4f}, Y={shift_y:.4f}")
         
         # Also calculate Maya-style film offset for reference
         # Maya Film Offset = shift * sensor_size
         maya_film_offset_x = shift_x * sensor_width
         maya_film_offset_y = shift_y * cam_data.sensor_height
-        print(f"[Blender] Film offset (Maya style): X={maya_film_offset_x:.4f}mm, Y={maya_film_offset_y:.4f}mm")
+        log.debug(f"Film offset (Maya style): X={maya_film_offset_x:.4f}mm, Y={maya_film_offset_y:.4f}mm")
     else:
         # No principal point data - assume centered
-        print(f"[Blender] Principal point: not specified (assuming centered at {center_x:.1f}, {center_y:.1f})")
+        log.debug(f"Principal point: not specified (assuming centered at {center_x:.1f}, {center_y:.1f})")
         cam_data.shift_x = 0
         cam_data.shift_y = 0
     
@@ -649,8 +710,8 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
         camera.location = Vector((0, 0, cam_distance))
         camera.rotation_euler = Euler((0, 0, 0), 'XYZ')
     
-    print(f"[Blender] Static camera at distance {cam_distance:.2f}")
-    print(f"[Blender] Camera rotation mode: {camera.rotation_mode}")
+    log.info(f"Static camera at distance {cam_distance:.2f}")
+    log.info(f"Camera rotation mode: {camera.rotation_mode}")
     
     # ============================================================
     # ANIMATE FOCAL LENGTH IF IT VARIES
@@ -667,8 +728,8 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
     if len(focal_lengths) > 1:
         fl_min, fl_max = min(focal_lengths), max(focal_lengths)
         if fl_max - fl_min > 1.0:  # More than 1 pixel difference
-            print(f"[Blender] Variable focal length detected: {fl_min:.0f}px to {fl_max:.0f}px")
-            print(f"[Blender] Animating camera focal length over {len(frames)} frames...")
+            log.info(f"Variable focal length detected: {fl_min:.0f}px to {fl_max:.0f}px")
+            log.info(f"Animating camera focal length over {len(frames)} frames...")
             
             for frame_idx, frame_data in enumerate(frames):
                 fl = frame_data.get("focal_length")
@@ -681,9 +742,9 @@ def create_static_camera_with_intrinsics(frames, sensor_width, up_axis, frame_of
             
             focal_mm_min = fl_min * (sensor_width / image_width)
             focal_mm_max = fl_max * (sensor_width / image_width)
-            print(f"[Blender] Focal length animated: {focal_mm_min:.1f}mm to {focal_mm_max:.1f}mm")
+            log.info(f"Focal length animated: {focal_mm_min:.1f}mm to {focal_mm_max:.1f}mm")
         else:
-            print(f"[Blender] Focal length constant at ~{fl_min:.0f}px ({fl_min * (sensor_width / image_width):.1f}mm)")
+            log.info(f"Focal length constant at ~{fl_min:.0f}px ({fl_min * (sensor_width / image_width):.1f}mm)")
     
     return camera
 
@@ -798,6 +859,8 @@ def transform_rotation_matrix(rot_3x3, up_axis):
 
 # Global flip_x setting (set by main)
 FLIP_X = False
+DISABLE_VERTICAL_OFFSET = False  # v5.1.9: Disable Y offset from pred_cam_t
+FLIP_VERTICAL = False  # v5.1.9: Flip Y offset sign
 
 
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
@@ -838,142 +901,36 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
     - Blender X → Maya X
     - Blender Y → Maya Z  
     - Blender Z → Maya Y
+    
+    Uses global DISABLE_VERTICAL_OFFSET and FLIP_VERTICAL settings.
     """
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
     
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
+    # Apply vertical offset options
+    if DISABLE_VERTICAL_OFFSET:
+        ty_adjusted = 0
+    elif FLIP_VERTICAL:
+        ty_adjusted = ty  # Don't negate
+    else:
+        ty_adjusted = -ty  # Default: negate for camera convention
+    
     # Apply based on up_axis
-    # NOTE: ty is NEGATED to match camera view convention
     if up_axis == "Y":
-        # For Maya: tx→horizontal, -ty→vertical in camera view
-        # Blender (X, Y, Z) → Maya (X, Z, Y)
-        return Vector((tx, -ty, 0))
+        # For Maya: tx→horizontal, ty→vertical in camera view
+        return Vector((tx, ty_adjusted, 0))
     elif up_axis == "Z":
         # Blender native Z-up
-        return Vector((tx, 0, -ty))
+        return Vector((tx, 0, ty_adjusted))
     elif up_axis == "-Y":
-        return Vector((tx, ty, 0))  # Double negative = positive
+        return Vector((tx, -ty_adjusted, 0))  # Inverted
     elif up_axis == "-Z":
-        return Vector((tx, 0, ty))  # Double negative = positive
+        return Vector((tx, 0, -ty_adjusted))  # Inverted
     else:
-        return Vector((tx, -ty, 0))
+        return Vector((tx, ty_adjusted, 0))
 
-
-def apply_animated_body_offset(mesh_obj, armature_obj, frames, solved_camera_rotations, up_axis, frame_offset, smoothing=5):
-    """
-    Apply animated body offset that compensates for camera rotation.
-    
-    When camera rotates, the body position that gives correct screen alignment changes.
-    This function computes per-frame body offset that accounts for:
-    1. Target screen position from pred_cam_t
-    2. Camera rotation from solver
-    
-    Math:
-    - When camera pans right by θ, objects shift left on screen
-    - To keep body at target screen position, body must shift right in world
-    - Compensation: body_x = tx + depth × tan(pan_angle)
-    - Similarly for tilt: body_y = -ty - depth × tan(tilt_angle)
-    """
-    if not frames or not solved_camera_rotations:
-        print("[Blender] No frames or solved rotations for animated body offset")
-        return
-    
-    num_frames = len(frames)
-    has_solved = len(solved_camera_rotations) > 0
-    
-    if not has_solved:
-        print("[Blender] No solved rotations - body offset stays static")
-        return
-    
-    print(f"[Blender] Computing animated body offset with rotation compensation...")
-    
-    # Collect per-frame values
-    all_tx = []
-    all_ty = []
-    all_tz = []
-    all_pan = []
-    all_tilt = []
-    
-    for frame_idx in range(num_frames):
-        frame_data = frames[frame_idx]
-        pred_cam_t = frame_data.get("pred_cam_t", [0, 0, 5])
-        
-        tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
-        ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
-        tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
-        
-        all_tx.append(tx)
-        all_ty.append(ty)
-        all_tz.append(abs(tz) if abs(tz) > 0.1 else 5.0)
-        
-        if frame_idx < len(solved_camera_rotations):
-            rot = solved_camera_rotations[frame_idx]
-            all_pan.append(rot.get("pan", 0.0))
-            all_tilt.append(rot.get("tilt", 0.0))
-        else:
-            all_pan.append(0.0)
-            all_tilt.append(0.0)
-    
-    # Apply smoothing to ALL values (important for reducing jitter!)
-    if smoothing > 1:
-        all_tx = smooth_array(all_tx, smoothing)
-        all_ty = smooth_array(all_ty, smoothing)
-        all_tz = smooth_array(all_tz, smoothing)
-        all_pan = smooth_array(all_pan, smoothing)
-        all_tilt = smooth_array(all_tilt, smoothing)
-        print(f"[Blender] Applied smoothing (window={smoothing}) to body offset and camera rotation")
-    
-    # Compute compensated body offset for each frame
-    body_offsets = []
-    for frame_idx in range(num_frames):
-        tx = all_tx[frame_idx]
-        ty = all_ty[frame_idx]
-        depth = all_tz[frame_idx]
-        pan = all_pan[frame_idx]
-        tilt = all_tilt[frame_idx]
-        
-        # Compensate for camera rotation:
-        # When camera pans right (positive pan), body appears to move left
-        # To keep body at correct screen position, shift body right (add pan compensation)
-        pan_compensation = depth * math.tan(pan)
-        tilt_compensation = depth * math.tan(tilt)
-        
-        # Compensated body position
-        compensated_tx = tx + pan_compensation
-        compensated_ty = -ty - tilt_compensation  # ty negated as per convention
-        
-        if up_axis == "Y":
-            body_offset = Vector((compensated_tx, compensated_ty, 0))
-        elif up_axis == "Z":
-            body_offset = Vector((compensated_tx, 0, compensated_ty))
-        elif up_axis == "-Y":
-            body_offset = Vector((compensated_tx, -compensated_ty, 0))
-        elif up_axis == "-Z":
-            body_offset = Vector((compensated_tx, 0, -compensated_ty))
-        else:
-            body_offset = Vector((compensated_tx, compensated_ty, 0))
-        
-        body_offsets.append(body_offset)
-    
-    # Debug: print first and last frame values
-    print(f"[Blender] Frame 0: tx={all_tx[0]:.3f}, ty={all_ty[0]:.3f}, pan={math.degrees(all_pan[0]):.2f}°, offset={body_offsets[0]}")
-    print(f"[Blender] Frame {num_frames-1}: tx={all_tx[-1]:.3f}, ty={all_ty[-1]:.3f}, pan={math.degrees(all_pan[-1]):.2f}°, offset={body_offsets[-1]}")
-    
-    # Apply animated offset to mesh
-    if mesh_obj:
-        for frame_idx, offset in enumerate(body_offsets):
-            mesh_obj.location = offset
-            mesh_obj.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
-        print(f"[Blender] Mesh animated with {num_frames} keyframes (rotation-compensated offset)")
-    
-    # Apply animated offset to armature
-    if armature_obj:
-        for frame_idx, offset in enumerate(body_offsets):
-            armature_obj.location = offset
-            armature_obj.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
-        print(f"[Blender] Skeleton animated with {num_frames} keyframes (rotation-compensated offset)")
 
 
 def create_animated_mesh(all_frames, faces, fps, transform_func, world_translation_mode="none", up_axis="Y", frame_offset=0):
@@ -1013,7 +970,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     # Add basis shape key
     basis = obj.shape_key_add(name="Basis", from_mix=False)
     
-    print(f"[Blender] Creating {len(all_frames)} shape keys (translation={world_translation_mode}, offset={frame_offset})...")
+    log.info(f"Creating {len(all_frames)} shape keys (translation={world_translation_mode}, offset={frame_offset})...")
     
     # Create shape keys for each frame
     for frame_idx, frame_data in enumerate(all_frames):
@@ -1057,10 +1014,9 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
             sk.value = 0.0
             sk.keyframe_insert(data_path="value", frame=actual_frame + 1)
         
-        if (frame_idx + 1) % 50 == 0:
-            print(f"[Blender] Shape keys: {frame_idx + 1}/{len(all_frames)}")
+        log.progress(frame_idx, len(all_frames), "Shape keys", interval=50)
     
-    print(f"[Blender] Created mesh with {len(all_frames)} shape keys (frames {frame_offset} to {frame_offset + len(all_frames) - 1})")
+    log.info(f"Created mesh with {len(all_frames)} shape keys (frames {frame_offset} to {frame_offset + len(all_frames) - 1})")
     return obj
 
 
@@ -1078,15 +1034,15 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     first_rotations = all_frames[0].get("joint_rotations")
     
     if not first_joints:
-        print("[Blender] No joint_coords in first frame, skipping skeleton")
+        log.info("No joint_coords in first frame, skipping skeleton")
         return None
     
     if not first_rotations:
-        print("[Blender] No joint_rotations available, falling back to position-based skeleton")
+        log.info("No joint_rotations available, falling back to position-based skeleton")
         return create_skeleton_with_positions(all_frames, fps, transform_func, world_translation_mode, up_axis, root_locator, joint_parents, frame_offset)
     
     num_joints = len(first_joints)
-    print(f"[Blender] Creating rotation-based armature with {num_joints} bones...")
+    log.info(f"Creating rotation-based armature with {num_joints} bones...")
     
     # Create armature
     arm_data = bpy.data.armatures.new("Skeleton")
@@ -1124,7 +1080,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     
     # Set up parent-child hierarchy
     if joint_parents is not None:
-        print(f"[Blender] Setting up bone hierarchy from joint_parents...")
+        log.info(f"Setting up bone hierarchy from joint_parents...")
         roots = []
         for i in range(num_joints):
             parent_idx = joint_parents[i]
@@ -1134,7 +1090,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
                 # edit_bones[i].use_connect = False
             else:
                 roots.append(i)
-        print(f"[Blender] Found {len(roots)} root bone(s): {roots}")
+        log.info(f"Found {len(roots)} root bone(s): {roots}")
         
         # Adjust bone tails to point toward first child (makes visualization better)
         for i in range(num_joints):
@@ -1147,7 +1103,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
                 if direction.length > 0.001:
                     edit_bones[i].tail = edit_bones[i].head + direction.normalized() * 0.05
     else:
-        print("[Blender] Warning: No joint_parents data, creating flat hierarchy")
+        log.info("Warning: No joint_parents data, creating flat hierarchy")
     
     bpy.ops.object.mode_set(mode='OBJECT')
     
@@ -1159,7 +1115,7 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     for pose_bone in armature.pose.bones:
         pose_bone.rotation_mode = 'QUATERNION'
     
-    print(f"[Blender] Animating {num_joints} bones with rotations over {len(all_frames)} frames...")
+    log.info(f"Animating {num_joints} bones with rotations over {len(all_frames)} frames...")
     
     # Pre-compute parent indices for faster lookup
     parent_indices = joint_parents if joint_parents is not None else [-1] * num_joints
@@ -1170,9 +1126,9 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
     # Pre-smooth camera data to avoid jerky root motion
     smoothed_camera_data = None
     if has_camera_rots:
-        print(f"[Blender] Pre-smoothing {len(solved_camera_rotations)} camera rotations for smooth root compensation...")
+        log.info(f"Pre-smoothing {len(solved_camera_rotations)} camera rotations for smooth root compensation...")
         smoothed_camera_data = smooth_camera_data(solved_camera_rotations, window=9)
-        print(f"[Blender] Camera data smoothed (window=9)")
+        log.info(f"Camera data smoothed (window=9)")
     
     for frame_idx, frame_data in enumerate(all_frames):
         joints = frame_data.get("joint_coords")
@@ -1273,11 +1229,10 @@ def create_skeleton_with_rotations(all_frames, fps, transform_func, world_transl
                 pose_bone.location = offset
                 pose_bone.keyframe_insert(data_path="location", frame=actual_frame)
         
-        if (frame_idx + 1) % 50 == 0:
-            print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (rotations)")
+        log.progress(frame_idx, len(all_frames), "Skeleton animation", interval=50)
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created hierarchical skeleton with {num_joints} bones (frame_offset={frame_offset})")
+    log.info(f"Created hierarchical skeleton with {num_joints} bones (frame_offset={frame_offset})")
     return armature
 
 
@@ -1293,7 +1248,7 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
         return None
     
     num_joints = len(first_joints)
-    print(f"[Blender] Creating position-based armature with {num_joints} bones...")
+    log.info(f"Creating position-based armature with {num_joints} bones...")
     
     # Create armature
     arm_data = bpy.data.armatures.new("Skeleton")
@@ -1330,7 +1285,7 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
     
     # Set up parent-child hierarchy
     if joint_parents is not None:
-        print(f"[Blender] Setting up bone hierarchy from joint_parents...")
+        log.info(f"Setting up bone hierarchy from joint_parents...")
         roots = []
         for i in range(num_joints):
             parent_idx = joint_parents[i]
@@ -1338,7 +1293,7 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
                 edit_bones[i].parent = edit_bones[parent_idx]
             else:
                 roots.append(i)
-        print(f"[Blender] Found {len(roots)} root bone(s): {roots}")
+        log.info(f"Found {len(roots)} root bone(s): {roots}")
         
         # Adjust bone tails to point toward first child
         for i in range(num_joints):
@@ -1350,7 +1305,7 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
                 if direction.length > 0.001:
                     edit_bones[i].tail = edit_bones[i].head + direction.normalized() * 0.05
     else:
-        print("[Blender] Warning: No joint_parents data, creating flat hierarchy")
+        log.info("Warning: No joint_parents data, creating flat hierarchy")
     
     bpy.ops.object.mode_set(mode='OBJECT')
     
@@ -1358,7 +1313,7 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode='POSE')
     
-    print(f"[Blender] Animating {num_joints} bones with positions over {len(all_frames)} frames...")
+    log.info(f"Animating {num_joints} bones with positions over {len(all_frames)} frames...")
     
     # Store rest positions for offset calculation
     rest_heads = [Vector(armature.pose.bones[i].bone.head_local) for i in range(num_joints)]
@@ -1391,11 +1346,10 @@ def create_skeleton_with_positions(all_frames, fps, transform_func, world_transl
             pose_bone.location = offset
             pose_bone.keyframe_insert(data_path="location", frame=actual_frame)
         
-        if (frame_idx + 1) % 50 == 0:
-            print(f"[Blender] Animated {frame_idx + 1}/{len(all_frames)} frames (positions)")
+        log.progress(frame_idx, len(all_frames), "Skeleton animation", interval=50)
     
     bpy.ops.object.mode_set(mode='OBJECT')
-    print(f"[Blender] Created position-based skeleton with {num_joints} bones (frame_offset={frame_offset})")
+    log.info(f"Created position-based skeleton with {num_joints} bones (frame_offset={frame_offset})")
     return armature
 
 
@@ -1420,18 +1374,14 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     """
     Create a root locator that carries the world translation.
     """
-    print("[Blender] Creating root locator with world translation...")
+    log.info("Creating root locator with world translation...")
     
-    # DEBUG: Show first frame values
     if all_frames:
         first_cam_t = all_frames[0].get("pred_cam_t")
         if first_cam_t and len(first_cam_t) >= 3:
             tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
             world_x = tx * abs(tz) * 0.5
             world_y = ty * abs(tz) * 0.5
-            print(f"[Blender] DEBUG: Frame 0 pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
-            print(f"[Blender] DEBUG: world_offset calc: x={world_x:.4f}, y={world_y:.4f}")
-            print(f"[Blender] DEBUG: Final root_locator (up={up_axis}): x={-world_x:.4f}, y={-world_y:.4f}")
     
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
@@ -1450,7 +1400,7 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
         root.location = world_offset
         root.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
     
-    print(f"[Blender] Root locator animated over {len(all_frames)} frames (offset={frame_offset}, flip_x={flip_x})")
+    log.info(f"Root locator animated over {len(all_frames)} frames (offset={frame_offset}, flip_x={flip_x})")
     return root
 
 
@@ -1487,10 +1437,10 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
     Returns:
         Root locator Blender object with animated transform
     """
-    print("[Blender] Creating root locator with camera compensation...")
-    print(f"[Blender]   Mode: Nodal rotation → Translation conversion")
-    print(f"[Blender]   Smoothing: {smoothing_method} (strength={smoothing_strength})")
-    print(f"[Blender]   Flip X: {flip_x}")
+    log.info("Creating root locator with camera compensation...")
+    log.debug(f"  Mode: Nodal rotation → Translation conversion")
+    log.debug(f"  Smoothing: {smoothing_method} (strength={smoothing_strength})")
+    log.debug(f"  Flip X: {flip_x}")
     
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
@@ -1534,8 +1484,8 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
     else:
         initial_distance = 5.0  # Default fallback
     
-    print(f"[Blender]   Initial camera: pan={math.degrees(initial_pan):.2f}°, tilt={math.degrees(initial_tilt):.2f}°")
-    print(f"[Blender]   Initial distance: {initial_distance:.2f}m (from pred_cam_t.z)")
+    log.debug(f"  Initial camera: pan={math.degrees(initial_pan):.2f}°, tilt={math.degrees(initial_tilt):.2f}°")
+    log.debug(f"  Initial distance: {initial_distance:.2f}m (from pred_cam_t.z)")
     
     # Track total compensation for logging
     max_pan_trans = 0
@@ -1631,11 +1581,11 @@ def create_root_locator_with_camera_compensation(all_frames, camera_extrinsics, 
         final_pan_trans = initial_distance * math.tan(final_pan)
         final_tilt_trans = initial_distance * math.tan(final_tilt)
         
-        print(f"[Blender] Root locator with camera compensation (nodal → translation):")
-        print(f"[Blender]   Camera pan range: {math.degrees(final_pan):.2f}° → {final_pan_trans:.3f}m translation")
-        print(f"[Blender]   Camera tilt range: {math.degrees(final_tilt):.2f}° → {final_tilt_trans:.3f}m translation")
-        print(f"[Blender]   Max translation: X={max_pan_trans:.3f}m, Y={max_tilt_trans:.3f}m")
-        print(f"[Blender]   Animated over {len(all_frames)} frames")
+        log.info(f"Root locator with camera compensation (nodal → translation):")
+        log.debug(f"  Camera pan range: {math.degrees(final_pan):.2f}° → {final_pan_trans:.3f}m translation")
+        log.debug(f"  Camera tilt range: {math.degrees(final_tilt):.2f}° → {final_tilt_trans:.3f}m translation")
+        log.debug(f"  Max translation: X={max_pan_trans:.3f}m, Y={max_tilt_trans:.3f}m")
+        log.debug(f"  Animated over {len(all_frames)} frames")
     
     return root
 
@@ -1644,7 +1594,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
     """
     Create a separate locator that shows the world path.
     """
-    print("[Blender] Creating separate translation track...")
+    log.info("Creating separate translation track...")
     
     track = bpy.data.objects.new("translation_track", None)
     track.empty_display_type = 'PLAIN_AXES'
@@ -1658,7 +1608,7 @@ def create_translation_track(all_frames, fps, up_axis, frame_offset=0):
         track.location = world_offset
         track.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
     
-    print(f"[Blender] Translation track animated over {len(all_frames)} frames (offset={frame_offset})")
+    log.info(f"Translation track animated over {len(all_frames)} frames (offset={frame_offset})")
     return track
 
 
@@ -1686,7 +1636,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                                 Each entry has {frame, pan, tilt, roll} in radians.
     """
     has_solved = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
-    print(f"[Blender] Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, static={camera_static}, smoothing={camera_smoothing}, solved_rotations={has_solved})...")
+    log.info(f"Creating camera (animate={animate_camera}, follow_root={camera_follow_root}, use_rotation={camera_use_rotation}, static={camera_static}, smoothing={camera_smoothing}, solved_rotations={has_solved})...")
     
     cam_data = bpy.data.cameras.new("Camera")
     camera = bpy.data.objects.new("Camera", cam_data)
@@ -1725,9 +1675,19 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     # Convert focal length: focal_mm = focal_px * sensor_width / image_width
     focal_mm = focal_px * (sensor_width / image_width)
     cam_data.lens = focal_mm
-    print(f"[Blender] Focal length: {focal_px:.0f}px -> {focal_mm:.1f}mm")
-    print(f"[Blender] Image size: {image_width}x{image_height}, aspect: {aspect_ratio:.3f}")
-    print(f"[Blender] Sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    log.info(f"Focal length: {focal_px:.0f}px -> {focal_mm:.1f}mm")
+    log.info(f"Image size: {image_width}x{image_height}, aspect: {aspect_ratio:.3f}")
+    log.info(f"Sensor: {sensor_width:.1f}mm x {cam_data.sensor_height:.1f}mm")
+    
+    # Add custom properties for Maya (exported as Extra Attributes)
+    # These help set up the camera correctly after FBX import
+    camera["sensor_width_mm"] = sensor_width
+    camera["sensor_height_mm"] = cam_data.sensor_height
+    camera["focal_length_mm"] = focal_mm
+    camera["focal_length_px"] = focal_px
+    camera["image_width"] = image_width
+    camera["image_height"] = image_height
+    camera["aspect_ratio"] = aspect_ratio
     
     # Get pred_cam_t - this is the KEY to matching SAM3DBody's projection
     # pred_cam_t = [tx, ty, tz] where:
@@ -1749,7 +1709,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     # Adding target_offset would DOUBLE-count the offset.
     if world_translation_mode == "root":
         target_offset = Vector((0, 0, 0))
-        print(f"[Blender] Root mode: Camera looks at origin, body_offset applied to mesh/skeleton")
+        log.info(f"Root mode: Camera looks at origin, body_offset applied to mesh/skeleton")
     else:
         # Legacy mode: body at origin, camera target offset to frame correctly
         scale_factor = cam_distance * 0.5
@@ -1764,8 +1724,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         else:
             target_offset = Vector((tx * scale_factor, -ty * scale_factor, 0))
     
-    print(f"[Blender] pred_cam_t: tx={tx:.3f}, ty={ty:.3f}, tz={cam_distance:.2f}")
-    print(f"[Blender] Camera target offset: {target_offset}")
+    log.info(f"pred_cam_t: tx={tx:.3f}, ty={ty:.3f}, tz={cam_distance:.2f}")
+    log.info(f"Camera target offset: {target_offset}")
     
     # Create target for camera orientation
     target = bpy.data.objects.new("cam_target", None)
@@ -1822,7 +1782,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             # Also remove the offset target we created earlier
             bpy.data.objects.remove(target)
             
-            print(f"[Blender] Camera using ROTATION (Pan/Tilt) to follow character...")
+            log.info(f"Camera using ROTATION (Pan/Tilt) to follow character...")
             
             # Get pan/tilt axis configuration based on up_axis
             # Pan = rotation around UP axis, Tilt = rotation around horizontal axis
@@ -1901,9 +1861,9 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
             if has_solved:
-                print(f"[Blender] Camera uses SOLVED rotation over {len(all_frames)} frames (same for all bodies)")
+                log.info(f"Camera uses SOLVED rotation over {len(all_frames)} frames (same for all bodies)")
             else:
-                print(f"[Blender] Camera ROTATES (pan/tilt from pred_cam_t) over {len(all_frames)} frames (up_axis={up_axis})")
+                log.info(f"Camera ROTATES (pan/tilt from pred_cam_t) over {len(all_frames)} frames (up_axis={up_axis})")
         
         else:
             # TRANSLATION MODE: Camera moves laterally to follow character
@@ -1931,7 +1891,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             
             bpy.data.objects.remove(target)
             
-            print(f"[Blender] Camera using TRANSLATION to follow character...")
+            log.info(f"Camera using TRANSLATION to follow character...")
             
             for frame_idx, frame_data in enumerate(all_frames):
                 frame_cam_t = frame_data.get("pred_cam_t")
@@ -1944,7 +1904,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 camera.location = base_dir * frame_distance + target_offset - world_offset
                 camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
-            print(f"[Blender] Camera TRANSLATES over {len(all_frames)} frames (up_axis={up_axis})")
+            log.info(f"Camera TRANSLATES over {len(all_frames)} frames (up_axis={up_axis})")
     
     elif camera_use_rotation:
         # "None" mode with rotation: Camera rotates to show character at correct screen position
@@ -1979,7 +1939,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
         base_rotation = camera.rotation_euler.copy()
         
-        print(f"[Blender] Camera using ROTATION (Pan/Tilt) with body at origin...")
+        log.info(f"Camera using ROTATION (Pan/Tilt) with body at origin...")
         
         # Get pan/tilt axis configuration
         # Same logic as "Baked into Camera" rotation mode
@@ -2033,14 +1993,11 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
                 camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
         
-        print(f"[Blender] Camera ROTATES (pan/tilt) over {len(all_frames)} frames, body at origin (up_axis={up_axis})")
+        log.info(f"Camera ROTATES (pan/tilt) over {len(all_frames)} frames, body at origin (up_axis={up_axis})")
     
     else:
         # Static camera - positioned with offset for alignment
         camera.location = base_dir * cam_distance + target_offset
-        print(f"[Blender] DEBUG: Static camera setup")
-        print(f"[Blender] DEBUG: camera.location = {camera.location}")
-        print(f"[Blender] DEBUG: target.location = {target.location}")
         
         constraint = camera.constraints.new(type='TRACK_TO')
         constraint.target = target
@@ -2056,7 +2013,6 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         
         bpy.context.view_layer.update()
         camera.rotation_euler = camera.matrix_world.to_euler()
-        print(f"[Blender] DEBUG: After TRACK_TO constraint, rotation_euler (degrees) = ({math.degrees(camera.rotation_euler.x):.2f}°, {math.degrees(camera.rotation_euler.y):.2f}°, {math.degrees(camera.rotation_euler.z):.2f}°)")
         
         constraint = camera.constraints.get("Track To")
         if constraint:
@@ -2068,7 +2024,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         camera.rotation_euler.y = round(camera.rotation_euler.y, 4)
         camera.rotation_euler.z = round(camera.rotation_euler.z, 4)
         
-        print(f"[Blender] Camera static at {camera.location}, up_axis={up_axis}")
+        log.info(f"Camera static at {camera.location}, up_axis={up_axis}")
     
     # For camera_follow_root: animate camera LOCAL position or rotation
     # Camera is parented to root_locator, so we need local animation
@@ -2077,7 +2033,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
     # EXCEPTION: If camera_static is True, skip ALL camera animation!
     # In static mode, body_offset positions the body correctly and camera stays fixed.
     if camera_follow_root and not camera_static:
-        print(f"[Blender] Adding local animation for camera (follows root locator)...")
+        log.info(f"Adding local animation for camera (follows root locator)...")
         
         # Get base camera direction based on up_axis
         if up_axis == "Y":
@@ -2104,14 +2060,10 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         # Store base rotation from static camera setup
         base_rotation = camera.rotation_euler.copy()
         
-        # DEBUG: Print base rotation values
-        print(f"[Blender] DEBUG: base_rotation (radians) = ({base_rotation.x:.4f}, {base_rotation.y:.4f}, {base_rotation.z:.4f})")
-        print(f"[Blender] DEBUG: base_rotation (degrees) = ({math.degrees(base_rotation.x):.2f}°, {math.degrees(base_rotation.y):.2f}°, {math.degrees(base_rotation.z):.2f}°)")
-        print(f"[Blender] DEBUG: pan_axis={pan_axis}, tilt_axis={tilt_axis}")
         
         if camera_use_rotation:
             # ROTATION MODE: Camera pans/tilts to follow character (like real camera operator)
-            print(f"[Blender] Using PAN/TILT rotation to frame character")
+            log.info(f"Using PAN/TILT rotation to frame character")
             
             # Check if we have solved camera rotations from Camera Solver
             has_solved = solved_camera_rotations is not None and len(solved_camera_rotations) > 0
@@ -2121,12 +2073,10 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                 # These come from background tracking and represent actual camera movement
                 # body_offset (from frame 0) handles initial positioning
                 # solved rotations handle frame-to-frame camera pan/tilt
-                print(f"[Blender] Using SOLVED camera rotations ({len(solved_camera_rotations)} frames)")
+                log.info(f"Using SOLVED camera rotations ({len(solved_camera_rotations)} frames)")
                 
-                # DEBUG: Print first few solved rotations
                 for i in range(min(3, len(solved_camera_rotations))):
                     sr = solved_camera_rotations[i]
-                    print(f"[Blender] DEBUG: solved_rot[{i}]: pan={math.degrees(sr.get('pan', 0)):.4f}°, tilt={math.degrees(sr.get('tilt', 0)):.4f}°, roll={math.degrees(sr.get('roll', 0)):.4f}°")
                 
                 # Get first frame depth for camera distance
                 first_cam_t = all_frames[0].get("pred_cam_t", [0, 0, 5])
@@ -2143,14 +2093,10 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                         tilt_angle = 0.0
                         roll_angle = 0.0
                     
-                    # DEBUG: Print frame 0 and 24 values
                     if frame_idx == 0 or frame_idx == 24:
-                        print(f"[Blender] DEBUG Frame {frame_idx}: pan_angle={math.degrees(pan_angle):.4f}°, tilt_angle={math.degrees(tilt_angle):.4f}°")
                         final_x = base_rotation[tilt_axis] + tilt_angle
                         final_y = base_rotation[pan_axis] + pan_angle
                         final_z = base_rotation[2] + roll_angle
-                        print(f"[Blender] DEBUG Frame {frame_idx}: final rotation (deg) = X:{math.degrees(final_x):.2f}°, Y:{math.degrees(final_y):.2f}°, Z:{math.degrees(final_z):.2f}°")
-                        print(f"[Blender] DEBUG Frame {frame_idx}: EXPECTED MAYA = RotateX:{math.degrees(final_x):.2f}°, RotateY:{math.degrees(final_y):.2f}°, RotateZ:{math.degrees(final_z):.2f}°")
                     
                     # Get per-frame depth (camera distance can vary)
                     frame_cam_t = all_frames[frame_idx].get("pred_cam_t")
@@ -2172,8 +2118,8 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
                     camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
                 
-                print(f"[Blender] Camera rotation from SOLVED values (background tracking)")
-                print(f"[Blender] body_offset is per-frame animated - camera rotation handles pan/tilt")
+                log.info(f"Camera rotation from SOLVED values (background tracking)")
+                log.info(f"body_offset is per-frame animated - camera rotation handles pan/tilt")
                 
                 # Add custom properties for debugging rotation in Maya
                 # These show the intended rotation values before FBX axis conversion
@@ -2187,7 +2133,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
             else:
                 # FALLBACK: Compute pan/tilt from pred_cam_t
                 # This is per-body and may cause issues with multi-body alignment
-                print(f"[Blender] No solved rotations - computing from pred_cam_t (fallback)")
+                log.info(f"No solved rotations - computing from pred_cam_t (fallback)")
                 
                 # Collect all camera values first for smoothing
                 all_tx = []
@@ -2209,10 +2155,10 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     all_tx = smooth_array(all_tx, camera_smoothing)
                     all_ty = smooth_array(all_ty, camera_smoothing)
                     all_tz = smooth_array(all_tz, camera_smoothing)
-                    print(f"[Blender] Applied camera smoothing (window={camera_smoothing})")
+                    log.info(f"Applied camera smoothing (window={camera_smoothing})")
                 
                 # Print first frame values for debugging
-                print(f"[Blender] Frame 0 pred_cam_t: tx={all_tx[0]:.3f}, ty={all_ty[0]:.3f}, tz={all_tz[0]:.3f}")
+                log.info(f"Frame 0 pred_cam_t: tx={all_tx[0]:.3f}, ty={all_ty[0]:.3f}, tz={all_tz[0]:.3f}")
                 
                 for frame_idx in range(len(all_frames)):
                     tx = all_tx[frame_idx]
@@ -2246,12 +2192,12 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     camera.keyframe_insert(data_path="rotation_euler", frame=frame_offset + frame_idx)
                     camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
                 
-                print(f"[Blender] Camera pan/tilt animated over {len(all_frames)} frames")
-                print(f"[Blender] Camera ROTATES to follow character (from pred_cam_t fallback)")
+                log.info(f"Camera pan/tilt animated over {len(all_frames)} frames")
+                log.info(f"Camera ROTATES to follow character (from pred_cam_t fallback)")
         
         else:
             # TRANSLATION MODE: Camera moves laterally to show character at offset position
-            print(f"[Blender] Using local TRANSLATION to frame character")
+            log.info(f"Using local TRANSLATION to frame character")
             
             for frame_idx, frame_data in enumerate(all_frames):
                 frame_cam_t = frame_data.get("pred_cam_t")
@@ -2282,13 +2228,13 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     camera.location = base_dir * depth + local_offset
                     camera.keyframe_insert(data_path="location", frame=frame_offset + frame_idx)
             
-            print(f"[Blender] Camera local translation animated over {len(all_frames)} frames")
-            print(f"[Blender] Camera TRANSLATES to keep character at correct screen position")
+            log.info(f"Camera local translation animated over {len(all_frames)} frames")
+            log.info(f"Camera TRANSLATES to keep character at correct screen position")
     
     elif camera_follow_root and camera_static:
         # Static camera mode - no animation needed
         # body_offset positions the body correctly relative to the fixed camera
-        print(f"[Blender] Camera STATIC - body_offset positions character, no camera animation")
+        log.info(f"Camera STATIC - body_offset positions character, no camera animation")
     
     # Animate focal length if it varies across frames
     focal_lengths = []
@@ -2303,7 +2249,7 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
         # Check if focal length actually varies
         fl_min, fl_max = min(focal_lengths), max(focal_lengths)
         if fl_max - fl_min > 1.0:  # More than 1 pixel difference
-            print(f"[Blender] Animating focal length: {fl_min:.0f}px to {fl_max:.0f}px")
+            log.info(f"Animating focal length: {fl_min:.0f}px to {fl_max:.0f}px")
             
             for frame_idx, frame_data in enumerate(all_frames):
                 fl = frame_data.get("focal_length")
@@ -2314,9 +2260,9 @@ def create_camera(all_frames, fps, transform_func, up_axis, sensor_width=36.0, w
                     cam_data.lens = focal_mm
                     cam_data.keyframe_insert(data_path="lens", frame=frame_offset + frame_idx)
             
-            print(f"[Blender] Focal length animated over {len(all_frames)} frames")
+            log.info(f"Focal length animated over {len(all_frames)} frames")
         else:
-            print(f"[Blender] Focal length constant at ~{fl_min:.0f}px")
+            log.info(f"Focal length constant at ~{fl_min:.0f}px")
     
     return camera
 
@@ -2337,7 +2283,7 @@ def create_metadata_locator(metadata: dict):
         The metadata empty object
     """
     if not metadata:
-        print("[Blender] No metadata to embed")
+        log.info("No metadata to embed")
         return None
     
     # Create empty object as metadata container
@@ -2370,10 +2316,10 @@ def create_metadata_locator(metadata: dict):
         else:
             metadata_obj[key] = str(value)
     
-    print(f"[Blender] Metadata locator created with {len(metadata)} properties:")
+    log.info(f"Metadata locator created with {len(metadata)} properties:")
     for key, value in metadata.items():
         if value is not None:
-            print(f"[Blender]   {key}: {value}")
+            log.debug(f"  {key}: {value}")
     
     return metadata_obj
 
@@ -2394,7 +2340,7 @@ def create_world_position_locator(trajectory_compensated: list, fps: float = 24.
         The WorldPosition empty object
     """
     if not trajectory_compensated or len(trajectory_compensated) < 2:
-        print("[Blender] No compensated trajectory data for WorldPosition locator")
+        log.info("No compensated trajectory data for WorldPosition locator")
         return None
     
     # Create empty object as locator
@@ -2443,9 +2389,9 @@ def create_world_position_locator(trajectory_compensated: list, fps: float = 24.
     loc_obj["displacement_y"] = f"{displacement[1]:.3f}"
     loc_obj["displacement_z"] = f"{displacement[2]:.3f}"
     
-    print(f"[Blender] WorldPosition locator created with {len(trajectory_compensated)} keyframes")
-    print(f"[Blender]   Start: ({trajectory_compensated[0][0]:.3f}, {trajectory_compensated[0][1]:.3f}, {trajectory_compensated[0][2]:.3f})")
-    print(f"[Blender]   End: ({trajectory_compensated[-1][0]:.3f}, {trajectory_compensated[-1][1]:.3f}, {trajectory_compensated[-1][2]:.3f})")
+    log.info(f"WorldPosition locator created with {len(trajectory_compensated)} keyframes")
+    log.debug(f"  Start: ({trajectory_compensated[0][0]:.3f}, {trajectory_compensated[0][1]:.3f}, {trajectory_compensated[0][2]:.3f})")
+    log.debug(f"  End: ({trajectory_compensated[-1][0]:.3f}, {trajectory_compensated[-1][1]:.3f}, {trajectory_compensated[-1][2]:.3f})")
     
     return loc_obj
 
@@ -2468,7 +2414,7 @@ def create_camera_extrinsics_locator(camera_extrinsics: list, fps: float = 24.0,
         The CameraExtrinsics empty object
     """
     if not camera_extrinsics or len(camera_extrinsics) < 2:
-        print("[Blender] No camera extrinsics data for CameraExtrinsics locator")
+        log.info("No camera extrinsics data for CameraExtrinsics locator")
         return None
     
     # Create empty object as locator
@@ -2525,9 +2471,9 @@ def create_camera_extrinsics_locator(camera_extrinsics: list, fps: float = 24.0,
     loc_obj["final_tilt_deg"] = f"{math.degrees(last_ext.get('tilt', 0)):.4f}"
     loc_obj["final_roll_deg"] = f"{math.degrees(last_ext.get('roll', 0)):.4f}"
     
-    print(f"[Blender] CameraExtrinsics locator created with {len(camera_extrinsics)} keyframes")
-    print(f"[Blender]   Frame 0: pan={math.degrees(first_ext.get('pan', 0)):.2f}°, tilt={math.degrees(first_ext.get('tilt', 0)):.2f}°")
-    print(f"[Blender]   Final: pan={math.degrees(last_ext.get('pan', 0)):.2f}°, tilt={math.degrees(last_ext.get('tilt', 0)):.2f}°")
+    log.info(f"CameraExtrinsics locator created with {len(camera_extrinsics)} keyframes")
+    log.debug(f"  Frame 0: pan={math.degrees(first_ext.get('pan', 0)):.2f}°, tilt={math.degrees(first_ext.get('tilt', 0)):.2f}°")
+    log.debug(f"  Final: pan={math.degrees(last_ext.get('pan', 0)):.2f}°, tilt={math.degrees(last_ext.get('tilt', 0)):.2f}°")
     
     return loc_obj
 
@@ -2549,7 +2495,7 @@ def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset
         The ScreenPosition empty object
     """
     if not frames or len(frames) < 2:
-        print("[Blender] No frame data for ScreenPosition locator")
+        log.info("No frame data for ScreenPosition locator")
         return None
     
     # Create empty object as locator
@@ -2606,26 +2552,25 @@ def create_screen_position_locator(frames: list, fps: float = 24.0, frame_offset
     loc_obj["final_tx"] = f"{last_cam_t[0]:.4f}"
     loc_obj["final_ty"] = f"{last_cam_t[1]:.4f}"
     
-    print(f"[Blender] ScreenPosition locator created with {len(frames)} keyframes")
-    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}")
-    print(f"[Blender]   Final: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}")
+    log.info(f"ScreenPosition locator created with {len(frames)} keyframes")
+    log.debug(f"  Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}")
+    log.debug(f"  Final: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}")
     
     return loc_obj
 
 
 def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: str, frame_offset: int = 1, 
-                                 use_depth: bool = True, depth_mode: str = "scale"):
+                                 use_depth: bool = True, depth_mode: str = "position", scale_factor: float = 1.0):
     """
     Apply per-frame body offset based on pred_cam_t for each frame.
     
-    FIXED in v4.6.9: Now properly handles depth via SCALING (default).
+    FIXED in v4.8.8: Now correctly converts screen coordinates to world coordinates
+    by multiplying tx/ty by depth and scale_factor, matching Motion Analyzer calculation.
     
-    When character moves toward/away from camera with a STATIC camera:
-    - tx, ty give correct screen position (use as-is)
-    - tz gives depth - use to SCALE the mesh (closer = smaller mesh in world space)
-    
-    The key insight: With static camera, we don't move in Z. Instead, we scale
-    the mesh so it appears the correct size when rendered through the camera.
+    When character moves toward/away from camera:
+    - tx, ty are screen-space offsets
+    - tz is depth
+    - World position = screen_pos * depth * scale_factor
     
     If tracked_depth is available (from CharacterTrajectoryTracker), it will be
     used instead of pred_cam_t.tz for more accurate depth.
@@ -2636,24 +2581,27 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         frames: List of frame data with pred_cam_t
         up_axis: Up axis for coordinate system
         frame_offset: Starting frame number
-        use_depth: If True, apply depth-based scaling.
-                   If False, no scaling (legacy behavior).
+        use_depth: If True, apply depth-based positioning/scaling.
+                   If False, no depth handling (legacy behavior).
         depth_mode: How to handle depth changes:
-                   - "scale": Mesh scales with depth (RECOMMENDED for static camera)
-                   - "position": Character moves in Z axis
+                   - "position": Character moves in Z axis (RECOMMENDED)
+                   - "scale": Mesh scales with depth (2D compositing only)
                    - "both": Both Z movement AND scaling
+        scale_factor: Scale factor from Motion Analyzer for consistent world units
     """
     if not frames:
-        print("[Blender] No frames for per-frame body offset")
+        log.info("No frames for per-frame body offset")
         return
     
-    print(f"[Blender] Applying per-frame body offset ({len(frames)} frames)...")
-    print(f"[Blender]   use_depth={use_depth}, depth_mode='{depth_mode}' (v4.6.9)")
+    log.info(f"Applying per-frame body offset ({len(frames)} frames)...")
+    log.info(f"  Depth settings: use_depth={use_depth}, depth_mode='{depth_mode}', scale_factor={scale_factor:.3f}")
     
     # Check if tracked depth is available (from CharacterTrajectoryTracker)
     has_tracked_depth = "tracked_depth" in frames[0] if frames else False
     if has_tracked_depth:
-        print(f"[Blender]   Using tracked_depth from CharacterTrajectoryTracker (more accurate)")
+        log.info(f"  Depth source: tracked_depth (from Character Trajectory Tracker + DepthAnything V2)")
+    else:
+        log.info(f"  Depth source: pred_cam_t[2] (from SAM3DBody)")
     
     # Get reference depth from first frame
     first_frame = frames[0]
@@ -2663,7 +2611,7 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         first_cam_t = first_frame.get("pred_cam_t", [0, 0, 5])
         ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
     
-    print(f"[Blender]   Reference depth (frame 0): {ref_depth:.3f}m")
+    log.info(f"  Reference depth (frame 0): {ref_depth:.3f}m")
     
     # Track depth range for debug
     min_depth = ref_depth
@@ -2686,9 +2634,12 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         min_depth = min(min_depth, frame_depth)
         max_depth = max(max_depth, frame_depth)
         
-        # Screen position (tx, ty) - these are correct as-is for static camera
-        world_x = tx
-        world_y = ty
+        # Convert screen position (tx, ty) to world coordinates
+        # In weak perspective: world_pos = screen_pos * depth * scale_factor
+        # This matches how body_world_3d is calculated in Motion Analyzer:
+        #   body_world_3d = [tx * tz * scale_factor, ty * tz * scale_factor, tz * scale_factor]
+        world_x = tx * frame_depth * scale_factor
+        world_y = ty * frame_depth * scale_factor
         
         # Z position (only if position mode)
         if use_depth and depth_mode in ["position", "both"]:
@@ -2697,33 +2648,46 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         else:
             world_z = 0
         
-        # Scale factor: closer = smaller mesh (to appear correct size on screen)
-        # scale = frame_depth / ref_depth
-        # When closer (frame_depth < ref_depth), scale < 1 (mesh smaller)
+        # Mesh scale factor for scale mode: closer = smaller mesh
+        # (This is separate from scale_factor parameter which is for world coordinate conversion)
         if use_depth and depth_mode in ["scale", "both"]:
-            scale_factor = frame_depth / ref_depth if ref_depth > 0 else 1.0
+            mesh_scale = frame_depth / ref_depth if ref_depth > 0 else 1.0
         else:
-            scale_factor = 1.0
+            mesh_scale = 1.0
+        
+        # Debug logging for first frame
+        if i == 0:
+            log.info(f"  Frame 0 world coords: X={world_x:.3f}m, Y={world_y:.3f}m, Z={world_z:.3f}m")
+            log.debug(f"    Calculation: tx={tx:.4f} * depth={frame_depth:.2f}m * scale={scale_factor:.3f}")
         
         # Compute body offset for this frame
         # ty is negated for camera convention (image Y is flipped)
-        if up_axis == "Y":
-            offset = Vector((world_x, -world_y, world_z))
-        elif up_axis == "Z":
-            offset = Vector((world_x, world_z, -world_y))
-        elif up_axis == "-Y":
-            offset = Vector((world_x, world_y, -world_z))
-        elif up_axis == "-Z":
-            offset = Vector((world_x, -world_z, world_y))
+        # FLIP_VERTICAL reverses this for newer SAM3DBody versions
+        # DISABLE_VERTICAL_OFFSET zeros out the vertical component
+        if DISABLE_VERTICAL_OFFSET:
+            world_y_adjusted = 0
+        elif FLIP_VERTICAL:
+            world_y_adjusted = world_y  # Don't negate
         else:
-            offset = Vector((world_x, -world_y, world_z))
+            world_y_adjusted = -world_y  # Default: negate for camera convention
+        
+        if up_axis == "Y":
+            offset = Vector((world_x, world_y_adjusted, world_z))
+        elif up_axis == "Z":
+            offset = Vector((world_x, world_z, world_y_adjusted))
+        elif up_axis == "-Y":
+            offset = Vector((world_x, -world_y_adjusted, -world_z))
+        elif up_axis == "-Z":
+            offset = Vector((world_x, -world_z, -world_y_adjusted))
+        else:
+            offset = Vector((world_x, world_y_adjusted, world_z))
         
         # Apply to mesh
         if mesh_obj:
             mesh_obj.location = offset
             mesh_obj.keyframe_insert(data_path="location", frame=frame_num)
             if use_depth and depth_mode in ["scale", "both"]:
-                mesh_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
+                mesh_obj.scale = Vector((mesh_scale, mesh_scale, mesh_scale))
                 mesh_obj.keyframe_insert(data_path="scale", frame=frame_num)
         
         # Apply to armature
@@ -2731,7 +2695,7 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             armature_obj.location = offset
             armature_obj.keyframe_insert(data_path="location", frame=frame_num)
             if use_depth and depth_mode in ["scale", "both"]:
-                armature_obj.scale = Vector((scale_factor, scale_factor, scale_factor))
+                armature_obj.scale = Vector((mesh_scale, mesh_scale, mesh_scale))
                 armature_obj.keyframe_insert(data_path="scale", frame=frame_num)
     
     # Debug output
@@ -2748,20 +2712,19 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     first_cam_t = frames[0].get("pred_cam_t", [0, 0, 5])
     last_cam_t = frames[-1].get("pred_cam_t", [0, 0, 5])
     
-    print(f"[Blender]   Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}, depth={ref_depth:.3f}")
-    print(f"[Blender]   Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}, depth={last_depth:.3f}")
-    print(f"[Blender]   Depth range: {min_depth:.2f}m to {max_depth:.2f}m")
-    print(f"[Blender]   Depth change: {depth_change:.3f}m ({depth_pct:+.1f}%)")
+    log.info(f"  Depth range: {min_depth:.2f}m to {max_depth:.2f}m (change: {depth_change:+.2f}m, {depth_pct:+.1f}%)")
+    log.debug(f"  Frame 0: tx={first_cam_t[0]:.3f}, ty={first_cam_t[1]:.3f}, depth={ref_depth:.3f}")
+    log.debug(f"  Frame {len(frames)-1}: tx={last_cam_t[0]:.3f}, ty={last_cam_t[1]:.3f}, depth={last_depth:.3f}")
     
     if use_depth and depth_mode in ["scale", "both"]:
         min_scale = min_depth / ref_depth if ref_depth > 0 else 1.0
         max_scale = max_depth / ref_depth if ref_depth > 0 else 1.0
-        print(f"[Blender]   Scale range: {min_scale:.3f} to {max_scale:.3f}")
+        log.info(f"  Scale range: {min_scale:.3f} to {max_scale:.3f}")
     
     if mesh_obj:
-        print(f"[Blender] Mesh animated with {len(frames)} keyframes")
+        log.info(f"Mesh animated with {len(frames)} keyframes")
     if armature_obj:
-        print(f"[Blender] Skeleton animated with {len(frames)} keyframes")
+        log.info(f"Skeleton animated with {len(frames)} keyframes")
 
 
 def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset: int = 1):
@@ -2783,7 +2746,7 @@ def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset:
         The trajectory empty object
     """
     if not trajectory or len(trajectory) < 2:
-        print("[Blender] No trajectory data to create locator")
+        log.info("No trajectory data to create locator")
         return None
     
     # Create empty object as trajectory locator
@@ -2823,9 +2786,9 @@ def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset:
         for kf in fcurve.keyframe_points:
             kf.interpolation = 'LINEAR'
     
-    print(f"[Blender] Trajectory locator created with {len(trajectory)} keyframes")
-    print(f"[Blender]   Start pos: ({trajectory[0][0]:.3f}, {trajectory[0][1]:.3f}, {trajectory[0][2]:.3f})")
-    print(f"[Blender]   End pos: ({trajectory[-1][0]:.3f}, {trajectory[-1][1]:.3f}, {trajectory[-1][2]:.3f})")
+    log.info(f"Trajectory locator created with {len(trajectory)} keyframes")
+    log.debug(f"  Start pos: ({trajectory[0][0]:.3f}, {trajectory[0][1]:.3f}, {trajectory[0][2]:.3f})")
+    log.debug(f"  End pos: ({trajectory[-1][0]:.3f}, {trajectory[-1][1]:.3f}, {trajectory[-1][2]:.3f})")
     
     # Add trajectory info as custom properties
     import numpy as np
@@ -2845,9 +2808,9 @@ def create_trajectory_locator(trajectory: list, fps: float = 24.0, frame_offset:
 
 def export_fbx(output_path, axis_forward, axis_up):
     """Export to FBX."""
-    print(f"[Blender] Exporting FBX: {output_path}")
-    print(f"[Blender] Orientation: forward={axis_forward}, up={axis_up}")
-    print(f"[Blender] Scale: 0.01 (meter to centimeter), Apply Scalings: All Local")
+    log.info(f"Exporting FBX: {output_path}")
+    log.info(f"Orientation: forward={axis_forward}, up={axis_up}")
+    log.info(f"Scale: 0.01 (meter to centimeter), Apply Scalings: All Local")
     
     bpy.ops.export_scene.fbx(
         filepath=output_path,
@@ -2872,12 +2835,12 @@ def export_fbx(output_path, axis_forward, axis_up):
         bake_anim_step=1.0,
         bake_anim_simplify_factor=0.0,
     )
-    print(f"[Blender] FBX export complete")
+    log.info(f"FBX export complete")
 
 
 def export_alembic(output_path):
     """Export to Alembic (.abc)."""
-    print(f"[Blender] Exporting Alembic: {output_path}")
+    log.info(f"Exporting Alembic: {output_path}")
     
     bpy.ops.wm.alembic_export(
         filepath=output_path,
@@ -2898,7 +2861,7 @@ def export_alembic(output_path):
         export_particles=False,
         packuv=True,
     )
-    print(f"[Blender] Alembic export complete")
+    log.info(f"Alembic export complete")
 
 
 def main():
@@ -2907,11 +2870,11 @@ def main():
         idx = argv.index("--")
         args = argv[idx + 1:]
     except ValueError:
-        print("[Blender] Error: No arguments")
+        log.info("Error: No arguments")
         sys.exit(1)
     
     if len(args) < 2:
-        print("[Blender] Usage: blender --background --python script.py -- input.json output.fbx [up_axis] [include_mesh] [include_camera]")
+        log.info("Usage: blender --background --python script.py -- input.json output.fbx [up_axis] [include_mesh] [include_camera]")
         sys.exit(1)
     
     input_json = args[0]
@@ -2925,15 +2888,15 @@ def main():
     if output_path.lower().endswith(".abc"):
         output_format = "abc"
     
-    print(f"[Blender] Input: {input_json}")
-    print(f"[Blender] Output: {output_path}")
-    print(f"[Blender] Format: {output_format.upper()}")
-    print(f"[Blender] Up axis: {up_axis}")
-    print(f"[Blender] Include mesh: {include_mesh}")
-    print(f"[Blender] Include camera: {include_camera}")
+    log.info(f"Input: {input_json}")
+    log.info(f"Output: {output_path}")
+    log.info(f"Format: {output_format.upper()}")
+    log.info(f"Up axis: {up_axis}")
+    log.info(f"Include mesh: {include_mesh}")
+    log.info(f"Include camera: {include_camera}")
     
     if not os.path.exists(input_json):
-        print(f"[Blender] Error: File not found: {input_json}")
+        log.info(f"Error: File not found: {input_json}")
         sys.exit(1)
     
     with open(input_json, 'r') as f:
@@ -2947,7 +2910,13 @@ def main():
     world_translation_mode = data.get("world_translation_mode", "none")
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     flip_x = data.get("flip_x", False)  # Mirror on X axis
+    disable_vertical_offset = data.get("disable_vertical_offset", False)  # v5.1.9: Disable Y offset
+    flip_vertical = data.get("flip_vertical", False)  # v5.1.9: Flip Y offset sign
+    # Backwards compatibility with old flip_ty option
+    if data.get("flip_ty", False):
+        flip_vertical = True
     frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
+    include_skeleton = data.get("include_skeleton", True)  # v4.6.10: Option to exclude skeleton
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
     camera_follow_root = data.get("camera_follow_root", False)  # Parent camera to root locator
     camera_use_rotation = data.get("camera_use_rotation", False)  # Use rotation instead of translation
@@ -2957,6 +2926,7 @@ def main():
     # Depth handling (v4.6.9 fix)
     use_depth_positioning = data.get("use_depth_positioning", True)  # Use pred_cam_t.tz for positioning
     depth_mode = data.get("depth_mode", "position")  # How to show depth: position, scale, or both
+    scale_factor = data.get("scale_factor", 1.0)  # For consistent world coordinates (v4.8.8)
     
     # Camera data - support both old and new field names for backwards compatibility
     camera_extrinsics = data.get("camera_extrinsics") or data.get("solved_camera_rotations")
@@ -2966,32 +2936,33 @@ def main():
     extrinsics_smoothing_method = data.get("extrinsics_smoothing_method") or data.get("bake_smoothing_method", "kalman")
     extrinsics_smoothing_strength = data.get("extrinsics_smoothing_strength") or data.get("bake_smoothing_strength", 0.5)
     
-    print(f"[Blender] {len(frames)} frames at {fps} fps")
-    print(f"[Blender] Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
-    print(f"[Blender] Sensor width: {sensor_width}mm")
-    print(f"[Blender] Depth positioning: {use_depth_positioning}, mode: {depth_mode} (v4.6.9)")
-    print(f"[Blender] World translation mode: {world_translation_mode}")
-    print(f"[Blender] Skeleton mode: {skeleton_mode}")
-    print(f"[Blender] Flip X: {flip_x}")
-    print(f"[Blender] Animate camera: {animate_camera}")
-    print(f"[Blender] Camera follow root: {camera_follow_root}")
-    print(f"[Blender] Camera use rotation: {camera_use_rotation}")
-    print(f"[Blender] Camera static: {camera_static}")
-    print(f"[Blender] Camera compensation: {camera_compensation}")
-    print(f"[Blender] Camera extrinsics: {len(camera_extrinsics) if camera_extrinsics else 0} frames")
-    print(f"[Blender] Camera intrinsics: {'Yes (MoGe2)' if camera_intrinsics else 'No (using manual sensor_width)'}")
-    print(f"[Blender] Joint parents available: {joint_parents is not None}")
+    log.info(f"{len(frames)} frames at {fps} fps")
+    log.info(f"Frame offset: {frame_offset} (animation runs from frame {frame_offset} to {frame_offset + len(frames) - 1})")
+    log.info(f"Sensor width: {sensor_width}mm")
+    log.info(f"Depth positioning: {use_depth_positioning}, mode: {depth_mode}, scale_factor: {scale_factor:.3f}")
+    log.info(f"World translation mode: {world_translation_mode}")
+    log.info(f"Skeleton mode: {skeleton_mode}")
+    log.info(f"Include skeleton: {include_skeleton}")
+    log.info(f"Flip X: {flip_x}")
+    log.info(f"Animate camera: {animate_camera}")
+    log.info(f"Camera follow root: {camera_follow_root}")
+    log.info(f"Camera use rotation: {camera_use_rotation}")
+    log.info(f"Camera static: {camera_static}")
+    log.info(f"Camera compensation: {camera_compensation}")
+    log.info(f"Camera extrinsics: {len(camera_extrinsics) if camera_extrinsics else 0} frames")
+    log.info(f"Camera intrinsics: {'Yes (MoGe2)' if camera_intrinsics else 'No (using manual sensor_width)'}")
+    log.info(f"Joint parents available: {joint_parents is not None}")
     
     if not frames:
-        print("[Blender] Error: No frames")
+        log.info("Error: No frames")
         sys.exit(1)
     
     # Check if rotation data is available
     has_rotations = frames[0].get("joint_rotations") is not None
-    print(f"[Blender] Rotation data available: {has_rotations}")
+    log.info(f"Rotation data available: {has_rotations}")
     
     if skeleton_mode == "rotations" and not has_rotations:
-        print("[Blender] Warning: Rotation mode requested but no data available. Falling back to positions.")
+        log.info("Warning: Rotation mode requested but no data available. Falling back to positions.")
         skeleton_mode = "positions"
     
     # Handle root_camera_compensation mode: bake inverse camera extrinsics to root locator
@@ -2999,9 +2970,9 @@ def main():
     root_camera_compensation_mode = False
     if world_translation_mode == "root_camera_compensation":
         if camera_extrinsics:
-            print("[Blender] MODE: Root Locator + Camera Compensation")
-            print("[Blender]   Inverse camera extrinsics will be baked into root locator")
-            print("[Blender]   Camera will be exported as static")
+            log.info("MODE: Root Locator + Camera Compensation")
+            log.info("  Inverse camera extrinsics will be baked into root locator")
+            log.info("  Camera will be exported as static")
             root_camera_compensation_mode = True
             # Force static camera
             camera_static = True
@@ -3010,15 +2981,15 @@ def main():
             # Set translation mode to "root" so mesh/skeleton are parented to root
             world_translation_mode = "root"
         else:
-            print("[Blender] Warning: root_camera_compensation mode requires camera_extrinsics. Falling back to 'root'.")
+            log.info("Warning: root_camera_compensation mode requires camera_extrinsics. Falling back to 'root'.")
             world_translation_mode = "root"
     
     # Handle bake_to_geometry mode: apply inverse camera transforms to geometry
     bake_to_geometry_mode = False
     if world_translation_mode == "bake_to_geometry":
         if camera_extrinsics:
-            print("[Blender] MODE: Baking camera motion into geometry (static camera export)")
-            print(f"[Blender] Smoothing: {extrinsics_smoothing_method} (strength={extrinsics_smoothing_strength})")
+            log.info("MODE: Baking camera motion into geometry (static camera export)")
+            log.info(f"Smoothing: {extrinsics_smoothing_method} (strength={extrinsics_smoothing_strength})")
             
             # Build smoothing params based on method
             smoothing_params = {}
@@ -3047,13 +3018,17 @@ def main():
             # Set mode to "none" so mesh/skeleton don't apply additional transforms
             world_translation_mode = "none"
         else:
-            print("[Blender] Warning: bake_to_geometry mode requires camera_extrinsics. Falling back to 'none'.")
+            log.info("Warning: bake_to_geometry mode requires camera_extrinsics. Falling back to 'none'.")
             world_translation_mode = "none"
     
     # Get transformation
-    global FLIP_X
+    global FLIP_X, DISABLE_VERTICAL_OFFSET, FLIP_VERTICAL
     FLIP_X = flip_x
+    DISABLE_VERTICAL_OFFSET = disable_vertical_offset
+    FLIP_VERTICAL = flip_vertical
     transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis, flip_x)
+    
+    log.info(f"Vertical offset: {'DISABLED' if DISABLE_VERTICAL_OFFSET else 'enabled'}, flip: {FLIP_VERTICAL}")
     
     clear_scene()
     
@@ -3069,7 +3044,7 @@ def main():
         bpy.context.scene.render.resolution_x = int(image_size[0])
         bpy.context.scene.render.resolution_y = int(image_size[1])
         bpy.context.scene.render.resolution_percentage = 100
-        print(f"[Blender] Render resolution set to {image_size[0]}x{image_size[1]}")
+        log.info(f"Render resolution set to {image_size[0]}x{image_size[1]}")
     
     # Create root locator if needed (for "root" mode)
     root_locator = None
@@ -3082,7 +3057,7 @@ def main():
                 smoothing_method=extrinsics_smoothing_method,
                 smoothing_strength=extrinsics_smoothing_strength
             )
-            print("[Blender] Root locator created with inverse camera extrinsics")
+            log.info("Root locator created with inverse camera extrinsics")
         else:
             # Standard root locator (world translation from pred_cam_t)
             root_locator = create_root_locator(frames, fps, up_axis, flip_x, frame_offset)
@@ -3090,7 +3065,7 @@ def main():
         # Get body offset from frame 0 for initial setup (will be overwritten by per-frame)
         first_cam_t = frames[0].get("pred_cam_t")
         body_offset = get_body_offset_from_cam_t(first_cam_t, up_axis)
-        print(f"[Blender] Initial body offset (frame 0): {body_offset}")
+        log.info(f"Initial body offset (frame 0): {body_offset} (disable_vert={DISABLE_VERTICAL_OFFSET}, flip_vert={FLIP_VERTICAL})")
     
     # Create mesh with shape keys
     mesh_obj = None
@@ -3105,21 +3080,26 @@ def main():
     # Create skeleton (armature with bones and hierarchy)
     # Pass camera_extrinsics to compensate body orientation for camera motion
     # BUT NOT when in bake_to_geometry mode or camera_compensation mode (transforms already applied)
-    skeleton_camera_rots = None
-    if not bake_to_geometry_mode and not root_camera_compensation_mode:
-        skeleton_camera_rots = camera_extrinsics
-    armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
-    
-    # Apply body offset to skeleton as well (initial position)
-    if world_translation_mode == "root" and root_locator and armature_obj:
-        armature_obj.location = body_offset
+    armature_obj = None
+    if include_skeleton:
+        skeleton_camera_rots = None
+        if not bake_to_geometry_mode and not root_camera_compensation_mode:
+            skeleton_camera_rots = camera_extrinsics
+        armature_obj = create_skeleton(frames, fps, transform_func, world_translation_mode, up_axis, root_locator, skeleton_mode, joint_parents, frame_offset, skeleton_camera_rots)
+        
+        # Apply body offset to skeleton as well (initial position)
+        if world_translation_mode == "root" and root_locator and armature_obj:
+            armature_obj.location = body_offset
+    else:
+        log.info("Skeleton excluded (camera-only export)")
     
     # Apply PER-FRAME body offset (fixes drift issue)
     # This overwrites the static offset with animated keyframes
-    # v4.6.9: Now properly uses depth (tz) for world positioning
-    if world_translation_mode == "root" and root_locator:
+    # v4.8.8: Now properly converts screen coords to world using depth * scale_factor
+    if world_translation_mode == "root" and root_locator and (mesh_obj or armature_obj):
         apply_per_frame_body_offset(mesh_obj, armature_obj, frames, up_axis, frame_offset,
-                                    use_depth=use_depth_positioning, depth_mode=depth_mode)
+                                    use_depth=use_depth_positioning, depth_mode=depth_mode,
+                                    scale_factor=scale_factor)
     
     # Create separate translation track if in "separate" mode
     if world_translation_mode == "separate":
@@ -3142,9 +3122,9 @@ def main():
                 effective_cx = camera_intrinsics["principal_point_x"]
             if camera_intrinsics.get("principal_point_y") is not None:
                 effective_cy = camera_intrinsics["principal_point_y"]
-            print(f"[Blender] Using MoGe2 intrinsics: focal={effective_focal_px}px, sensor={effective_sensor_width}mm")
+            log.info(f"Using MoGe2 intrinsics: focal={effective_focal_px}px, sensor={effective_sensor_width}mm")
             if effective_cx is not None and effective_cy is not None:
-                print(f"[Blender] Principal point from intrinsics: cx={effective_cx:.2f}, cy={effective_cy:.2f}")
+                log.debug(f"Principal point from intrinsics: cx={effective_cx:.2f}, cy={effective_cy:.2f}")
         
         if bake_to_geometry_mode or root_camera_compensation_mode:
             # Use dedicated static camera with intrinsics
@@ -3154,7 +3134,7 @@ def main():
                 principal_point_x=effective_cx,
                 principal_point_y=effective_cy
             )
-            print("[Blender] Static camera created with intrinsics")
+            log.info("Static camera created with intrinsics")
         else:
             camera_obj = create_camera(
                 frames, fps, transform_func, up_axis, effective_sensor_width, 
@@ -3168,14 +3148,14 @@ def main():
             # This makes camera follow character movement while preserving screen-space relationship
             if camera_follow_root and root_locator and camera_obj:
                 camera_obj.parent = root_locator
-                print(f"[Blender] Camera parented to root_locator - follows character movement")
+                log.info(f"Camera parented to root_locator - follows character movement")
                 if camera_static:
-                    print(f"[Blender] Camera is STATIC - per-frame body_offset positions character")
+                    log.info(f"Camera is STATIC - per-frame body_offset positions character")
                 elif camera_use_rotation:
-                    print(f"[Blender] Camera uses PAN/TILT rotation to frame character")
+                    log.info(f"Camera uses PAN/TILT rotation to frame character")
                     # Note: Per-frame body offset is already applied above for all root modes
                 else:
-                    print(f"[Blender] Camera uses local TRANSLATION to frame character")
+                    log.info(f"Camera uses local TRANSLATION to frame character")
     
     # Create metadata locator (for Maya Extra Attributes)
     metadata = data.get("metadata", {})
@@ -3194,7 +3174,7 @@ def main():
         # Fallback: use raw trajectory if compensated not available
         trajectory_raw = data.get("body_world_trajectory", [])
         if trajectory_raw:
-            print("[Blender] WARNING: Using raw trajectory (compensated not available)")
+            log.info("WARNING: Using raw trajectory (compensated not available)")
             create_world_position_locator(trajectory_raw, fps, frame_offset)
     
     # 3. CameraExtrinsics - camera rotation from CameraSolver
@@ -3210,7 +3190,7 @@ def main():
     # Export
     if output_format == "abc":
         if mesh_obj:
-            print("[Blender] Baking shape keys to mesh cache for Alembic...")
+            log.info("Baking shape keys to mesh cache for Alembic...")
             bpy.context.view_layer.objects.active = mesh_obj
             mesh_obj.select_set(True)
         export_alembic(output_path)
@@ -3220,11 +3200,11 @@ def main():
         if mesh_obj:
             mesh_obj.hide_set(True)
         export_fbx(fbx_path, axis_forward, axis_up_export)
-        print(f"[Blender] Also exported skeleton/camera to: {fbx_path}")
+        log.info(f"Also exported skeleton/camera to: {fbx_path}")
     else:
         export_fbx(output_path, axis_forward, axis_up_export)
     
-    print("[Blender] Done!")
+    log.info("Done!")
 
 
 if __name__ == "__main__":

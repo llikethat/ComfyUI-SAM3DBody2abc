@@ -22,11 +22,24 @@ import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
 
-# Import version from package
+# Import version and logger from package
 try:
     from .. import __version__
+    from ..lib.logger import log, set_module, LogLevel, set_verbosity_from_string, LOG_LEVEL_CHOICES
+    set_module("FBX Export")
 except ImportError:
     __version__ = "unknown"
+    LOG_LEVEL_CHOICES = ["Normal (Info)", "Silent", "Errors Only", "Warnings", "Verbose (Status)", "Debug (All)"]
+    # Fallback logger
+    class _FallbackLog:
+        def info(self, msg): print(f"[FBX Export] {msg}")
+        def debug(self, msg): pass
+        def warn(self, msg): print(f"[FBX Export] WARN: {msg}")
+        def error(self, msg): print(f"[FBX Export] ERROR: {msg}")
+        def progress(self, c, t, task="", interval=10): 
+            if c == 0 or c == t-1 or (c+1) % interval == 0: print(f"[FBX Export] {task}: {c+1}/{t}")
+    log = _FallbackLog()
+    def set_verbosity_from_string(s): pass
 
 
 def to_list(obj):
@@ -86,6 +99,8 @@ _lib_dir = os.path.join(os.path.dirname(_current_dir), "lib")
 BLENDER_SCRIPT = os.path.join(_lib_dir, "blender_animated_fbx.py")
 
 _BLENDER_PATH = None
+BLENDER_VERSION = "4.2.0"  # LTS version
+BLENDER_DOWNLOAD_URL = f"https://download.blender.org/release/Blender4.2/blender-{BLENDER_VERSION}-linux-x64.tar.xz"
 
 
 def find_blender() -> Optional[str]:
@@ -95,16 +110,22 @@ def find_blender() -> Optional[str]:
     if _BLENDER_PATH is not None:
         return _BLENDER_PATH
     
+    # Get custom_nodes directory
+    try:
+        custom_nodes = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    except Exception:
+        custom_nodes = None
+    
     locations = [
         shutil.which("blender"),
         "/usr/bin/blender",
         "/usr/local/bin/blender",
+        "/opt/blender/blender",
         "/Applications/Blender.app/Contents/MacOS/Blender",
     ]
     
-    # Check SAM3DBody bundled Blender
-    try:
-        custom_nodes = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # Check SAM3DBody bundled Blender (old location)
+    if custom_nodes:
         patterns = [
             os.path.join(custom_nodes, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*-linux-x64", "blender"),
             os.path.join(custom_nodes, "ComfyUI-SAM3DBody", "lib", "blender", "*", "blender"),
@@ -112,8 +133,25 @@ def find_blender() -> Optional[str]:
         for pattern in patterns:
             matches = glob.glob(pattern)
             locations.extend(matches)
-    except Exception:
-        pass
+    
+    # Check SAM3DBody2abc bundled Blender (our own location)
+    if custom_nodes:
+        our_blender_dir = os.path.join(custom_nodes, "ComfyUI-SAM3DBody2abc", "blender")
+        patterns = [
+            os.path.join(our_blender_dir, "blender-*-linux-x64", "blender"),
+            os.path.join(our_blender_dir, "blender"),
+            os.path.join(our_blender_dir, "*", "blender"),
+        ]
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            locations.extend(matches)
+    
+    # Check workspace locations (RunPod)
+    locations.extend([
+        "/workspace/blender/blender",
+        "/workspace/blender-4.2.0-linux-x64/blender",
+        os.path.expanduser("~/blender/blender"),
+    ])
     
     # Windows
     for ver in ["4.2", "4.1", "4.0", "3.6"]:
@@ -122,8 +160,13 @@ def find_blender() -> Optional[str]:
     for loc in locations:
         if loc and os.path.exists(loc):
             _BLENDER_PATH = loc
-            print(f"[FBX Export] Found Blender: {loc}")
+            log.info(f"Found Blender: {loc}")
             return loc
+    
+    log.info("Blender not found in standard locations")
+    log.info("To install Blender, run in terminal:")
+    log.info("  cd /workspace && wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz")
+    log.info("  tar -xf blender-4.2.0-linux-x64.tar.xz && ln -s /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender")
     
     return None
 
@@ -219,6 +262,10 @@ class ExportAnimatedFBX:
                     "default": True,
                     "tooltip": "Include mesh with animation"
                 }),
+                "include_skeleton": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Include skeleton/armature. Disable for camera-only export."
+                }),
                 "include_camera": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Include camera in export"
@@ -263,11 +310,21 @@ class ExportAnimatedFBX:
                 # Depth handling (v4.6.9)
                 "use_depth_positioning": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Enable depth-based scaling. Required for videos where character moves toward/away from camera."
+                    "tooltip": "Enable depth-based positioning. Required for videos where character moves toward/away from camera."
                 }),
-                "depth_mode": (["Scale (Recommended)", "Position (Z Movement)", "Both (Scale + Z)", "Off (Legacy)"], {
-                    "default": "Scale (Recommended)",
-                    "tooltip": "Scale: mesh scales with depth (best for static camera). Position: character moves in Z. Both: combined."
+                "depth_mode": (["Position (Recommended)", "Scale Only", "Both (Position + Scale)", "Off (Legacy)"], {
+                    "default": "Position (Recommended)",
+                    "tooltip": "Position: character moves in Z axis (correct for 3D lighting/shadows). Scale: mesh scales with depth (2D compositing only). Both: combined."
+                }),
+                
+                # SAM3DBody compatibility (v5.1.9)
+                "disable_vertical_offset": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Disable vertical (Y) offset from pred_cam_t. Use if character has unwanted up/down movement."
+                }),
+                "flip_vertical": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Flip vertical offset sign. Try if character moves in wrong vertical direction."
                 }),
                 
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
@@ -286,6 +343,18 @@ class ExportAnimatedFBX:
                 
                 "output_dir": ("STRING", {
                     "default": "",
+                }),
+                
+                # Blender path (if auto-detection fails)
+                "blender_path": ("STRING", {
+                    "default": "",
+                    "tooltip": "Path to Blender executable. Leave empty for auto-detection."
+                }),
+                
+                # Logging verbosity
+                "log_level": (["Normal (Info)", "Silent", "Errors Only", "Warnings", "Verbose (Status)", "Debug (All)"], {
+                    "default": "Normal (Info)",
+                    "tooltip": "Console output verbosity. Normal shows key status messages. Debug shows all diagnostics."
                 }),
             }
         }
@@ -306,6 +375,21 @@ class ExportAnimatedFBX:
         skip_first_frames: int,
         fps: float,
         frame_count: int,
+        camera_extrinsics: Optional[Dict] = None,
+        # New in v4.8.8 - export settings
+        extrinsics_smoothing: str = "",
+        smoothing_strength: float = 0.0,
+        use_depth_positioning: bool = True,
+        depth_mode: str = "",
+        skeleton_mode: str = "",
+        up_axis: str = "Y",
+        flip_x: bool = False,
+        include_mesh: bool = True,
+        include_skeleton: bool = True,
+        include_camera: bool = True,
+        # Filename info
+        filename: str = "",
+        output_path: str = "",
     ) -> Dict:
         """
         Build metadata dict to be embedded in FBX as custom properties.
@@ -315,21 +399,22 @@ class ExportAnimatedFBX:
         """
         from datetime import datetime, timezone, timedelta
         
-        # Get version from parent package - use direct file read since module name has dashes
-        __version__ = "unknown"
-        try:
-            import os
-            init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
-            if os.path.exists(init_path):
-                with open(init_path, "r") as f:
-                    for line in f:
-                        if line.strip().startswith("__version__"):
-                            # Parse: __version__ = "4.5.8"
-                            __version__ = line.split("=")[1].strip().strip('"\'').strip()
-                            break
-        except Exception as e:
-            print(f"[Export] Warning: Could not read version: {e}")
-            __version__ = "unknown"
+        # Get version - use module-level import first, then file read as fallback
+        # Note: module-level __version__ is imported at top of file
+        version_str = __version__  # From module-level import
+        if version_str == "unknown":
+            try:
+                import os
+                init_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "__init__.py")
+                if os.path.exists(init_path):
+                    with open(init_path, "r") as f:
+                        for line in f:
+                            if line.strip().startswith("__version__"):
+                                # Parse: __version__ = "4.5.8"
+                                version_str = line.split("=")[1].strip().strip('"\'').strip()
+                                break
+            except Exception as e:
+                log.info(f"Warning: Could not read version from file: {e}")
         
         # Get timestamp in IST
         ist = timezone(timedelta(hours=5, minutes=30))
@@ -337,13 +422,27 @@ class ExportAnimatedFBX:
         
         metadata = {
             # Build info
-            "sam3dbody2abc_version": __version__,
+            "sam3dbody2abc_version": version_str,
             "export_timestamp": timestamp,
+            # File info
+            "filename": filename,
+            "output_path": output_path,
             # Export settings
             "world_translation": world_translation,
             "camera_motion": camera_motion,
             "export_fps": fps,
             "frame_count": frame_count,
+            # Additional export settings (v4.8.8)
+            "extrinsics_smoothing": extrinsics_smoothing,
+            "extrinsics_smoothing_strength": smoothing_strength,
+            "depth_positioning_enabled": str(use_depth_positioning),
+            "depth_mode": depth_mode,
+            "skeleton_export_mode": skeleton_mode,
+            "up_axis": up_axis,
+            "flip_x": str(flip_x),
+            "include_mesh": str(include_mesh),
+            "include_skeleton": str(include_skeleton),
+            "include_camera": str(include_camera),
         }
         
         # Video info - use source_video_fps if provided, otherwise use export fps
@@ -446,6 +545,31 @@ class ExportAnimatedFBX:
             metadata["focal_variation_percent"] = round(subject_motion.get("focal_variation_percent", 0), 1)
             metadata["sensor_width_mm"] = round(subject_motion.get("sensor_width_mm", 36.0), 1)
             metadata["has_extrinsics_compensation"] = str(subject_motion.get("has_extrinsics_compensation", False))
+            
+            # === Motion Analyzer settings ===
+            metadata["depth_source"] = subject_motion.get("depth_source", "Auto")
+            
+            # === Trajectory Smoother settings (if applied) ===
+            smoothing_info = subject_motion.get("smoothing_applied", {})
+            if smoothing_info:
+                metadata["trajectory_smoothing_method"] = smoothing_info.get("method", "None")
+                metadata["trajectory_smoothing_strength"] = str(smoothing_info.get("strength", 0))
+                metadata["trajectory_jitter_reduction_pct"] = str(round(smoothing_info.get("jitter_reduction_pct", 0), 1))
+                metadata["trajectory_reference_joint"] = smoothing_info.get("reference_joint_name", "")
+                metadata["trajectory_skeleton_format"] = smoothing_info.get("skeleton_format", "")
+            
+            # === Character Trajectory settings (if available) ===
+            char_traj_info = subject_motion.get("character_trajectory_settings", {})
+            if char_traj_info:
+                metadata["char_traj_tracking_mode"] = char_traj_info.get("tracking_mode", "")
+                metadata["char_traj_smoothing_method"] = char_traj_info.get("smoothing_method", "")
+                metadata["char_traj_smoothing_window"] = str(char_traj_info.get("smoothing_window", 0))
+            
+            # === Camera Solver settings (if available from extrinsics) ===
+            if camera_extrinsics:
+                metadata["camera_solving_method"] = camera_extrinsics.get("solving_method", "")
+                metadata["camera_translational_solver"] = camera_extrinsics.get("translational_solver", "")
+                metadata["camera_coordinate_system"] = camera_extrinsics.get("coordinate_system", "")
         
         # Add detailed joint indices reference for Maya users
         # Full Skeleton (127 joints) - SMPL-X based
@@ -494,6 +618,7 @@ class ExportAnimatedFBX:
         world_translation: str = "None (Body at Origin)",
         flip_x: bool = False,
         include_mesh: bool = True,
+        include_skeleton: bool = True,
         include_camera: bool = True,
         camera_motion: str = "Translation (Default)",
         extrinsics_smoothing: str = "Kalman Filter",
@@ -503,19 +628,40 @@ class ExportAnimatedFBX:
         scale_info: Optional[Dict] = None,
         use_depth_positioning: bool = True,
         depth_mode: str = "Position (Z-axis)",
+        disable_vertical_offset: bool = False,
+        flip_vertical: bool = False,
         source_video_fps: float = 0.0,
         skip_first_frames: int = 0,
         output_dir: str = "",
+        blender_path: str = "",
+        log_level: str = "Normal (Info)",
     ) -> Tuple[str, str, int, float]:
         """Export to animated FBX or Alembic."""
         
+        # EARLY DIAGNOSTIC - print immediately
+        print(f"[FBX Export] ============ STARTING EXPORT ============")
+        print(f"[FBX Export] mesh_sequence type: {type(mesh_sequence)}")
+        if mesh_sequence is None:
+            print(f"[FBX Export] ERROR: mesh_sequence is None!")
+            return ("", "Error: mesh_sequence is None", 0, 24.0)
+        if isinstance(mesh_sequence, dict):
+            print(f"[FBX Export] mesh_sequence keys: {list(mesh_sequence.keys())}")
+            frames = mesh_sequence.get("frames", {})
+            print(f"[FBX Export] frames type: {type(frames)}, count: {len(frames) if frames else 0}")
+        else:
+            print(f"[FBX Export] ERROR: mesh_sequence is not a dict!")
+            return ("", f"Error: mesh_sequence is {type(mesh_sequence)}, expected dict", 0, 24.0)
+        
+        # Set logging verbosity from node parameter
+        set_verbosity_from_string(log_level)
+        
         # Log version at start of export
-        print(f"[Export] SAM3DBody2abc version: {__version__}")
+        log.info(f"SAM3DBody2abc version: {__version__}")
         
         # Get fps from mesh_sequence if not specified (0 means use source)
         if fps <= 0:
             fps = mesh_sequence.get("fps", 24.0)
-            print(f"[Export] Using fps from source: {fps}")
+            log.info(f"Using fps from source: {fps}")
         
         # Get intrinsics from camera_intrinsics if provided (MoGe2 takes precedence)
         if camera_intrinsics is not None:
@@ -528,25 +674,25 @@ class ExportAnimatedFBX:
             intrinsics_h = camera_intrinsics.get("image_height", None)
             
             if intrinsics_focal_px:
-                print(f"[Export] Using intrinsics from {intrinsics_source}: focal={intrinsics_focal_px:.1f}px")
+                log.info(f"Using intrinsics from {intrinsics_source}: focal={intrinsics_focal_px:.1f}px")
             
             # Log principal point (cx, cy)
             if intrinsics_cx is not None and intrinsics_cy is not None:
-                print(f"[Export] Principal point: cx={intrinsics_cx:.2f}px, cy={intrinsics_cy:.2f}px")
+                log.info(f"Principal point: cx={intrinsics_cx:.2f}px, cy={intrinsics_cy:.2f}px")
                 if intrinsics_w and intrinsics_h:
                     # Calculate offset from image center
                     center_x = intrinsics_w / 2.0
                     center_y = intrinsics_h / 2.0
                     offset_x = intrinsics_cx - center_x
                     offset_y = intrinsics_cy - center_y
-                    print(f"[Export] Image center: ({center_x:.1f}, {center_y:.1f})")
-                    print(f"[Export] Principal point offset: dx={offset_x:.2f}px, dy={offset_y:.2f}px")
+                    log.info(f"Image center: ({center_x:.1f}, {center_y:.1f})")
+                    log.info(f"Principal point offset: dx={offset_x:.2f}px, dy={offset_y:.2f}px")
                     
                     # Calculate film offset (normalized)
                     # Film offset = offset from center / image dimension
                     film_offset_x = offset_x / intrinsics_w
                     film_offset_y = offset_y / intrinsics_h
-                    print(f"[Export] Film offset (normalized): X={film_offset_x:.4f}, Y={film_offset_y:.4f}")
+                    log.info(f"Film offset (normalized): X={film_offset_x:.4f}, Y={film_offset_y:.4f}")
         else:
             intrinsics_focal_px = None
             intrinsics_sensor_mm = sensor_width
@@ -556,7 +702,7 @@ class ExportAnimatedFBX:
         has_extrinsics = camera_extrinsics is not None and "rotations" in camera_extrinsics
         if has_extrinsics:
             extrinsics_source = camera_extrinsics.get("source", "unknown")
-            print(f"[Export] Using camera extrinsics from {extrinsics_source} ({len(camera_extrinsics['rotations'])} frames)")
+            log.info(f"Using camera extrinsics from {extrinsics_source} ({len(camera_extrinsics['rotations'])} frames)")
         
         # Determine camera behavior based on world_translation mode
         use_camera_rotation = ("Rotation" in camera_motion)
@@ -567,35 +713,58 @@ class ExportAnimatedFBX:
         
         # Camera compensation mode: bake inverse extrinsics into root locator
         if camera_compensation and not has_extrinsics:
-            print("[Export] Warning: 'Root Locator + Camera Compensation' requires camera_extrinsics input. Falling back to 'Root Locator'.")
+            log.info(" Warning: 'Root Locator + Camera Compensation' requires camera_extrinsics input. Falling back to 'Root Locator'.")
             world_translation = "Root Locator"
             camera_compensation = False
         
         if include_camera:
             if camera_compensation:
-                print(f"[Export] Camera Compensation mode: inverse extrinsics baked into root, static camera exported")
+                log.info(f"Camera Compensation mode: inverse extrinsics baked into root, static camera exported")
             elif animate_camera:
                 mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
-                print(f"[Export] Camera animated with {mode_str}")
+                log.info(f"Camera animated with {mode_str}")
             elif camera_follow_root:
                 mode_str = "rotation (pan/tilt)" if use_camera_rotation else "translation"
-                print(f"[Export] Camera follows root with {mode_str}")
+                log.info(f"Camera follows root with {mode_str}")
             elif not camera_compensation:
-                print(f"[Export] Camera will be static")
+                log.info(f"Camera will be static")
         
         frames = mesh_sequence.get("frames", {})
-        if not frames:
-            return ("", "Error: No frames", 0, fps)
+        log.info(f"mesh_sequence keys: {list(mesh_sequence.keys())}")
+        log.info(f"frames type: {type(frames)}, count: {len(frames) if frames else 0}")
         
-        blender_path = find_blender()
-        if not blender_path:
-            return ("", "Error: Blender not found", 0, fps)
+        if not frames:
+            log.info("ERROR: No frames found in mesh_sequence!")
+            return ("", "Error: No frames in mesh_sequence", 0, fps)
+        
+        # Find Blender - use custom path if provided
+        if blender_path and os.path.exists(blender_path):
+            blender_exe = blender_path
+            log.info(f"Using custom Blender path: {blender_exe}")
+        else:
+            blender_exe = find_blender()
+        
+        log.info(f"Blender path: {blender_exe}")
+        if not blender_exe:
+            error_msg = """Error: Blender not found!
+
+To install Blender on RunPod/Linux:
+  cd /workspace
+  wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
+  tar -xf blender-4.2.0-linux-x64.tar.xz
+  ln -sf /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender
+
+Or specify the path in the blender_path input."""
+            log.info(error_msg)
+            return ("", "Error: Blender not found. See console for installation instructions.", 0, fps)
         
         if not os.path.exists(BLENDER_SCRIPT):
+            log.info(f"Script not found: {BLENDER_SCRIPT}")
             return ("", f"Error: Script not found: {BLENDER_SCRIPT}", 0, fps)
         
         if not output_dir:
             output_dir = folder_paths.get_output_directory()
+        log.info(f"Output directory: {output_dir}")
         os.makedirs(output_dir, exist_ok=True)
         
         sorted_indices = sorted(frames.keys())
@@ -627,13 +796,13 @@ class ExportAnimatedFBX:
         joint_rots = first_frame.get("joint_rotations")
         
         # Debug: print what data we have
-        print(f"[Export] First frame keys: {list(first_frame.keys())}")
-        print(f"[Export] joint_rotations type: {type(joint_rots)}")
+        log.info(f"First frame keys: {list(first_frame.keys())}")
+        log.info(f"joint_rotations type: {type(joint_rots)}")
         if joint_rots is not None:
             if isinstance(joint_rots, np.ndarray):
-                print(f"[Export] joint_rotations shape: {joint_rots.shape}, size: {joint_rots.size}")
+                log.info(f"joint_rotations shape: {joint_rots.shape}, size: {joint_rots.size}")
             elif isinstance(joint_rots, list):
-                print(f"[Export] joint_rotations is list with {len(joint_rots)} elements")
+                log.info(f"joint_rotations is list with {len(joint_rots)} elements")
         
         has_rotations = joint_rots is not None
         if has_rotations and isinstance(joint_rots, np.ndarray):
@@ -642,22 +811,22 @@ class ExportAnimatedFBX:
             has_rotations = len(joint_rots) > 0
         
         if use_rotations and not has_rotations:
-            print("[Export] Warning: Rotation mode requested but no rotation data available. Falling back to positions.")
-            print("[Export] Note: Make sure you're using a recent version of ComfyUI-SAM3DBody that outputs joint_rotations.")
+            log.info(" Warning: Rotation mode requested but no rotation data available. Falling back to positions.")
+            log.info(" Note: Make sure you're using a recent version of ComfyUI-SAM3DBody that outputs joint_rotations.")
             use_rotations = False
         else:
-            print(f"[Export] Rotation data available: {has_rotations}, using rotations: {use_rotations}")
+            log.info(f"Rotation data available: {has_rotations}, using rotations: {use_rotations}")
         
         # Build JSON for Blender
         joint_parents = mesh_sequence.get("joint_parents")
-        print(f"[Export] joint_parents in mesh_sequence: {joint_parents is not None}")
+        log.info(f"joint_parents in mesh_sequence: {joint_parents is not None}")
         if joint_parents is not None:
             if hasattr(joint_parents, 'shape'):
-                print(f"[Export] joint_parents shape: {joint_parents.shape}")
+                log.info(f"joint_parents shape: {joint_parents.shape}")
             elif isinstance(joint_parents, list):
-                print(f"[Export] joint_parents length: {len(joint_parents)}")
+                log.info(f"joint_parents length: {len(joint_parents)}")
         
-        print(f"[Export] Camera motion mode: {'Static' if camera_static else ('Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation')}")
+        log.info(f"Camera motion mode: {'Static' if camera_static else ('Rotation (Pan/Tilt)' if use_camera_rotation else 'Translation')}")
         
         # Prepare camera extrinsics for Blender
         solved_rotations = None
@@ -677,10 +846,10 @@ class ExportAnimatedFBX:
                 solved_rotations.append(rot_entry)
             
             final_rot = solved_rotations[-1]
-            print(f"[Export] Camera extrinsics: {len(solved_rotations)} frames")
-            print(f"[Export]   Final: pan={np.degrees(final_rot['pan']):.2f}°, tilt={np.degrees(final_rot['tilt']):.2f}°")
+            log.info(f"Camera extrinsics: {len(solved_rotations)} frames")
+            log.info(f"  Final: pan={np.degrees(final_rot['pan']):.2f}°, tilt={np.degrees(final_rot['tilt']):.2f}°")
             if has_translation:
-                print(f"[Export]   Translation present: tx={final_rot['tx']:.4f}, ty={final_rot['ty']:.4f}, tz={final_rot['tz']:.4f}")
+                log.info(f"  Translation present: tx={final_rot['tx']:.4f}, ty={final_rot['ty']:.4f}, tz={final_rot['tz']:.4f}")
         
         # Map smoothing method to internal name
         smoothing_method_map = {
@@ -705,6 +874,9 @@ class ExportAnimatedFBX:
                 "source": camera_intrinsics.get("source", "MoGe2"),
             }
         
+        # Determine output path early so we can include it in metadata
+        output_path = get_incremental_filename(output_dir, filename, ext)
+        
         export_data = {
             "fps": fps,
             "frame_count": len(sorted_indices),
@@ -715,6 +887,9 @@ class ExportAnimatedFBX:
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
+            "disable_vertical_offset": disable_vertical_offset,  # v5.1.9: Disable Y offset
+            "flip_vertical": flip_vertical,  # v5.1.9: Flip Y offset sign
+            "include_skeleton": include_skeleton,  # v4.6.10: Option to exclude skeleton
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,
             "camera_use_rotation": use_camera_rotation,
@@ -724,14 +899,20 @@ class ExportAnimatedFBX:
             "camera_intrinsics": intrinsics_export,  # From MoGe2 Intrinsics
             "extrinsics_smoothing_method": smoothing_method,
             "extrinsics_smoothing_strength": smoothing_strength,
-            # Depth positioning (v4.6.9 fix)
+            # Depth positioning (v4.6.9 fix, v4.8.8 Position is now default)
             "use_depth_positioning": use_depth_positioning,
             "depth_mode": {
+                "Position (Recommended)": "position",
+                "Scale Only": "scale",
+                "Both (Position + Scale)": "both",
+                "Off (Legacy)": "off",
+                # Backwards compatibility with old option names
                 "Scale (Recommended)": "scale",
                 "Position (Z Movement)": "position",
                 "Both (Scale + Z)": "both",
-                "Off (Legacy)": "off"
-            }.get(depth_mode, "scale"),
+            }.get(depth_mode, "position"),  # Default to position now
+            # Scale factor for consistent world coordinates (v4.8.8)
+            "scale_factor": scale_info.get("scale_factor", 1.0) if scale_info else (subject_motion.get("scale_factor", 1.0) if subject_motion else 1.0),
             "frames": [],
             # Body world trajectory for animated locator (COMPENSATED - camera effects removed)
             # Uses body_world_3d_compensated if available, falls back to raw body_world_3d
@@ -753,6 +934,21 @@ class ExportAnimatedFBX:
                 skip_first_frames=skip_first_frames,
                 fps=fps,
                 frame_count=len(sorted_indices),
+                camera_extrinsics=camera_extrinsics,
+                # New in v4.8.8 - export settings
+                extrinsics_smoothing=extrinsics_smoothing,
+                smoothing_strength=smoothing_strength,
+                use_depth_positioning=use_depth_positioning,
+                depth_mode=depth_mode,
+                skeleton_mode=skeleton_mode,
+                up_axis=up_axis,
+                flip_x=flip_x,
+                include_mesh=include_mesh,
+                include_skeleton=include_skeleton,
+                include_camera=include_camera,
+                # Filename info
+                filename=filename,
+                output_path=output_path,
             ),
         }
         
@@ -765,17 +961,6 @@ class ExportAnimatedFBX:
             first_cam_t = to_list(first_cam_t)
             if len(first_cam_t) >= 3:
                 tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
-                print(f"\n[Export DEBUG] ========== BODY ALIGNMENT (Frame 0) ==========")
-                print(f"[Export DEBUG] pred_cam_t: tx={tx:.4f}, ty={ty:.4f}, tz={tz:.4f}")
-                print(f"[Export DEBUG] focal_length: {first_focal}")
-                print(f"[Export DEBUG] image_size: {first_image_size}")
-                print(f"[Export DEBUG]")
-                print(f"[Export DEBUG] NEW APPROACH (v3.5.7):")
-                print(f"[Export DEBUG]   root_locator = (0, 0, 0)  ← Fixed at origin")
-                print(f"[Export DEBUG]   body_offset in Blender = (tx, -ty, 0) = ({tx:.4f}, {-ty:.4f}, 0)")
-                print(f"[Export DEBUG]   body_offset in Maya = (tx, 0, -ty) = ({tx:.4f}, 0, {-ty:.4f})")
-                print(f"[Export DEBUG]   (ty negated due to camera rotation convention)")
-                print(f"[Export DEBUG]")
                 
                 # What screen position does this correspond to?
                 if first_focal and first_image_size:
@@ -785,11 +970,6 @@ class ExportAnimatedFBX:
                     # Screen position from pred_cam_t
                     screen_x = focal * tx / tz + cx
                     screen_y = focal * ty / tz + cy  # NO negation - SAM3DBody coords are image-aligned
-                    print(f"[Export DEBUG] EXPECTED SCREEN POSITION:")
-                    print(f"[Export DEBUG]   screen_x = {screen_x:.1f}px")
-                    print(f"[Export DEBUG]   screen_y = {screen_y:.1f}px")
-                    print(f"[Export DEBUG]   (Image center: {cx:.0f}, {cy:.0f})")
-                print(f"[Export DEBUG] ================================================================\n")
         
         for idx in sorted_indices:
             frame = frames[idx]
@@ -824,12 +1004,9 @@ class ExportAnimatedFBX:
             json.dump(export_data, f)
             json_path = f.name
         
-        # Get incremental filename to avoid overwriting
-        output_path = get_incremental_filename(output_dir, filename, ext)
-        
         try:
             cmd = [
-                blender_path,
+                blender_exe,
                 "--background",
                 "--python", BLENDER_SCRIPT,
                 "--",
@@ -842,15 +1019,28 @@ class ExportAnimatedFBX:
             
             format_name = "Alembic" if use_alembic else "FBX"
             skel_mode_str = "rotations" if use_rotations else "positions"
-            print(f"[Export] Exporting {len(sorted_indices)} frames as {format_name}")
-            print(f"[Export] Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
-            print(f"[Export] Output path: {output_path}")
+            log.info(f"Exporting {len(sorted_indices)} frames as {format_name}")
+            log.info(f"Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
+            log.info(f"Output path: {output_path}")
+            
+            # Map log_level to environment variable for Blender subprocess
+            level_to_env = {
+                "Silent": "SILENT",
+                "Errors Only": "ERROR",
+                "Warnings": "WARN",
+                "Normal (Info)": "INFO",
+                "Verbose (Status)": "STATUS",
+                "Debug (All)": "DEBUG",
+            }
+            env = os.environ.copy()
+            env["SAM3DBODY_LOG_LEVEL"] = level_to_env.get(log_level, "INFO")
             
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=BLENDER_TIMEOUT,
+                env=env,
             )
             
             # Log Blender output
@@ -860,25 +1050,25 @@ class ExportAnimatedFBX:
                 # First, print all DEBUG lines (important for troubleshooting)
                 debug_lines = [l for l in lines if 'DEBUG' in l and l.strip()]
                 if debug_lines:
-                    print(f"[Blender] === DEBUG OUTPUT ({len(debug_lines)} lines) ===")
+                    log.debug(f"=== DEBUG OUTPUT ({len(debug_lines)} lines) ===")
                     for line in debug_lines:
-                        print(f"[Blender] {line}")
-                    print(f"[Blender] === END DEBUG ===")
+                        log.debug(f"{line}")
+                    log.debug(f"=== END DEBUG ===")
                 
                 # Then print last 30 lines of regular output
                 for line in lines[-30:]:
                     if line.strip() and 'DEBUG' not in line:
-                        print(f"[Blender] {line}")
+                        log.debug(f"{line}")
             
             if result.returncode != 0:
                 error = result.stderr[:500] if result.stderr else "Unknown error"
-                print(f"[Export] Blender error: {error}")
+                log.info(f"Blender error: {error}")
                 return ("", f"Blender error: {error}", 0, fps)
             
             if not os.path.exists(output_path):
-                print(f"[Export] ERROR: File not created at {output_path}")
+                log.info(f"ERROR: File not created at {output_path}")
                 if result.stderr:
-                    print(f"[Export] Blender stderr: {result.stderr[:500]}")
+                    log.info(f"Blender stderr: {result.stderr[:500]}")
                 return ("", f"Error: {format_name} not created at {output_path}", 0, fps)
             
             file_size = os.path.getsize(output_path)
@@ -890,12 +1080,12 @@ class ExportAnimatedFBX:
             if include_camera:
                 status += " +camera"
             
-            print(f"\n{'='*60}")
-            print(f"[Export] SUCCESS!")
-            print(f"[Export] {status}")
-            print(f"[Export] File: {output_path}")
-            print(f"[Export] Size: {file_size_mb:.2f} MB")
-            print(f"{'='*60}\n")
+            log.info("=" * 60)
+            log.info(f"SUCCESS!")
+            log.info(f"{status}")
+            log.info(f"File: {output_path}")
+            log.info(f"Size: {file_size_mb:.2f} MB")
+            log.info("=" * 60)
             
             return (output_path, status, len(sorted_indices), fps)
             
