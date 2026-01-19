@@ -10,6 +10,15 @@ from .logger import (
     LOG_LEVEL_MAP
 )
 
+# Try to import bpy exporter (may not be available if bpy not installed)
+try:
+    from .bpy_exporter import export_animated_fbx, is_bpy_available
+    _BPY_EXPORTER_AVAILABLE = True
+except ImportError:
+    _BPY_EXPORTER_AVAILABLE = False
+    export_animated_fbx = None
+    is_bpy_available = lambda: False
+
 __all__ = [
     'log', 
     'set_verbosity', 
@@ -17,5 +26,7 @@ __all__ = [
     'set_module', 
     'LogLevel',
     'LOG_LEVEL_CHOICES',
-    'LOG_LEVEL_MAP'
+    'LOG_LEVEL_MAP',
+    'export_animated_fbx',
+    'is_bpy_available',
 ]

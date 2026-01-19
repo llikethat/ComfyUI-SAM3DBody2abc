@@ -1,0 +1,32 @@
+# SAM3DBody2abc - Environment Configuration
+# Run: comfy-env install
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ISOLATED ENVIRONMENT FOR BLENDER PYTHON (bpy)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[sam3dbody2abc]
+python = "3.11"  # bpy 4.2 only supports Python 3.11
+cuda_version = "auto"
+pytorch_version = "auto"
+
+    [sam3dbody2abc.packages]
+    requirements = [
+        # Core dependencies
+        "numpy>=1.21.0,<2.0.0",
+        
+        # Blender Python module (headless) - for FBX export
+        "bpy==4.2",
+        
+        # Math utilities
+        "scipy>=1.10.0",
+    ]
+
+    [sam3dbody2abc.packages.linux]
+    requirements = []
+
+    [sam3dbody2abc.packages.darwin]
+    requirements = []
+
+    [sam3dbody2abc.packages.windows]
+    requirements = []

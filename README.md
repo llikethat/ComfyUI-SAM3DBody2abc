@@ -159,6 +159,27 @@ FBX File:
 - **Recommended**: 12GB+ VRAM for higher resolution
 - Falls back to CPU for some operations if GPU unavailable
 
+## FBX Export Methods
+
+The FBX export uses one of two methods:
+
+### Primary: Direct bpy Export (Recommended)
+- No external Blender installation needed
+- Faster (no subprocess overhead)
+- Requires bpy Python module: `pip install bpy==4.2`
+
+### Fallback: Blender Subprocess
+- Used when bpy module not available
+- Requires Blender 4.2+ installed on system
+
+To install bpy:
+```bash
+# Requires Python 3.11 (bpy 4.2 limitation)
+pip install bpy==4.2
+```
+
+The export will automatically detect which method is available and use the best option.
+
 ## Multi-Camera Triangulation
 
 For jitter-free depth, use synchronized footage from 2 cameras:

@@ -9,6 +9,10 @@ The exported FBX contains:
 Settings:
 - skeleton_mode: "Rotations" uses true joint rotations from MHR model
                  "Positions" uses joint positions (legacy)
+
+Export Methods:
+- Primary: Direct bpy module (no external Blender needed)
+- Fallback: Blender subprocess (requires blender installation)
 """
 
 import os
@@ -21,6 +25,16 @@ import numpy as np
 import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
+
+# Try to import bpy exporter module
+BPY_AVAILABLE = False
+try:
+    from ..lib.bpy_exporter import export_animated_fbx, is_bpy_available
+    BPY_AVAILABLE = is_bpy_available()
+    if BPY_AVAILABLE:
+        print("[FBX Export] bpy module available - will use direct export (no Blender subprocess needed)")
+except ImportError:
+    print("[FBX Export] bpy module not available - will use Blender subprocess")
 
 # Import version and logger from package
 try:
@@ -993,6 +1007,61 @@ Or specify the path in the blender_path input."""
                 frame_data["joint_rotations"] = to_list(frame.get("joint_rotations"))
             export_data["frames"].append(frame_data)
         
+        format_name = "Alembic" if use_alembic else "FBX"
+        skel_mode_str = "rotations" if use_rotations else "positions"
+        log.info(f"Exporting {len(sorted_indices)} frames as {format_name}")
+        log.info(f"Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
+        log.info(f"Output path: {output_path}")
+        
+        # =====================================================================
+        # EXPORT METHOD SELECTION
+        # Try bpy module first (no external Blender needed), fall back to subprocess
+        # =====================================================================
+        
+        if BPY_AVAILABLE:
+            # PRIMARY METHOD: Direct bpy export (faster, no subprocess overhead)
+            log.info("Using direct bpy export (no Blender subprocess needed)")
+            try:
+                result = export_animated_fbx(
+                    export_data=export_data,
+                    output_path=output_path,
+                    up_axis=up_axis,
+                    include_mesh=include_mesh,
+                    include_camera=include_camera
+                )
+                
+                if result.get("status") == "success":
+                    file_size_mb = result.get("file_size_mb", 0)
+                    
+                    status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis}, skeleton={skel_mode_str})"
+                    if not include_mesh:
+                        status += " skeleton only"
+                    if include_camera:
+                        status += " +camera"
+                    status += " [bpy direct]"
+                    
+                    log.info("=" * 60)
+                    log.info(f"SUCCESS!")
+                    log.info(f"{status}")
+                    log.info(f"File: {output_path}")
+                    log.info(f"Size: {file_size_mb:.2f} MB")
+                    log.info("=" * 60)
+                    
+                    return (output_path, status, len(sorted_indices), fps)
+                else:
+                    error_msg = result.get("message", "Unknown error")
+                    log.warn(f"bpy export failed: {error_msg}")
+                    log.info("Falling back to Blender subprocess...")
+                    # Fall through to subprocess method
+                    
+            except Exception as e:
+                log.warn(f"bpy export exception: {str(e)}")
+                log.info("Falling back to Blender subprocess...")
+                # Fall through to subprocess method
+        
+        # FALLBACK METHOD: Blender subprocess (requires external Blender installation)
+        log.info("Using Blender subprocess export")
+        
         # Write temp JSON
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(export_data, f)
@@ -1010,12 +1079,6 @@ Or specify the path in the blender_path input."""
                 "1" if include_mesh else "0",
                 "1" if include_camera else "0",
             ]
-            
-            format_name = "Alembic" if use_alembic else "FBX"
-            skel_mode_str = "rotations" if use_rotations else "positions"
-            log.info(f"Exporting {len(sorted_indices)} frames as {format_name}")
-            log.info(f"Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
-            log.info(f"Output path: {output_path}")
             
             # Map log_level to environment variable for Blender subprocess
             level_to_env = {
@@ -1073,6 +1136,7 @@ Or specify the path in the blender_path input."""
                 status += " skeleton only"
             if include_camera:
                 status += " +camera"
+            status += " [subprocess]"
             
             log.info("=" * 60)
             log.info(f"SUCCESS!")
