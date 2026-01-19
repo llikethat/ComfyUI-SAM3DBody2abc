@@ -271,8 +271,65 @@ class VideoBatchProcessor:
             mask_frames = active_mask.shape[0] if hasattr(active_mask, 'shape') and active_mask.ndim >= 1 else 1
             log.info(f"Using per-frame masks ({mask_frames} masks available)")
         
-        sam_3d_model = model["model"]
-        model_cfg = model["model_cfg"]
+        # Handle different SAM3D_MODEL formats
+        # The SAM3D_MODEL type comes from ComfyUI-SAM3DBody "Load SAM3DBody Model" node
+        # Format may vary depending on the wrapper version
+        log.info(f"Model input type: {type(model)}")
+        
+        if isinstance(model, dict):
+            log.info(f"Model dict keys: {list(model.keys())}")
+            
+            # Try common key names
+            sam_3d_model = None
+            model_cfg = None
+            mhr_path = None
+            
+            # Check for model
+            for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
+                if key in model:
+                    sam_3d_model = model[key]
+                    log.info(f"Found model at key: '{key}'")
+                    break
+            
+            # Check for config
+            for key in ["model_cfg", "cfg", "config"]:
+                if key in model:
+                    model_cfg = model[key]
+                    log.info(f"Found config at key: '{key}'")
+                    break
+            
+            # Check for MHR path
+            for key in ["mhr_path", "model_path", "mhr_model_path"]:
+                if key in model:
+                    mhr_path = model[key]
+                    break
+            
+            if sam_3d_model is None:
+                # Maybe the dict values themselves contain the model
+                log.info(f"Inspecting dict values...")
+                for k, v in model.items():
+                    log.info(f"  {k}: {type(v)}")
+                    if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
+                        # Looks like a PyTorch model
+                        log.info(f"  -> Found model-like object at key '{k}'")
+                        sam_3d_model = v
+                        break
+                
+                if sam_3d_model is None:
+                    log.error(f"SAM3D_MODEL dict has unexpected keys: {list(model.keys())}")
+                    raise KeyError(f"SAM3D_MODEL must contain model. Got keys: {list(model.keys())}. "
+                                   f"Please check ComfyUI-SAM3DBody version compatibility.")
+        
+        elif hasattr(model, 'eval') and callable(getattr(model, 'eval')):
+            # Model passed directly
+            sam_3d_model = model
+            model_cfg = None
+            mhr_path = None
+            log.warn("SAM3D_MODEL passed as direct model object")
+        
+        else:
+            log.error(f"Unexpected model type: {type(model)}")
+            raise TypeError(f"SAM3D_MODEL has unexpected type: {type(model)}")
         
         estimator = SAM3DBodyEstimator(
             sam_3d_body_model=sam_3d_model,
@@ -286,7 +343,6 @@ class VideoBatchProcessor:
         frames = {}
         faces = None
         joint_parents = None
-        mhr_path = model.get("mhr_path")
         debug_images = []
         
         # Disable autocast for entire processing to avoid BFloat16 sparse matrix errors

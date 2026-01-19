@@ -188,9 +188,43 @@ class BatchProcess:
         
         print(f"[SAM3DBody2abc] Processing {len(frame_indices)} frames...")
         
-        # Extract model components
-        sam_3d_model = model["model"]
-        model_cfg = model["model_cfg"]
+        # Handle different SAM3D_MODEL formats
+        print(f"[SAM3DBody2abc] Model input type: {type(model)}")
+        
+        if isinstance(model, dict):
+            print(f"[SAM3DBody2abc] Model dict keys: {list(model.keys())}")
+            
+            sam_3d_model = None
+            model_cfg = None
+            
+            # Check for model
+            for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
+                if key in model:
+                    sam_3d_model = model[key]
+                    print(f"[SAM3DBody2abc] Found model at key: '{key}'")
+                    break
+            
+            # Check for config
+            for key in ["model_cfg", "cfg", "config"]:
+                if key in model:
+                    model_cfg = model[key]
+                    break
+            
+            if sam_3d_model is None:
+                for k, v in model.items():
+                    if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
+                        sam_3d_model = v
+                        break
+                
+                if sam_3d_model is None:
+                    raise KeyError(f"SAM3D_MODEL must contain model. Got keys: {list(model.keys())}")
+        
+        elif hasattr(model, 'eval') and callable(getattr(model, 'eval')):
+            sam_3d_model = model
+            model_cfg = None
+        
+        else:
+            raise TypeError(f"SAM3D_MODEL has unexpected type: {type(model)}")
         
         # Create estimator
         estimator = SAM3DBodyEstimator(

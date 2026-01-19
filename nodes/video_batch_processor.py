@@ -506,9 +506,57 @@ class SAM3DBodyBatchProcessor:
             # Import SAM 3D Body modules
             from sam_3d_body import SAM3DBodyEstimator
             
-            # Extract model components
-            sam_3d_model = model["model"]
-            model_cfg = model["model_cfg"]
+            # Handle different SAM3D_MODEL formats
+            # The SAM3D_MODEL type comes from ComfyUI-SAM3DBody "Load SAM3DBody Model" node
+            # Format may vary depending on the wrapper version
+            print(f"[SAM3DBody2abc] Model input type: {type(model)}")
+            
+            if isinstance(model, dict):
+                print(f"[SAM3DBody2abc] Model dict keys: {list(model.keys())}")
+                
+                # Try common key names
+                sam_3d_model = None
+                model_cfg = None
+                
+                # Check for model
+                for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
+                    if key in model:
+                        sam_3d_model = model[key]
+                        print(f"[SAM3DBody2abc] Found model at key: '{key}'")
+                        break
+                
+                # Check for config
+                for key in ["model_cfg", "cfg", "config"]:
+                    if key in model:
+                        model_cfg = model[key]
+                        print(f"[SAM3DBody2abc] Found config at key: '{key}'")
+                        break
+                
+                if sam_3d_model is None:
+                    # Maybe the dict values themselves contain the model
+                    print(f"[SAM3DBody2abc] Inspecting dict values...")
+                    for k, v in model.items():
+                        print(f"[SAM3DBody2abc]   {k}: {type(v)}")
+                        if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
+                            # Looks like a PyTorch model
+                            print(f"[SAM3DBody2abc]   -> Found model-like object at key '{k}'")
+                            sam_3d_model = v
+                            break
+                    
+                    if sam_3d_model is None:
+                        print(f"[SAM3DBody2abc] ERROR: SAM3D_MODEL dict has unexpected keys: {list(model.keys())}")
+                        raise KeyError(f"SAM3D_MODEL must contain model. Got keys: {list(model.keys())}. "
+                                       f"Please check ComfyUI-SAM3DBody version compatibility.")
+            
+            elif hasattr(model, 'eval') and callable(getattr(model, 'eval')):
+                # Model passed directly
+                sam_3d_model = model
+                model_cfg = None
+                print("[SAM3DBody2abc] SAM3D_MODEL passed as direct model object")
+            
+            else:
+                print(f"[SAM3DBody2abc] ERROR: Unexpected model type: {type(model)}")
+                raise TypeError(f"SAM3D_MODEL has unexpected type: {type(model)}")
             
             # Create estimator (reuse for all frames)
             estimator = SAM3DBodyEstimator(
