@@ -15,18 +15,32 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 4.8.7
-- FIX: Trajectory top-view horizontal orientation (left-right now matches video)
-- FIX: Viewing angle calculation (was ~170°, now correct ~30°)
-- FIX: Version "unknown" in FBX metadata
-- NEW: 📈 Trajectory Smoother node
-  - Dedicated noise reduction for body_world_3d
-  - Methods: Savitzky-Golay, Gaussian, Moving Average, Spline, Kalman
-  - Jitter reduction statistics
-  - Before/after comparison visualization
+Version: 5.1.0
+- NEW: 📐 Body Shape Lock node
+  - Locks SMPL beta parameters across all frames
+  - Eliminates body size/proportion flickering
+  - Methods: Median, Mean, Trimmed Mean, First Frame, Best Frame, Weighted Mean
+  - Outlier rejection for robust shape estimation
+- NEW: 🔄 Pose Smoothing node
+  - Quaternion-based joint rotation smoothing
+  - Methods: Gaussian, Savitzky-Golay, Kalman, SLERP, Moving Average
+  - Eliminates jitter while preserving motion dynamics
+  - Optional trajectory (pred_cam_t) smoothing
+- NEW: 🦶 Foot Contact Enforcer node
+  - Automatic foot contact detection (height + velocity based)
+  - Ground plane estimation
+  - Foot pinning via root translation adjustment
+  - Smooth transitions in/out of contacts
+  - Reduces foot skating in motion capture
+- NEW: 📹 SLAM Camera Solver node
+  - Visual SLAM for world-coordinate camera poses
+  - DPVO backend support (recommended)
+  - Feature-based fallback when DPVO unavailable
+  - Automatic scale estimation using person height
+  - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "4.8.8"
+__version__ = "5.1.0"
 
 import os
 import sys
@@ -124,6 +138,38 @@ _trajectory_smoother = _load_module("sam3d2abc_trajectory_smoother", os.path.joi
 if _trajectory_smoother:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_TrajectorySmoother"] = _trajectory_smoother.TrajectorySmoother
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_TrajectorySmoother"] = "📈 Trajectory Smoother"
+
+# Load and register body shape lock
+_body_shape_lock = _load_module("sam3d2abc_body_shape_lock", os.path.join(_nodes, "body_shape_lock.py"))
+if _body_shape_lock:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_BodyShapeLock"] = _body_shape_lock.BodyShapeLockNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_BodyShapeLock"] = "📐 Body Shape Lock"
+
+# Load and register pose smoothing
+_pose_smoothing = _load_module("sam3d2abc_pose_smoothing", os.path.join(_nodes, "pose_smoothing.py"))
+if _pose_smoothing:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_PoseSmoothing"] = _pose_smoothing.PoseSmoothingNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_PoseSmoothing"] = "🔄 Pose Smoothing"
+
+# Load and register foot contact enforcer
+_ground_contact = _load_module("sam3d2abc_ground_contact", os.path.join(_nodes, "ground_contact.py"))
+if _ground_contact:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootContactEnforcer"] = _ground_contact.FootContactNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootContactEnforcer"] = "🦶 Foot Contact Enforcer"
+
+# Load and register SLAM camera solver
+_slam_path = os.path.join(_nodes, "slam")
+if os.path.isdir(_slam_path):
+    try:
+        _slam_solver = _load_module(
+            "sam3d2abc_slam_solver",
+            os.path.join(_slam_path, "slam_camera_solver.py")
+        )
+        if _slam_solver:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_SLAMCameraSolver"] = _slam_solver.SLAMCameraSolver
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SLAMCameraSolver"] = "📹 SLAM Camera Solver"
+    except Exception as e:
+        print(f"[SAM3DBody2abc] Error loading SLAM solver: {e}")
 
 # Load and register multicamera nodes
 _multicamera_path = os.path.join(_nodes, "multicamera")
