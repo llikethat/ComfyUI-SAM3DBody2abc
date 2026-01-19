@@ -51,7 +51,7 @@ Version: 5.1.8
   - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "5.1.9"
+__version__ = "5.1.10"
 
 import os
 import sys

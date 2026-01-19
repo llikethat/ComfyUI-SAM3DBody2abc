@@ -860,7 +860,10 @@ def transform_rotation_matrix(rot_3x3, up_axis):
 # Global flip_x setting (set by main)
 FLIP_X = False
 DISABLE_VERTICAL_OFFSET = False  # v5.1.9: Disable Y offset from pred_cam_t
+DISABLE_HORIZONTAL_OFFSET = False  # v5.1.10: Disable X offset from pred_cam_t
+DISABLE_ALL_OFFSETS = False  # v5.1.10: Disable all offsets from pred_cam_t
 FLIP_VERTICAL = False  # v5.1.9: Flip Y offset sign
+FLIP_HORIZONTAL = False  # v5.1.10: Flip X offset sign
 
 
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
@@ -886,50 +889,49 @@ def get_body_offset_from_cam_t(pred_cam_t, up_axis):
     - ty: vertical offset (positive = body above center IN IMAGE SPACE)
     - tz: depth (camera distance)
     
-    IMPORTANT: ty must be NEGATED because:
-    1. SAM3DBody: ty positive = body above image center
-    2. Maya camera is rotated -90° around X
-    3. After axis conversion + camera rotation, the sign is flipped
-    4. So we negate ty to compensate: -ty in code → +ty in Maya camera view
-    
-    For Maya with camera rotated -90° around X:
-    - Maya X = horizontal in camera view
-    - Maya Z = vertical in camera view (after camera rotation)
-    - Maya Y = depth
-    
-    Blender Y-up export mapping:
-    - Blender X → Maya X
-    - Blender Y → Maya Z  
-    - Blender Z → Maya Y
-    
-    Uses global DISABLE_VERTICAL_OFFSET and FLIP_VERTICAL settings.
+    Uses global settings:
+    - DISABLE_ALL_OFFSETS: Return (0,0,0) - character at origin
+    - DISABLE_VERTICAL_OFFSET: Zero out vertical component
+    - DISABLE_HORIZONTAL_OFFSET: Zero out horizontal component
+    - FLIP_VERTICAL: Flip Y sign
+    - FLIP_HORIZONTAL: Flip X sign
     """
+    # If all offsets disabled, return origin
+    if DISABLE_ALL_OFFSETS:
+        return Vector((0, 0, 0))
+    
     if not pred_cam_t or len(pred_cam_t) < 3:
         return Vector((0, 0, 0))
     
     tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
     
+    # Apply horizontal offset options
+    if DISABLE_HORIZONTAL_OFFSET:
+        tx_adjusted = 0
+    elif FLIP_HORIZONTAL:
+        tx_adjusted = -tx  # Flip sign
+    else:
+        tx_adjusted = tx  # Default
+    
     # Apply vertical offset options
     if DISABLE_VERTICAL_OFFSET:
         ty_adjusted = 0
     elif FLIP_VERTICAL:
-        ty_adjusted = ty  # Don't negate
+        ty_adjusted = ty  # Don't negate (flipped)
     else:
         ty_adjusted = -ty  # Default: negate for camera convention
     
     # Apply based on up_axis
     if up_axis == "Y":
-        # For Maya: tx→horizontal, ty→vertical in camera view
-        return Vector((tx, ty_adjusted, 0))
+        return Vector((tx_adjusted, ty_adjusted, 0))
     elif up_axis == "Z":
-        # Blender native Z-up
-        return Vector((tx, 0, ty_adjusted))
+        return Vector((tx_adjusted, 0, ty_adjusted))
     elif up_axis == "-Y":
-        return Vector((tx, -ty_adjusted, 0))  # Inverted
+        return Vector((tx_adjusted, -ty_adjusted, 0))
     elif up_axis == "-Z":
-        return Vector((tx, 0, -ty_adjusted))  # Inverted
+        return Vector((tx_adjusted, 0, -ty_adjusted))
     else:
-        return Vector((tx, ty_adjusted, 0))
+        return Vector((tx_adjusted, ty_adjusted, 0))
 
 
 
@@ -2661,26 +2663,37 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             log.debug(f"    Calculation: tx={tx:.4f} * depth={frame_depth:.2f}m * scale={scale_factor:.3f}")
         
         # Compute body offset for this frame
-        # ty is negated for camera convention (image Y is flipped)
-        # FLIP_VERTICAL reverses this for newer SAM3DBody versions
-        # DISABLE_VERTICAL_OFFSET zeros out the vertical component
-        if DISABLE_VERTICAL_OFFSET:
+        # Apply offset options from globals
+        if DISABLE_ALL_OFFSETS:
+            world_x_adjusted = 0
             world_y_adjusted = 0
-        elif FLIP_VERTICAL:
-            world_y_adjusted = world_y  # Don't negate
         else:
-            world_y_adjusted = -world_y  # Default: negate for camera convention
+            # Horizontal
+            if DISABLE_HORIZONTAL_OFFSET:
+                world_x_adjusted = 0
+            elif FLIP_HORIZONTAL:
+                world_x_adjusted = -world_x
+            else:
+                world_x_adjusted = world_x
+            
+            # Vertical - also negate by default for camera convention
+            if DISABLE_VERTICAL_OFFSET:
+                world_y_adjusted = 0
+            elif FLIP_VERTICAL:
+                world_y_adjusted = world_y  # Don't negate
+            else:
+                world_y_adjusted = -world_y  # Default: negate for camera convention
         
         if up_axis == "Y":
-            offset = Vector((world_x, world_y_adjusted, world_z))
+            offset = Vector((world_x_adjusted, world_y_adjusted, world_z))
         elif up_axis == "Z":
-            offset = Vector((world_x, world_z, world_y_adjusted))
+            offset = Vector((world_x_adjusted, world_z, world_y_adjusted))
         elif up_axis == "-Y":
-            offset = Vector((world_x, -world_y_adjusted, -world_z))
+            offset = Vector((world_x_adjusted, -world_y_adjusted, -world_z))
         elif up_axis == "-Z":
-            offset = Vector((world_x, -world_z, -world_y_adjusted))
+            offset = Vector((world_x_adjusted, -world_z, -world_y_adjusted))
         else:
-            offset = Vector((world_x, world_y_adjusted, world_z))
+            offset = Vector((world_x_adjusted, world_y_adjusted, world_z))
         
         # Apply to mesh
         if mesh_obj:
@@ -2911,7 +2924,10 @@ def main():
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     flip_x = data.get("flip_x", False)  # Mirror on X axis
     disable_vertical_offset = data.get("disable_vertical_offset", False)  # v5.1.9: Disable Y offset
+    disable_horizontal_offset = data.get("disable_horizontal_offset", False)  # v5.1.10: Disable X offset
+    disable_all_offsets = data.get("disable_all_offsets", False)  # v5.1.10: Disable all offsets
     flip_vertical = data.get("flip_vertical", False)  # v5.1.9: Flip Y offset sign
+    flip_horizontal = data.get("flip_horizontal", False)  # v5.1.10: Flip X offset sign
     # Backwards compatibility with old flip_ty option
     if data.get("flip_ty", False):
         flip_vertical = True
@@ -3022,13 +3038,17 @@ def main():
             world_translation_mode = "none"
     
     # Get transformation
-    global FLIP_X, DISABLE_VERTICAL_OFFSET, FLIP_VERTICAL
+    global FLIP_X, DISABLE_VERTICAL_OFFSET, DISABLE_HORIZONTAL_OFFSET, DISABLE_ALL_OFFSETS, FLIP_VERTICAL, FLIP_HORIZONTAL
     FLIP_X = flip_x
     DISABLE_VERTICAL_OFFSET = disable_vertical_offset
+    DISABLE_HORIZONTAL_OFFSET = disable_horizontal_offset
+    DISABLE_ALL_OFFSETS = disable_all_offsets
     FLIP_VERTICAL = flip_vertical
+    FLIP_HORIZONTAL = flip_horizontal
     transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis, flip_x)
     
-    log.info(f"Vertical offset: {'DISABLED' if DISABLE_VERTICAL_OFFSET else 'enabled'}, flip: {FLIP_VERTICAL}")
+    log.info(f"Position offsets: disable_all={DISABLE_ALL_OFFSETS}, disable_vert={DISABLE_VERTICAL_OFFSET}, disable_horiz={DISABLE_HORIZONTAL_OFFSET}")
+    log.info(f"Position flips: flip_vert={FLIP_VERTICAL}, flip_horiz={FLIP_HORIZONTAL}")
     
     clear_scene()
     
