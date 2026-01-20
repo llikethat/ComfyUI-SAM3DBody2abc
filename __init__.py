@@ -3,79 +3,42 @@ SAM3DBody2abc - Video to Animated FBX Export
 
 Extends SAM3DBody with video processing and animated FBX export.
 
-Workflow:
+Workflow (STANDALONE - No third-party wrapper needed!):
     Load Video → SAM3 Segmentation → SAM3 Extract Masks
                                             ↓
-    Load SAM3DBody → 🎬 Video Batch Processor ←──┘
-                              ↓
-                   📦 Export Animated FBX
+    🔧 Load SAM3DBody Model (Direct) → 🎬 Video Batch Processor ←──┘
+                                              ↓
+                                    📦 Export Animated FBX
 
 Outputs match SAM3DBody Process:
 - mesh_data (SAM3D_OUTPUT) → vertices, faces, joint_coords
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
-Version: 5.3.0
+Version: 5.4.0
+- NEW: 🔧 Direct SAM3DBody Integration (MAJOR CHANGE!)
+  - No longer requires third-party ComfyUI-SAM3DBody wrapper
+  - Load Meta's SAM-3D-Body model directly using new "Load SAM3DBody Model (Direct)" node
+  - Just clone https://github.com/facebookresearch/sam-3d-body and download weights
+  - Full control over model loading and coordinate system
+- NEW: Coordinate system documentation
+  - pred_cam_t = [tx, ty, tz]: tx=horizontal, ty=vertical (image Y-down), tz=depth
+  - For FBX export: world_y = -ty (flip to Y-up world space)
+- FIX: Mesh-to-skeleton alignment for new SAM3DBody
+  - New SAM3DBody uses ground-centered mesh, pelvis-centered skeleton
+  - align_mesh_to_skeleton option fixes this offset automatically
 
-CHANGELOG:
-----------
-
-v5.3.0 (2026-01-19)
-- NEW: Direct bpy module support for FBX export (no Blender subprocess needed)
-  - Adds lib/bpy_exporter.py with complete export functionality
-  - Automatically detects if bpy is available and uses it
-  - Falls back to Blender subprocess if bpy not installed
-  - NOTE: bpy requires Python 3.11.x (for bpy 4.1+) or 3.10.x (for bpy 4.0.0)
-  - Python 3.12+ not supported by bpy - use Blender subprocess instead
-- NEW: Added comfy-env.toml for isolated environment support
-- IMPROVED: Better error messages when no export method available
-  - Shows Python version and installation options for both bpy and Blender
-- IMPROVED: README updated with accurate bpy installation instructions
-
-v5.2.0
-- NEW: Mesh-to-skeleton alignment for SAM3DBody v5.2.0
-  - Handles ground-centered mesh vs pelvis-centered skeleton
-  - Automatic offset calculation and application
-- IMPROVED: Depth-based positioning now default mode
-- IMPROVED: Scale factor integration from Motion Analyzer
-
-v5.1.8
+Version: 5.2.0
 - NEW: Added flip_ty option to FBX Export for newer SAM3DBody versions
-  - If character appears vertically inverted, enable flip_ty
-  - This compensates for coordinate system changes in SAM3DBody updates
 - FIX: Improved Blender auto-detection with more search paths
-  - Added /workspace/blender locations for RunPod
-  - Added blender_path input to specify custom Blender location
-  - Shows installation instructions when Blender not found
-- FIX: Character Trajectory numpy array boolean evaluation error
-- FIX: Handle dict-based frames with sorted keys for consistent ordering
-- FIX: Handle variable return signatures from load_sam_3d_body()
 - FIX: Support path-based SAM3D_MODEL format from newer ComfyUI-SAM3DBody
 - NEW: 📐 Body Shape Lock node
-  - Locks SMPL beta parameters across all frames
-  - Eliminates body size/proportion flickering
-  - Methods: Median, Mean, Trimmed Mean, First Frame, Best Frame, Weighted Mean
-  - Outlier rejection for robust shape estimation
-- NEW: 🔄 Pose Smoothing node
-  - Quaternion-based joint rotation smoothing
-  - Methods: Gaussian, Savitzky-Golay, Kalman, SLERP, Moving Average
-  - Eliminates jitter while preserving motion dynamics
-  - Optional trajectory (pred_cam_t) smoothing
+- NEW: 🔄 Pose Smoothing node  
 - NEW: 🦶 Foot Contact Enforcer node
-  - Automatic foot contact detection (height + velocity based)
-  - Ground plane estimation
-  - Foot pinning via root translation adjustment
-  - Smooth transitions in/out of contacts
-  - Reduces foot skating in motion capture
 - NEW: 📹 SLAM Camera Solver node
-  - Visual SLAM for world-coordinate camera poses
-  - DPVO backend support (recommended)
-  - Feature-based fallback when DPVO unavailable
-  - Automatic scale estimation using person height
-  - Compatible with FBX Export and Motion Analyzer
 """
 
-__version__ = "5.3.0"
+__version__ = "5.4.0"
 
 import os
 import sys
@@ -105,6 +68,7 @@ _base = os.path.dirname(os.path.abspath(__file__))
 _nodes = os.path.join(_base, "nodes")
 
 # Load modules
+_load_model = _load_module("sam3d2abc_load_model", os.path.join(_nodes, "load_model.py"))
 _fbx_export = _load_module("sam3d2abc_fbx_export", os.path.join(_nodes, "fbx_export.py"))
 _video_proc = _load_module("sam3d2abc_video_proc", os.path.join(_nodes, "video_processor.py"))
 _fbx_viewer = _load_module("sam3d2abc_fbx_viewer", os.path.join(_nodes, "fbx_viewer.py"))
@@ -113,6 +77,11 @@ _camera_solver = _load_module("sam3d2abc_camera_solver", os.path.join(_nodes, "c
 _motion_analyzer = _load_module("sam3d2abc_motion_analyzer", os.path.join(_nodes, "motion_analyzer.py"))
 _character_trajectory = _load_module("sam3d2abc_character_trajectory", os.path.join(_nodes, "character_trajectory.py"))
 _temporal_smoothing = _load_module("sam3d2abc_temporal_smoothing", os.path.join(_nodes, "temporal_smoothing.py"))
+
+# Register model loader (NEW in v5.4.0 - Direct integration, no third-party wrapper needed!)
+if _load_model:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_LoadModel"] = _load_model.LoadSAM3DBodyModel
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_LoadModel"] = "🔧 Load SAM3DBody Model (Direct)"
 
 # Register FBX export nodes
 if _fbx_export:
@@ -147,6 +116,12 @@ if _camera_solver:
     
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolver"] = "📷 Camera Solver"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraDataFromJSON"] = "📷 Camera Extrinsics from JSON"
+
+# Register camera solver v2 (TAPIR-based)
+_camera_solver_v2 = _load_module("sam3d2abc_camera_solver_v2", os.path.join(_nodes, "camera_solver_v2.py"))
+if _camera_solver_v2:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraSolverV2"] = _camera_solver_v2.CameraSolverV2
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraSolverV2"] = "📷 Camera Solver V2 (TAPIR)"
 
 # Register motion analyzer nodes
 if _motion_analyzer:

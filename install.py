@@ -1,149 +1,304 @@
 #!/usr/bin/env python3
 """
-Installation script for SAM3DBody2abc
-Extension for animated export from SAM3DBody
+SAM3DBody2abc Installation Script
+
+This script helps set up the dependencies for SAM3DBody2abc:
+1. Clones Meta's SAM-3D-Body repository
+2. Installs Python dependencies
+3. Downloads model weights from HuggingFace (requires approval)
+4. Verifies installation
+
+Usage:
+    python install.py              # Interactive installation
+    python install.py --auto       # Automatic installation (skip prompts)
+    python install.py --check      # Just verify installation
+    python install.py --download   # Only download model weights
 """
 
-import subprocess
-import sys
 import os
+import sys
+import subprocess
 import shutil
+import argparse
+from pathlib import Path
 
 
-def install_package(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+def print_header(msg):
+    print(f"\n{'='*60}")
+    print(f"  {msg}")
+    print(f"{'='*60}\n")
 
 
-def check_package(package_name):
+def print_step(num, msg):
+    print(f"\n[Step {num}] {msg}")
+    print("-" * 50)
+
+
+def run_cmd(cmd, cwd=None, check=True):
+    """Run a shell command."""
+    print(f"  Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if result.returncode != 0 and check:
+        print(f"  ERROR: {result.stderr}")
+        return False
+    return True
+
+
+def find_comfyui_path():
+    """Try to find ComfyUI installation."""
+    # Check if we're in custom_nodes
+    current = Path(__file__).parent
+    if current.parent.name == "custom_nodes":
+        return current.parent.parent
+    
+    # Check common locations
+    common_paths = [
+        Path.home() / "ComfyUI",
+        Path("/workspace/ComfyUI"),
+        Path("/opt/ComfyUI"),
+        Path.cwd() / "ComfyUI",
+    ]
+    
+    for p in common_paths:
+        if (p / "custom_nodes").exists():
+            return p
+    
+    return None
+
+
+def check_sam3d_source():
+    """Check if sam_3d_body is importable."""
     try:
-        __import__(package_name)
-        return True
+        import sam_3d_body
+        return True, sam_3d_body.__file__
     except ImportError:
+        return False, None
+
+
+def check_model_files(model_path):
+    """Check if model files exist."""
+    model_path = Path(model_path)
+    ckpt = model_path / "model.ckpt"
+    mhr = model_path / "assets" / "mhr_model.pt"
+    
+    return {
+        "model.ckpt": ckpt.exists(),
+        "assets/mhr_model.pt": mhr.exists(),
+    }
+
+
+def clone_sam3d_body(target_dir):
+    """Clone Meta's SAM-3D-Body repository."""
+    target = Path(target_dir)
+    
+    if target.exists():
+        print(f"  Directory already exists: {target}")
+        return True
+    
+    target.parent.mkdir(parents=True, exist_ok=True)
+    
+    return run_cmd([
+        "git", "clone",
+        "https://github.com/facebookresearch/sam-3d-body.git",
+        str(target)
+    ])
+
+
+def install_sam3d_deps(sam3d_path):
+    """Install SAM-3D-Body dependencies."""
+    sam3d_path = Path(sam3d_path)
+    req_file = sam3d_path / "requirements.txt"
+    
+    if req_file.exists():
+        return run_cmd([
+            sys.executable, "-m", "pip", "install",
+            "-r", str(req_file)
+        ])
+    else:
+        print(f"  Warning: requirements.txt not found at {req_file}")
+        return True
+
+
+def download_model_weights(model_path):
+    """Download model weights from HuggingFace."""
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        print("  Installing huggingface_hub...")
+        run_cmd([sys.executable, "-m", "pip", "install", "huggingface-hub"])
+        from huggingface_hub import snapshot_download
+    
+    model_path = Path(model_path)
+    model_path.mkdir(parents=True, exist_ok=True)
+    
+    print(f"  Downloading to: {model_path}")
+    print("  Note: You must have requested access at:")
+    print("    https://huggingface.co/facebook/sam-3d-body-dinov3")
+    print()
+    
+    try:
+        snapshot_download(
+            repo_id="facebook/sam-3d-body-dinov3",
+            local_dir=str(model_path),
+        )
+        return True
+    except Exception as e:
+        print(f"  Download failed: {e}")
+        print()
+        print("  To download manually:")
+        print("    1. Go to https://huggingface.co/facebook/sam-3d-body-dinov3")
+        print("    2. Request access (usually approved within hours)")
+        print("    3. Download files to:", model_path)
         return False
 
 
-def main():
-    print("=" * 70)
-    print("SAM3DBody2abc Installation")
-    print("Extension for animated export from SAM3DBody")
-    print("=" * 70)
+def setup_environment(sam3d_path):
+    """Set up environment variable."""
+    sam3d_path = str(Path(sam3d_path).absolute())
     
-    # Install requirements
-    print("\n[1/5] Installing Python dependencies...")
-    requirements = [
-        ("numpy", "numpy>=1.20.0"),
-        ("trimesh", "trimesh>=3.9.0"),
-        ("scipy", "scipy>=1.7.0"),
-    ]
+    # For current session
+    os.environ["SAM3D_PATH"] = sam3d_path
     
-    for check_name, install_name in requirements:
-        if not check_package(check_name):
-            print(f"  Installing {install_name}...")
-            try:
-                install_package(install_name)
-                print(f"  ✓ {check_name} installed")
-            except Exception as e:
-                print(f"  ✗ Failed: {e}")
-        else:
-            print(f"  ✓ {check_name} already installed")
+    # Suggest permanent setup
+    shell = os.environ.get("SHELL", "/bin/bash")
+    rc_file = ".bashrc" if "bash" in shell else ".zshrc"
     
-    # Check OpenCV
-    print("\n[2/5] Checking OpenCV (for overlay rendering)...")
-    if check_package("cv2"):
-        print("  ✓ OpenCV installed")
+    print(f"  SAM3D_PATH={sam3d_path}")
+    print()
+    print(f"  To make this permanent, add to ~/{rc_file}:")
+    print(f"    export SAM3D_PATH={sam3d_path}")
+    
+    return True
+
+
+def verify_installation():
+    """Verify the installation is working."""
+    print_header("Verifying Installation")
+    
+    all_ok = True
+    
+    # Check sam_3d_body import
+    found, path = check_sam3d_source()
+    if found:
+        print(f"  ✓ sam_3d_body found at: {path}")
     else:
-        print("  Installing opencv-python...")
-        try:
-            install_package("opencv-python")
-            print("  ✓ OpenCV installed")
-        except:
-            print("  ⚠ OpenCV not installed - overlay will use fallback renderer")
+        print("  ✗ sam_3d_body NOT found")
+        print("    Set SAM3D_PATH environment variable or install via pip")
+        all_ok = False
     
-    # Check Alembic
-    print("\n[3/5] Checking Alembic support...")
-    if check_package("alembic"):
-        print("  ✓ Native PyAlembic available")
-    else:
-        print("  ℹ Native Alembic not installed")
-        print("    Export will use:")
-        print("    - Blender subprocess (if Blender installed)")
-        print("    - OBJ sequence fallback")
-        print("")
-        print("  To enable native Alembic:")
-        print("    conda install -c conda-forge alembic")
+    # Check model files
+    comfyui = find_comfyui_path()
+    if comfyui:
+        model_path = comfyui / "models" / "sam3dbody"
+        files = check_model_files(model_path)
+        
+        for name, exists in files.items():
+            if exists:
+                print(f"  ✓ {name} found")
+            else:
+                print(f"  ✗ {name} NOT found at {model_path}")
+                all_ok = False
     
     # Check Blender
-    print("\n[4/5] Checking Blender (for FBX export)...")
-    blender_paths = [
-        shutil.which("blender"),
-        "/usr/bin/blender",
-        "/usr/local/bin/blender",
-        "/Applications/Blender.app/Contents/MacOS/Blender",
-    ]
-    for v in ["4.2", "4.1", "4.0", "3.6"]:
-        blender_paths.append(f"C:\\Program Files\\Blender Foundation\\Blender {v}\\blender.exe")
-    
-    blender_found = None
-    for path in blender_paths:
-        if path and os.path.exists(path):
-            blender_found = path
-            break
-    
-    if blender_found:
-        print(f"  ✓ Blender found: {blender_found}")
+    blender = shutil.which("blender")
+    if blender:
+        print(f"  ✓ Blender found: {blender}")
     else:
-        print("  ⚠ Blender not found")
-        print("    FBX skeleton export will not be available")
-        print("    Install Blender: https://www.blender.org/download/")
+        print("  ⚠ Blender not found (needed for FBX export)")
+        print("    Install: apt install blender  OR  download from blender.org")
     
-    # Check required custom nodes
-    print("\n[5/5] Checking required ComfyUI custom nodes...")
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    custom_nodes_dir = os.path.dirname(script_dir)
+    print()
+    if all_ok:
+        print("  ✓ Installation complete! Ready to use.")
+    else:
+        print("  ⚠ Some components missing. See above for details.")
     
-    required = [
-        ("ComfyUI-SAM3DBody", "https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody"),
-    ]
-    optional = [
-        ("ComfyUI-VideoHelperSuite", "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite"),
-    ]
-    
-    for name, url in required:
-        path = os.path.join(custom_nodes_dir, name)
-        if os.path.exists(path):
-            print(f"  ✓ {name} found")
-        else:
-            print(f"  ✗ {name} NOT FOUND (REQUIRED)")
-            print(f"    Install from: {url}")
-    
-    for name, url in optional:
-        path = os.path.join(custom_nodes_dir, name)
-        if os.path.exists(path):
-            print(f"  ✓ {name} found")
-        else:
-            print(f"  ℹ {name} not found (optional, for video input)")
-            print(f"    Install from: {url}")
-    
-    # Done
-    print("\n" + "=" * 70)
-    print("Installation complete!")
-    print("=" * 70)
-    print("""
-Key Nodes Added:
-  🎬 SAM3DBody Batch Processor - Process video through SAM3DBody
-  📦 Export Animated Alembic   - Export full animation to .abc
-  🦴 Export Animated FBX       - Export skeleton animation to .fbx
-  🎨 Render Mesh Overlay       - Visualize mesh on images
+    return all_ok
 
-Basic Workflow:
-  1. Load Video (VHS) → Load SAM3DBody Model
-  2. SAM3DBody Batch Processor
-  3. Export Animated Alembic / Export Animated FBX
-  4. (Optional) Render Mesh Overlay Batch for visualization
 
-Restart ComfyUI to load the new nodes.
-""")
+def main():
+    parser = argparse.ArgumentParser(description="SAM3DBody2abc Installation")
+    parser.add_argument("--auto", action="store_true", help="Automatic installation")
+    parser.add_argument("--check", action="store_true", help="Only verify installation")
+    parser.add_argument("--download", action="store_true", help="Only download model weights")
+    parser.add_argument("--sam3d-path", type=str, help="Custom path for SAM-3D-Body source")
+    parser.add_argument("--model-path", type=str, help="Custom path for model weights")
+    args = parser.parse_args()
+    
+    print_header("SAM3DBody2abc Installation")
+    
+    # Find ComfyUI
+    comfyui = find_comfyui_path()
+    if comfyui:
+        print(f"Found ComfyUI at: {comfyui}")
+    else:
+        print("Warning: Could not find ComfyUI installation")
+        comfyui = Path.cwd()
+    
+    # Set default paths
+    sam3d_path = args.sam3d_path or str(comfyui / "custom_nodes" / "sam-3d-body")
+    model_path = args.model_path or str(comfyui / "models" / "sam3dbody")
+    
+    if args.check:
+        return 0 if verify_installation() else 1
+    
+    if args.download:
+        print_step(1, "Downloading Model Weights")
+        success = download_model_weights(model_path)
+        return 0 if success else 1
+    
+    # Full installation
+    print_step(1, "Clone SAM-3D-Body Repository")
+    print(f"  Target: {sam3d_path}")
+    
+    if not args.auto:
+        response = input("  Continue? [Y/n]: ").strip().lower()
+        if response == 'n':
+            print("  Skipped.")
+        else:
+            clone_sam3d_body(sam3d_path)
+    else:
+        clone_sam3d_body(sam3d_path)
+    
+    print_step(2, "Install Dependencies")
+    if Path(sam3d_path).exists():
+        install_sam3d_deps(sam3d_path)
+    
+    print_step(3, "Set Up Environment")
+    setup_environment(sam3d_path)
+    
+    print_step(4, "Download Model Weights")
+    print(f"  Target: {model_path}")
+    print()
+    print("  IMPORTANT: Model download requires HuggingFace account and")
+    print("  access approval for facebook/sam-3d-body-dinov3")
+    print()
+    
+    if not args.auto:
+        response = input("  Attempt download now? [y/N]: ").strip().lower()
+        if response == 'y':
+            download_model_weights(model_path)
+        else:
+            print("  Skipped. Download manually later with:")
+            print(f"    python install.py --download --model-path {model_path}")
+    
+    print_step(5, "Verify Installation")
+    verify_installation()
+    
+    print()
+    print_header("Next Steps")
+    print("1. If model download failed, request access at:")
+    print("   https://huggingface.co/facebook/sam-3d-body-dinov3")
+    print()
+    print("2. Set SAM3D_PATH permanently:")
+    print(f"   export SAM3D_PATH={sam3d_path}")
+    print()
+    print("3. Restart ComfyUI and look for the new node:")
+    print("   '🔧 Load SAM3DBody Model (Direct)'")
+    print()
+    
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

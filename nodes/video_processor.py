@@ -271,99 +271,63 @@ class VideoBatchProcessor:
             mask_frames = active_mask.shape[0] if hasattr(active_mask, 'shape') and active_mask.ndim >= 1 else 1
             log.info(f"Using per-frame masks ({mask_frames} masks available)")
         
-        # Handle different SAM3D_MODEL formats
-        # The SAM3D_MODEL type comes from ComfyUI-SAM3DBody "Load SAM3DBody Model" node
-        # Format may vary depending on the wrapper version
-        log.info(f"Model input type: {type(model)}")
+        # Load SAM3D model from config dict
+        # Expected format from "Load SAM3DBody Model (Direct)" node:
+        # {ckpt_path, mhr_path, device, model_path, _loader}
+        log.info(f"Model config type: {type(model)}")
         
-        sam_3d_model = None
-        model_cfg = None
-        mhr_path = None
+        if not isinstance(model, dict):
+            raise TypeError(
+                f"SAM3D_MODEL must be a dict from 'Load SAM3DBody Model (Direct)' node. "
+                f"Got: {type(model)}"
+            )
         
-        if isinstance(model, dict):
-            log.info(f"Model dict keys: {list(model.keys())}")
-            
-            # NEW FORMAT: Dict contains paths, not loaded model
-            # Keys: model_path, ckpt_path, mhr_path, device
-            if "ckpt_path" in model or "model_path" in model:
-                log.info("Detected path-based SAM3D_MODEL format - loading model...")
-                
-                # Get paths
-                ckpt_path = model.get("ckpt_path") or model.get("model_path")
-                mhr_path = model.get("mhr_path", "")
-                device = model.get("device", "cuda")
-                
-                if not ckpt_path:
-                    raise ValueError("SAM3D_MODEL missing checkpoint path (ckpt_path or model_path)")
-                
-                log.info(f"Loading model from: {ckpt_path}")
-                log.info(f"MHR path: {mhr_path}")
-                log.info(f"Device: {device}")
-                
-                # Load the model using SAM3DBody's build function
-                from sam_3d_body import load_sam_3d_body
-                
-                # Handle different return signatures from load_sam_3d_body
-                # Some versions return (model, cfg), others return (model, cfg, extra...)
-                result = load_sam_3d_body(
-                    checkpoint_path=ckpt_path,
-                    device=device,
-                    mhr_path=mhr_path
-                )
-                
-                if isinstance(result, tuple):
-                    sam_3d_model = result[0]
-                    model_cfg = result[1] if len(result) > 1 else None
-                    log.info(f"Model loaded (returned {len(result)} values)")
-                else:
-                    sam_3d_model = result
-                    model_cfg = None
-                    log.info("Model loaded (single return value)")
-                
-                log.info("Model loaded successfully!")
-            
-            # OLD FORMAT: Dict contains actual model object
-            else:
-                # Try common key names for pre-loaded model
-                for key in ["model", "sam_3d_body_model", "sam3d_model", "sam_3d_body"]:
-                    if key in model:
-                        sam_3d_model = model[key]
-                        log.info(f"Found pre-loaded model at key: '{key}'")
-                        break
-                
-                # Check for config
-                for key in ["model_cfg", "cfg", "config"]:
-                    if key in model:
-                        model_cfg = model[key]
-                        break
-                
-                # Check for MHR path
-                for key in ["mhr_path", "model_path", "mhr_model_path"]:
-                    if key in model:
-                        mhr_path = model[key]
-                        break
-                
-                if sam_3d_model is None:
-                    # Maybe the dict values themselves contain the model
-                    log.info(f"Inspecting dict values...")
-                    for k, v in model.items():
-                        log.info(f"  {k}: {type(v)}")
-                        if hasattr(v, 'eval') and callable(getattr(v, 'eval')):
-                            sam_3d_model = v
-                            break
-                    
-                    if sam_3d_model is None:
-                        log.error(f"SAM3D_MODEL dict has unexpected keys: {list(model.keys())}")
-                        raise KeyError(f"SAM3D_MODEL must contain model or paths. Got keys: {list(model.keys())}")
+        log.info(f"Model config keys: {list(model.keys())}")
         
-        elif hasattr(model, 'eval') and callable(getattr(model, 'eval')):
-            # Model passed directly
-            sam_3d_model = model
-            log.info("SAM3D_MODEL passed as direct model object")
+        # Get paths from config
+        ckpt_path = model.get("ckpt_path") or model.get("model_path")
+        mhr_path = model.get("mhr_path", "")
+        device = model.get("device", "cuda")
         
+        if not ckpt_path:
+            raise ValueError(
+                "SAM3D_MODEL missing checkpoint path. "
+                "Use the 'Load SAM3DBody Model (Direct)' node to load the model."
+            )
+        
+        log.info(f"Loading SAM-3D-Body model...")
+        log.info(f"  Checkpoint: {ckpt_path}")
+        log.info(f"  MHR model: {mhr_path}")
+        log.info(f"  Device: {device}")
+        
+        # Import and load the model
+        try:
+            from sam_3d_body import load_sam_3d_body
+        except ImportError as e:
+            raise ImportError(
+                f"Could not import sam_3d_body. Please install Meta's SAM-3D-Body:\n"
+                f"  1. git clone https://github.com/facebookresearch/sam-3d-body\n"
+                f"  2. Set SAM3D_PATH environment variable to the cloned directory\n"
+                f"  3. Or: pip install -e /path/to/sam-3d-body\n"
+                f"Original error: {e}"
+            )
+        
+        # Load the model
+        result = load_sam_3d_body(
+            checkpoint_path=ckpt_path,
+            device=device,
+            mhr_path=mhr_path
+        )
+        
+        # Handle different return signatures
+        if isinstance(result, tuple):
+            sam_3d_model = result[0]
+            model_cfg = result[1] if len(result) > 1 else None
+            log.info(f"Model loaded (returned {len(result)} values)")
         else:
-            log.error(f"Unexpected model type: {type(model)}")
-            raise TypeError(f"SAM3D_MODEL has unexpected type: {type(model)}")
+            sam_3d_model = result
+            model_cfg = None
+            log.info("Model loaded successfully!")
         
         estimator = SAM3DBodyEstimator(
             sam_3d_body_model=sam_3d_model,

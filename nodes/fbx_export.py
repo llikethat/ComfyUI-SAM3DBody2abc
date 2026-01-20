@@ -9,10 +9,6 @@ The exported FBX contains:
 Settings:
 - skeleton_mode: "Rotations" uses true joint rotations from MHR model
                  "Positions" uses joint positions (legacy)
-
-Export Methods:
-- Primary: Direct bpy module (no external Blender needed) - requires Python 3.11 + bpy
-- Fallback: Blender subprocess (requires blender installation)
 """
 
 import os
@@ -21,55 +17,10 @@ import subprocess
 import shutil
 import glob
 import tempfile
-import sys
 import numpy as np
 import torch
 from typing import Dict, Tuple, Any, Optional
 import folder_paths
-
-# Try to import bpy exporter module
-BPY_AVAILABLE = False
-BPY_INSTALL_HELP = """
-To enable direct bpy export (no Blender subprocess needed):
-
-1. Check your Python version: python --version
-   - bpy 4.1+ requires Python 3.11.x EXACTLY
-   - bpy 4.0.0 requires Python 3.10.x EXACTLY
-
-2. Install bpy for your Python version:
-   
-   For Python 3.11:
-     pip install bpy
-   
-   For Python 3.10:
-     pip install bpy==4.0.0
-
-3. Alternative: Use Blender subprocess (current method)
-   Install Blender 4.2:
-     cd /workspace
-     wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
-     tar -xf blender-4.2.0-linux-x64.tar.xz
-     ln -sf /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender
-"""
-
-try:
-    from ..lib.bpy_exporter import export_animated_fbx, is_bpy_available
-    BPY_AVAILABLE = is_bpy_available()
-    if BPY_AVAILABLE:
-        print("[FBX Export] ✓ bpy module available - direct export enabled (no Blender subprocess needed)")
-    else:
-        print(f"[FBX Export] bpy module imported but not functional (Python {sys.version_info.major}.{sys.version_info.minor})")
-        print("[FBX Export] Will use Blender subprocess for export")
-except ImportError as e:
-    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    print(f"[FBX Export] bpy module not available (Python {py_ver})")
-    if sys.version_info >= (3, 12):
-        print("[FBX Export] ⚠️  Python 3.12+ not supported by bpy - must use Blender subprocess")
-    elif sys.version_info < (3, 10):
-        print("[FBX Export] ⚠️  Python < 3.10 not supported by bpy - must use Blender subprocess")
-    else:
-        print(f"[FBX Export] Install bpy with: pip install bpy" + ("==4.0.0" if sys.version_info.minor == 10 else ""))
-    print("[FBX Export] Will use Blender subprocess for export")
 
 # Import version and logger from package
 try:
@@ -173,17 +124,7 @@ def find_blender() -> Optional[str]:
         "/Applications/Blender.app/Contents/MacOS/Blender",
     ]
     
-    # Check SAM3DBody bundled Blender (old location)
-    if custom_nodes:
-        patterns = [
-            os.path.join(custom_nodes, "ComfyUI-SAM3DBody", "lib", "blender", "blender-*-linux-x64", "blender"),
-            os.path.join(custom_nodes, "ComfyUI-SAM3DBody", "lib", "blender", "*", "blender"),
-        ]
-        for pattern in patterns:
-            matches = glob.glob(pattern)
-            locations.extend(matches)
-    
-    # Check SAM3DBody2abc bundled Blender (our own location)
+    # Check SAM3DBody2abc bundled Blender
     if custom_nodes:
         our_blender_dir = os.path.join(custom_nodes, "ComfyUI-SAM3DBody2abc", "blender")
         patterns = [
@@ -789,43 +730,20 @@ class ExportAnimatedFBX:
             blender_exe = find_blender()
         
         log.info(f"Blender path: {blender_exe}")
-        if not blender_exe and not BPY_AVAILABLE:
-            python_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-            
-            # Python 3.12+ specific message
-            if sys.version_info >= (3, 12):
-                bpy_note = f"""
-  ⚠️  Your Python {python_ver} is NOT supported by bpy module.
-  bpy only works with Python 3.10.x or 3.11.x (exact version match required).
-  
-  → You MUST use Blender subprocess method (Option 2 below)."""
-            else:
-                bpy_note = f"""
-  For Python 3.11.x: pip install bpy
-  For Python 3.10.x: pip install bpy==4.0.0
-  
-  Note: bpy requires EXACT Python version match."""
-            
-            error_msg = f"""Error: No export method available!
+        if not blender_exe:
+            error_msg = """Error: Blender not found!
 
-OPTION 1: Install bpy Python module (faster, no Blender needed)
-  Your Python: {python_ver}
-  {bpy_note}
-
-OPTION 2: Install Blender (works with any Python version):
+To install Blender on RunPod/Linux:
   cd /workspace
   wget https://download.blender.org/release/Blender4.2/blender-4.2.0-linux-x64.tar.xz
   tar -xf blender-4.2.0-linux-x64.tar.xz
   ln -sf /workspace/blender-4.2.0-linux-x64/blender /usr/local/bin/blender
 
-OPTION 3: Specify Blender path in the blender_path input."""
+Or specify the path in the blender_path input."""
             log.info(error_msg)
-            return ("", "Error: No export method available. See console for installation instructions.", 0, fps)
+            return ("", "Error: Blender not found. See console for installation instructions.", 0, fps)
         
-        # If bpy is not available but blender_exe is also not found, we already returned above
-        # If blender_exe is None but BPY_AVAILABLE is True, we'll use bpy (handled later)
-        
-        if not os.path.exists(BLENDER_SCRIPT) and not BPY_AVAILABLE:
+        if not os.path.exists(BLENDER_SCRIPT):
             log.info(f"Script not found: {BLENDER_SCRIPT}")
             return ("", f"Error: Script not found: {BLENDER_SCRIPT}", 0, fps)
         
@@ -879,7 +797,7 @@ OPTION 3: Specify Blender path in the blender_path input."""
         
         if use_rotations and not has_rotations:
             log.info(" Warning: Rotation mode requested but no rotation data available. Falling back to positions.")
-            log.info(" Note: Make sure you're using a recent version of ComfyUI-SAM3DBody that outputs joint_rotations.")
+            log.info(" Note: joint_rotations requires full MHR model inference.")
             use_rotations = False
         else:
             log.info(f"Rotation data available: {has_rotations}, using rotations: {use_rotations}")
@@ -1065,61 +983,6 @@ OPTION 3: Specify Blender path in the blender_path input."""
                 frame_data["joint_rotations"] = to_list(frame.get("joint_rotations"))
             export_data["frames"].append(frame_data)
         
-        format_name = "Alembic" if use_alembic else "FBX"
-        skel_mode_str = "rotations" if use_rotations else "positions"
-        log.info(f"Exporting {len(sorted_indices)} frames as {format_name}")
-        log.info(f"Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
-        log.info(f"Output path: {output_path}")
-        
-        # =====================================================================
-        # EXPORT METHOD SELECTION
-        # Try bpy module first (no external Blender needed), fall back to subprocess
-        # =====================================================================
-        
-        if BPY_AVAILABLE:
-            # PRIMARY METHOD: Direct bpy export (faster, no subprocess overhead)
-            log.info("Using direct bpy export (no Blender subprocess needed)")
-            try:
-                result = export_animated_fbx(
-                    export_data=export_data,
-                    output_path=output_path,
-                    up_axis=up_axis,
-                    include_mesh=include_mesh,
-                    include_camera=include_camera
-                )
-                
-                if result.get("status") == "success":
-                    file_size_mb = result.get("file_size_mb", 0)
-                    
-                    status = f"Exported {len(sorted_indices)} frames as {format_name} (up={up_axis}, skeleton={skel_mode_str})"
-                    if not include_mesh:
-                        status += " skeleton only"
-                    if include_camera:
-                        status += " +camera"
-                    status += " [bpy direct]"
-                    
-                    log.info("=" * 60)
-                    log.info(f"SUCCESS!")
-                    log.info(f"{status}")
-                    log.info(f"File: {output_path}")
-                    log.info(f"Size: {file_size_mb:.2f} MB")
-                    log.info("=" * 60)
-                    
-                    return (output_path, status, len(sorted_indices), fps)
-                else:
-                    error_msg = result.get("message", "Unknown error")
-                    log.warn(f"bpy export failed: {error_msg}")
-                    log.info("Falling back to Blender subprocess...")
-                    # Fall through to subprocess method
-                    
-            except Exception as e:
-                log.warn(f"bpy export exception: {str(e)}")
-                log.info("Falling back to Blender subprocess...")
-                # Fall through to subprocess method
-        
-        # FALLBACK METHOD: Blender subprocess (requires external Blender installation)
-        log.info("Using Blender subprocess export")
-        
         # Write temp JSON
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(export_data, f)
@@ -1137,6 +1000,12 @@ OPTION 3: Specify Blender path in the blender_path input."""
                 "1" if include_mesh else "0",
                 "1" if include_camera else "0",
             ]
+            
+            format_name = "Alembic" if use_alembic else "FBX"
+            skel_mode_str = "rotations" if use_rotations else "positions"
+            log.info(f"Exporting {len(sorted_indices)} frames as {format_name}")
+            log.info(f"Settings: up={up_axis}, translation={translation_mode}, skeleton={skel_mode_str}, camera={include_camera}")
+            log.info(f"Output path: {output_path}")
             
             # Map log_level to environment variable for Blender subprocess
             level_to_env = {
@@ -1194,7 +1063,6 @@ OPTION 3: Specify Blender path in the blender_path input."""
                 status += " skeleton only"
             if include_camera:
                 status += " +camera"
-            status += " [subprocess]"
             
             log.info("=" * 60)
             log.info(f"SUCCESS!")

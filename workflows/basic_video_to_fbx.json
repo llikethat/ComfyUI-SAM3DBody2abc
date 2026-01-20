@@ -1,0 +1,58 @@
+{
+  "last_node_id": 5,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [100, 200],
+      "size": [300, 200],
+      "properties": {},
+      "widgets_values": ["input/your_video.mp4", 0, false, 0, 0, 24]
+    },
+    {
+      "id": 2,
+      "type": "SAM3DBody2abc_LoadModel",
+      "pos": [100, 450],
+      "size": [300, 150],
+      "properties": {},
+      "widgets_values": ["models/sam3dbody", "cuda", ""]
+    },
+    {
+      "id": 3,
+      "type": "SAM3DBody2abc_VideoBatchProcessor",
+      "pos": [450, 300],
+      "size": [300, 250],
+      "properties": {},
+      "inputs": [
+        {"name": "model", "type": "SAM3D_MODEL", "link": 1},
+        {"name": "images", "type": "IMAGE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "MESH_SEQUENCE", "type": "MESH_SEQUENCE", "links": [3]}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
+      "pos": [800, 300],
+      "size": [350, 400],
+      "properties": {},
+      "inputs": [
+        {"name": "mesh_sequence", "type": "MESH_SEQUENCE", "link": 3}
+      ],
+      "widgets_values": ["my_animation", 24.0, 1, "FBX", "Y", "Rotations (Recommended)"]
+    }
+  ],
+  "links": [
+    [1, 2, 0, 3, 0, "SAM3D_MODEL"],
+    [2, 1, 0, 3, 1, "IMAGE"],
+    [3, 3, 0, 4, 0, "MESH_SEQUENCE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "info": "Basic Video to FBX workflow for SAM3DBody2abc v5.4.0. Paste your HuggingFace token in the Load Model node on first run."
+  },
+  "version": 0.4
+}
