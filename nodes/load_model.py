@@ -142,6 +142,8 @@ def install_sam3d_dependencies(sam3d_path: str):
         "einops",
         "timm",
         "scipy",
+        "roma",  # Rotation library used by SAM-3D-Body
+        "yacs",  # Config library used by SAM-3D-Body
     ]
     
     try:
@@ -170,7 +172,7 @@ def install_sam3d_dependencies(sam3d_path: str):
         log.info("Dependencies installed successfully!")
     except Exception as e:
         log.warn(f"Some dependencies may not have installed: {e}")
-        log.warn("You may need to manually install: pip install braceexpand omegaconf hydra-core")
+        log.warn("You may need to manually install: pip install braceexpand omegaconf hydra-core roma yacs")
 
 
 def download_model_weights(model_path: str, hf_token: str = "") -> bool:
@@ -503,6 +505,12 @@ class LoadSAM3DBodyModel:
             if "timm" in error_msg:
                 log.info("Installing missing dependency: timm")
                 subprocess.run([sys.executable, "-m", "pip", "install", "timm"], capture_output=True)
+            if "roma" in error_msg:
+                log.info("Installing missing dependency: roma")
+                subprocess.run([sys.executable, "-m", "pip", "install", "roma"], capture_output=True)
+            if "yacs" in error_msg:
+                log.info("Installing missing dependency: yacs")
+                subprocess.run([sys.executable, "-m", "pip", "install", "yacs"], capture_output=True)
             
             # Try import again
             try:
@@ -512,7 +520,7 @@ class LoadSAM3DBodyModel:
                 raise ImportError(
                     f"Could not import sam_3d_body.\n\n"
                     f"Missing dependency or automatic clone failed.\n"
-                    f"Try running: pip install braceexpand omegaconf hydra-core einops timm\n\n"
+                    f"Try running: pip install braceexpand omegaconf hydra-core einops timm roma yacs\n\n"
                     f"If that doesn't work, manually run:\n"
                     f"  git clone https://github.com/facebookresearch/sam-3d-body.git\n"
                     f"  pip install -r sam-3d-body/requirements.txt\n"

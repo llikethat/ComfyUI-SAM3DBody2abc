@@ -32,6 +32,8 @@ pytorch-lightning
 einops
 timm
 huggingface-hub
+roma
+yacs
 
 # ============================================
 # FEATURE MATCHING (Optional - Recommended)
