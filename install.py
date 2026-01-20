@@ -235,8 +235,9 @@ def main():
         print("Warning: Could not find ComfyUI installation")
         comfyui = Path.cwd()
     
-    # Set default paths
-    sam3d_path = args.sam3d_path or str(comfyui / "custom_nodes" / "sam-3d-body")
+    # Set default paths - sam-3d-body goes INSIDE our extension folder
+    our_extension = Path(__file__).parent  # ComfyUI-SAM3DBody2abc folder
+    sam3d_path = args.sam3d_path or str(our_extension / "sam-3d-body")
     model_path = args.model_path or str(comfyui / "models" / "sam3dbody")
     
     if args.check:
