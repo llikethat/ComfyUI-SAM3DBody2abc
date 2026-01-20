@@ -936,6 +936,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     Create mesh with per-vertex animation using shape keys.
     
     v5.4.0: Simplified - SAM3DBody outputs mesh and skeleton in same coordinate space.
+    Mesh origin is set to joint[0] (pelvis) to match skeleton root.
     """
     first_verts = all_frames[0].get("vertices")
     if not first_verts:
@@ -947,11 +948,19 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
         first_cam_t = all_frames[0].get("pred_cam_t")
         first_world_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
     
-    # Create mesh with first frame vertices
+    # Set mesh origin to joint[0] (pelvis) to match skeleton root
+    origin_offset = Vector((0, 0, 0))
+    first_joints = all_frames[0].get("joint_coords")
+    if first_joints is not None and len(first_joints) > 0:
+        pelvis_pos = first_joints[0]
+        origin_offset = Vector(transform_func(pelvis_pos))
+        log.info(f"Mesh origin set to pelvis (joint[0]): {origin_offset}")
+    
+    # Create mesh with first frame vertices, offset so origin is at pelvis
     mesh = bpy.data.meshes.new("body_mesh")
     verts = []
     for v in first_verts:
-        pos = Vector(transform_func(v))
+        pos = Vector(transform_func(v)) - origin_offset
         if world_translation_mode == "baked":
             pos += first_world_offset
         verts.append(pos)
@@ -966,6 +975,10 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     bpy.context.collection.objects.link(obj)
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
+    
+    # Set object location to compensate for the origin offset
+    # This keeps the mesh visually in the same world position
+    obj.location = origin_offset
     
     # Add basis shape key
     basis = obj.shape_key_add(name="Basis", from_mix=False)
@@ -988,7 +1001,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
         
         for j, v in enumerate(frame_verts):
             if j < len(sk.data):
-                pos = Vector(transform_func(v))
+                pos = Vector(transform_func(v)) - origin_offset
                 if world_translation_mode == "baked":
                     pos += frame_world_offset
                 sk.data[j].co = pos
