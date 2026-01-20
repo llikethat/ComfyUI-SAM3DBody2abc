@@ -21,7 +21,7 @@
     },
     {
       "id": 2,
-      "type": "LoadSAM3DBodyModel",
+      "type": "SAM3DBody2abc_LoadModel",
       "pos": [50, 450],
       "size": {"0": 315, "1": 82},
       "flags": {},
@@ -31,11 +31,11 @@
         {"name": "SAM3D_MODEL", "type": "SAM3D_MODEL", "links": [2], "slot_index": 0}
       ],
       "title": "🧍 Load SAM 3D Body Model",
-      "properties": {"Node name for S&R": "LoadSAM3DBodyModel"}
+      "properties": {"Node name for S&R": "SAM3DBody2abc_LoadModel"}
     },
     {
       "id": 3,
-      "type": "SAM3DBody2abc_BatchProcess",
+      "type": "SAM3DBody2abc_VideoBatchProcessor",
       "pos": [450, 150],
       "size": {"0": 400, "1": 350},
       "flags": {},
@@ -53,12 +53,12 @@
         {"name": "status", "type": "STRING", "links": [5]}
       ],
       "title": "🎬 Batch Process",
-      "properties": {"Node name for S&R": "SAM3DBody2abc_BatchProcess"},
+      "properties": {"Node name for S&R": "SAM3DBody2abc_VideoBatchProcessor"},
       "widgets_values": [0.8, "full", 0.5, 3, 0, -1, 1]
     },
     {
       "id": 4,
-      "type": "SAM3DBody2abc_ExportFBXDirect",
+      "type": "SAM3DBody2abc_ExportAnimatedFBX",
       "pos": [950, 150],
       "size": {"0": 350, "1": 160},
       "flags": {},
@@ -73,7 +73,7 @@
         {"name": "frame_count", "type": "INT", "links": null}
       ],
       "title": "📦 Export FBX Direct",
-      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportFBXDirect"},
+      "properties": {"Node name for S&R": "SAM3DBody2abc_ExportAnimatedFBX"},
       "widgets_values": ["animation", 24.0, "", true]
     },
     {

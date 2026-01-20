@@ -33,7 +33,7 @@
     },
     {
       "id": 3,
-      "type": "LoadSAM3DBodyModel",
+      "type": "SAM3DBody2abc_LoadModel",
       "pos": [50, 580],
       "size": [315, 82],
       "flags": {},

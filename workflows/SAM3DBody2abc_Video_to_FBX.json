@@ -6,7 +6,7 @@
   "nodes": [
     {
       "id": 8,
-      "type": "LoadSAM3DBodyModel",
+      "type": "SAM3DBody2abc_LoadModel",
       "pos": [
         935.10546875,
         108.38394927978516
@@ -31,7 +31,7 @@
       "properties": {
         "cnr_id": "ComfyUI-SAM3DBody",
         "ver": "938d45782ceee7f0e967a0cbfdffc96ddd880f01",
-        "Node name for S&R": "LoadSAM3DBodyModel",
+        "Node name for S&R": "SAM3DBody2abc_LoadModel",
         "aux_id": "PozzettiAndrea/ComfyUI-SAM3DBody"
       },
       "widgets_values": [

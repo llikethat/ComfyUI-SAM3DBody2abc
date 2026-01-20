@@ -22,6 +22,18 @@ einshape
 kornia
 
 # ============================================
+# SAM-3D-Body DEPENDENCIES (Required)
+# ============================================
+# These are needed by Meta's SAM-3D-Body model
+braceexpand
+omegaconf
+hydra-core
+pytorch-lightning
+einops
+timm
+huggingface-hub
+
+# ============================================
 # FEATURE MATCHING (Optional - Recommended)
 # ============================================
 # Auto-downloads models on first use

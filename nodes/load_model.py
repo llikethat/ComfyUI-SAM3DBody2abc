@@ -48,8 +48,9 @@ def find_sam3d_path() -> Optional[str]:
     
     Checks in order:
     1. SAM3D_PATH environment variable
-    2. Common installation locations
-    3. Already installed via pip
+    2. Inside our own extension folder (ComfyUI-SAM3DBody2abc/sam-3d-body)
+    3. Common installation locations
+    4. Already installed via pip
     """
     # Check if already importable
     try:
@@ -65,6 +66,11 @@ def find_sam3d_path() -> Optional[str]:
         if os.path.exists(sam_module):
             return env_path
     
+    # Check inside our extension folder FIRST (most common case)
+    our_sam3d = os.path.join(CUSTOM_NODES_PATH, "sam-3d-body")
+    if os.path.exists(os.path.join(our_sam3d, "sam_3d_body")):
+        return our_sam3d
+    
     # Check common locations
     common_paths = [
         os.path.expanduser("~/sam-3d-body"),
@@ -73,9 +79,9 @@ def find_sam3d_path() -> Optional[str]:
         "/workspace/sam-3d-body",
     ]
     
-    # Check relative to this file (in case user put it in custom_nodes)
+    # Check sibling to custom_nodes
     try:
-        custom_nodes = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        custom_nodes = os.path.dirname(CUSTOM_NODES_PATH)
         common_paths.append(os.path.join(custom_nodes, "sam-3d-body"))
     except:
         pass
@@ -89,9 +95,11 @@ def find_sam3d_path() -> Optional[str]:
 
 
 def clone_sam3d_body(target_dir: str) -> bool:
-    """Clone Meta's SAM-3D-Body repository."""
+    """Clone Meta's SAM-3D-Body repository and install dependencies."""
     if os.path.exists(target_dir):
         log.info(f"SAM-3D-Body already exists at: {target_dir}")
+        # Still need to ensure dependencies are installed
+        install_sam3d_dependencies(target_dir)
         return True
     
     log.info(f"Cloning SAM-3D-Body to: {target_dir}")
@@ -106,6 +114,8 @@ def clone_sam3d_body(target_dir: str) -> bool:
         )
         if result.returncode == 0:
             log.info("SAM-3D-Body cloned successfully!")
+            # Install dependencies
+            install_sam3d_dependencies(target_dir)
             return True
         else:
             log.error(f"Git clone failed: {result.stderr}")
@@ -119,6 +129,50 @@ def clone_sam3d_body(target_dir: str) -> bool:
     except Exception as e:
         log.error(f"Failed to clone: {e}")
         return False
+
+
+def install_sam3d_dependencies(sam3d_path: str):
+    """Install sam-3d-body's Python dependencies."""
+    log.info("Installing SAM-3D-Body dependencies...")
+    
+    # Core dependencies that sam-3d-body needs
+    core_deps = [
+        "braceexpand",
+        "omegaconf",
+        "hydra-core",
+        "pytorch-lightning",
+        "einops",
+        "timm",
+        "scipy",
+    ]
+    
+    try:
+        # Install core dependencies first
+        for dep in core_deps:
+            try:
+                __import__(dep.replace("-", "_"))
+            except ImportError:
+                log.info(f"Installing {dep}...")
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", dep, "--quiet"],
+                    capture_output=True,
+                    timeout=120,
+                )
+        
+        # Check for requirements.txt in sam-3d-body
+        req_file = os.path.join(sam3d_path, "requirements.txt")
+        if os.path.exists(req_file):
+            log.info("Installing from requirements.txt...")
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"],
+                capture_output=True,
+                timeout=300,
+            )
+        
+        log.info("Dependencies installed successfully!")
+    except Exception as e:
+        log.warn(f"Some dependencies may not have installed: {e}")
+        log.warn("You may need to manually install: pip install braceexpand omegaconf hydra-core")
 
 
 def download_model_weights(model_path: str, hf_token: str = "") -> bool:
@@ -268,49 +322,46 @@ class LoadSAM3DBodyModel:
         """
         import torch
         
+        log.info("=" * 50)
+        log.info("  Loading SAM-3D-Body Model")
+        log.info("=" * 50)
+        
         # Override device if CUDA not available
         if device == "cuda" and not torch.cuda.is_available():
             log.warn("CUDA not available, falling back to CPU")
             device = "cpu"
         
-        # Step 1: Ensure SAM-3D-Body source code is available (auto-clone if needed)
-        sam3d_path = ensure_sam3d_available()
-        if sam3d_path and sam3d_path not in sys.path:
-            sys.path.insert(0, sam3d_path)
-        
-        # Verify sam_3d_body is importable
-        try:
-            import sam_3d_body
-            log.info(f"sam_3d_body module loaded from: {os.path.dirname(sam_3d_body.__file__)}")
-        except ImportError as e:
-            raise ImportError(
-                f"Could not import sam_3d_body.\n\n"
-                f"Automatic clone may have failed. Please manually run:\n"
-                f"  git clone https://github.com/facebookresearch/sam-3d-body.git\n"
-                f"  export SAM3D_PATH=/path/to/sam-3d-body\n\n"
-                f"Original error: {e}"
-            )
-        
-        # Step 2: Check/download model weights
+        # Step 1: Check/download model weights FIRST (before importing sam_3d_body)
+        # This way users can see download progress even if dependencies are missing
         model_path = os.path.abspath(os.path.expanduser(model_path))
         ckpt_path = os.path.join(model_path, "model.ckpt")
         mhr_path = os.path.join(model_path, "assets", "mhr_model.pt")
         
+        log.info(f"Model path: {model_path}")
+        log.info(f"Checkpoint: {ckpt_path}")
+        log.info(f"MHR model: {mhr_path}")
+        
         # Check if files exist
         need_download = False
         if not os.path.exists(ckpt_path):
-            log.info(f"Model checkpoint not found: {ckpt_path}")
+            log.info(f"Model checkpoint not found!")
             need_download = True
+        else:
+            log.info(f"Model checkpoint found: {os.path.getsize(ckpt_path) / 1e9:.2f} GB")
+            
         if not os.path.exists(mhr_path):
-            log.info(f"MHR model not found: {mhr_path}")
+            log.info(f"MHR model not found!")
             need_download = True
+        else:
+            log.info(f"MHR model found: {os.path.getsize(mhr_path) / 1e6:.1f} MB")
         
         if need_download:
             log.info("")
             log.info("=" * 50)
-            log.info("  FIRST RUN: Downloading model weights...")
+            log.info("  DOWNLOADING MODEL WEIGHTS...")
             log.info("=" * 50)
             log.info("")
+            log.info(f"HF Token provided: {'Yes' if hf_token else 'No'}")
             
             success = download_model_weights(model_path, hf_token)
             
@@ -330,10 +381,64 @@ class LoadSAM3DBodyModel:
                         "To fix this:\n"
                         "1. Go to: https://huggingface.co/facebook/sam-3d-body-dinov3\n"
                         "2. Click 'Request access' (free, usually approved within hours)\n"
-                        "3. Run: huggingface-cli login\n"
-                        "4. Restart ComfyUI and try again\n\n"
+                        "3. Get token from: https://huggingface.co/settings/tokens\n"
+                        "4. Paste token in 'hf_token' field of this node\n"
+                        "5. Restart ComfyUI and try again\n\n"
                         f"Or manually download to: {model_path}"
                     )
+        
+        # Step 2: Ensure SAM-3D-Body source code is available (auto-clone if needed)
+        log.info("")
+        log.info("Checking SAM-3D-Body source code...")
+        sam3d_path = ensure_sam3d_available()
+        if sam3d_path and sam3d_path not in sys.path:
+            log.info(f"Adding to path: {sam3d_path}")
+            sys.path.insert(0, sam3d_path)
+            # Install dependencies if this is a fresh clone
+            install_sam3d_dependencies(sam3d_path)
+        
+        # Step 3: Verify sam_3d_body is importable
+        log.info("")
+        log.info("Importing sam_3d_body...")
+        try:
+            import sam_3d_body
+            log.info(f"sam_3d_body module loaded from: {os.path.dirname(sam_3d_body.__file__)}")
+        except ImportError as e:
+            error_msg = str(e)
+            log.warn(f"Import error: {error_msg}")
+            
+            # Check for specific missing dependencies
+            if "braceexpand" in error_msg:
+                log.info("Installing missing dependency: braceexpand")
+                subprocess.run([sys.executable, "-m", "pip", "install", "braceexpand"], capture_output=True)
+            if "omegaconf" in error_msg:
+                log.info("Installing missing dependency: omegaconf")
+                subprocess.run([sys.executable, "-m", "pip", "install", "omegaconf"], capture_output=True)
+            if "hydra" in error_msg:
+                log.info("Installing missing dependency: hydra-core")
+                subprocess.run([sys.executable, "-m", "pip", "install", "hydra-core"], capture_output=True)
+            if "einops" in error_msg:
+                log.info("Installing missing dependency: einops")
+                subprocess.run([sys.executable, "-m", "pip", "install", "einops"], capture_output=True)
+            if "timm" in error_msg:
+                log.info("Installing missing dependency: timm")
+                subprocess.run([sys.executable, "-m", "pip", "install", "timm"], capture_output=True)
+            
+            # Try import again
+            try:
+                import sam_3d_body
+                log.info(f"sam_3d_body module loaded after installing dependencies")
+            except ImportError as e2:
+                raise ImportError(
+                    f"Could not import sam_3d_body.\n\n"
+                    f"Missing dependency or automatic clone failed.\n"
+                    f"Try running: pip install braceexpand omegaconf hydra-core einops timm\n\n"
+                    f"If that doesn't work, manually run:\n"
+                    f"  git clone https://github.com/facebookresearch/sam-3d-body.git\n"
+                    f"  pip install -r sam-3d-body/requirements.txt\n"
+                    f"  export SAM3D_PATH=/path/to/sam-3d-body\n\n"
+                    f"Original error: {e2}"
+                )
         
         # Return config dict (model loads lazily in video processor)
         config = {
@@ -344,7 +449,10 @@ class LoadSAM3DBodyModel:
             "_loader": "SAM3DBody2abc_Direct",
         }
         
-        log.info(f"Model config ready!")
+        log.info("")
+        log.info("=" * 50)
+        log.info("  Model config ready!")
+        log.info("=" * 50)
         log.info(f"  Weights: {model_path}")
         log.info(f"  Device: {device}")
         

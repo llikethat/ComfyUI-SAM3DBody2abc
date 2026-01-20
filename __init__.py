@@ -202,8 +202,65 @@ if os.path.isdir(_multicamera_path):
         if _triangulator:
             NODE_CLASS_MAPPINGS["SAM3DBody2abc_MultiCameraTriangulator"] = _triangulator.MultiCameraTriangulator
             NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MultiCameraTriangulator"] = "🔺 Multi-Camera Triangulator"
+        
+        # Load calibration loader
+        _calibration_loader = _load_module(
+            "sam3d2abc_calibration_loader",
+            os.path.join(_multicamera_path, "calibration_loader.py")
+        )
+        if _calibration_loader:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = _calibration_loader.CameraCalibrationLoader
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = "📷 Camera Calibration Loader"
     except Exception as e:
         print(f"[SAM3DBody2abc] Error loading multicamera nodes: {e}")
+
+# Load and register BVH export
+_bvh_export = _load_module("sam3d2abc_bvh_export", os.path.join(_nodes, "bvh_export.py"))
+if _bvh_export:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ExportBVH"] = _bvh_export.ExportBVH
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ExportBVH"] = "📄 Export BVH"
+
+# Load and register COLMAP bridge
+_colmap_bridge = _load_module("sam3d2abc_colmap_bridge", os.path.join(_nodes, "colmap_bridge.py"))
+if _colmap_bridge:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = _colmap_bridge.COLMAPToExtrinsicsBridge
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = "🔗 COLMAP to Extrinsics Bridge"
+
+# Load and register MegaSAM camera solver
+_megasam_solver = _load_module("sam3d2abc_megasam_solver", os.path.join(_nodes, "megasam_solver.py"))
+if _megasam_solver:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MegaSAMCameraSolver"] = _megasam_solver.MegaSAMCameraSolver
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MegaSAMCameraSolver"] = "🎬 MegaSAM Camera Solver"
+
+# Load and register video stabilizer
+_video_stabilizer = _load_module("sam3d2abc_video_stabilizer", os.path.join(_nodes, "video_stabilizer.py"))
+if _video_stabilizer:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_VideoStabilizer"] = _video_stabilizer.VideoStabilizer
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_VideoStabilizer"] = "📹 Video Stabilizer"
+
+# Load and register intrinsics estimator
+_intrinsics_estimator = _load_module("sam3d2abc_intrinsics_estimator", os.path.join(_nodes, "intrinsics_estimator.py"))
+if _intrinsics_estimator:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsEstimator"] = _intrinsics_estimator.IntrinsicsEstimator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsFromJSON"] = _intrinsics_estimator.IntrinsicsFromJSON
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsToJSON"] = _intrinsics_estimator.IntrinsicsToJSON
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsEstimator"] = "📐 Intrinsics Estimator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsFromJSON"] = "📐 Intrinsics from JSON"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsToJSON"] = "📐 Intrinsics to JSON"
+
+# Load and register intrinsics from SAM3DBody
+_intrinsics_from_sam3dbody = _load_module("sam3d2abc_intrinsics_from_sam3dbody", os.path.join(_nodes, "intrinsics_from_sam3dbody.py"))
+if _intrinsics_from_sam3dbody:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_IntrinsicsFromSAM3DBody"] = _intrinsics_from_sam3dbody.IntrinsicsFromSAM3DBody
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_IntrinsicsFromSAM3DBody"] = "📐 Intrinsics from SAM3DBody"
+
+# Load and register MoGe2 intrinsics estimator
+_moge_intrinsics = _load_module("sam3d2abc_moge_intrinsics", os.path.join(_nodes, "moge_intrinsics.py"))
+if _moge_intrinsics:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = _moge_intrinsics.MoGe2IntrinsicsEstimator
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = _moge_intrinsics.ApplyIntrinsicsToMeshSequence
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = "📐 MoGe2 Intrinsics Estimator"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = "📐 Apply Intrinsics to Mesh"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
