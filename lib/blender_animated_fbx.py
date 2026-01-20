@@ -860,21 +860,40 @@ def transform_rotation_matrix(rot_3x3, up_axis):
 
 # Global settings (set by main)
 FLIP_X = False
-ALIGN_MESH_TO_SKELETON = True  # v5.2.0: Align mesh vertices to skeleton origin
+FLIP_X = False  # Mirror horizontally (for selfie-mode videos)
 
 
 def get_world_offset_from_cam_t(pred_cam_t, up_axis):
     """
-    Get world offset for root_locator.
+    Get world offset for root_locator from pred_cam_t.
     
-    IMPORTANT: root_locator should be at origin (0,0,0) because it parents both
-    the body and camera. Moving root_locator moves both together, which doesn't
-    affect the body's position relative to camera (i.e., alignment in camera view).
+    v5.4.0: Now uses tx, ty from pred_cam_t to position body correctly
+    relative to camera. This matches the ScreenPosition locator values.
     
-    The actual body offset relative to camera is handled by get_body_offset_from_cam_t().
+    pred_cam_t from SAM3DBody:
+    - tx: horizontal offset (normalized camera units)
+    - ty: vertical offset (normalized camera units, image space)
+    - tz: depth (camera distance)
     """
-    # Root locator stays at origin - body offset is applied separately
-    return Vector((0, 0, 0))
+    if not pred_cam_t or len(pred_cam_t) < 3:
+        return Vector((0, 0, 0))
+    
+    tx, ty, tz = pred_cam_t[0], pred_cam_t[1], pred_cam_t[2]
+    
+    # ty is negated: in image space +Y is down, in world space +Y is up
+    ty_world = -ty
+    
+    # Apply based on up_axis
+    if up_axis == "Y":
+        return Vector((tx, ty_world, 0))
+    elif up_axis == "Z":
+        return Vector((tx, 0, ty_world))
+    elif up_axis == "-Y":
+        return Vector((tx, -ty_world, 0))
+    elif up_axis == "-Z":
+        return Vector((tx, 0, -ty_world))
+    else:
+        return Vector((tx, ty_world, 0))
 
 
 def get_body_offset_from_cam_t(pred_cam_t, up_axis):
@@ -916,38 +935,11 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     """
     Create mesh with per-vertex animation using shape keys.
     
-    v5.2.0: Properly aligns mesh to skeleton by calculating offset from pelvis joint.
-    New SAM3DBody uses ground-centered mesh coordinates, but skeleton is pelvis-centered.
+    v5.4.0: Simplified - SAM3DBody outputs mesh and skeleton in same coordinate space.
     """
     first_verts = all_frames[0].get("vertices")
     if not first_verts:
         return None
-    
-    # Calculate mesh-to-skeleton alignment offset (v5.2.0)
-    # New SAM3DBody: mesh is ground-centered, skeleton is pelvis-centered
-    # We need to align the mesh to the skeleton by finding the offset
-    mesh_offset = [0, 0, 0]
-    if ALIGN_MESH_TO_SKELETON:
-        first_joints = all_frames[0].get("joint_coords")
-        if first_joints is not None:
-            # Get pelvis position (joint 0)
-            pelvis = np.array(first_joints[0]) if len(first_joints) > 0 else np.zeros(3)
-            
-            # Get mesh center
-            first_verts_np = np.array(first_verts)
-            mesh_center = np.mean(first_verts_np, axis=0)
-            
-            # The offset needed to align mesh center to pelvis
-            # Since pelvis is at origin (0,0,0), we just need to subtract mesh_center
-            offset_from_pelvis = mesh_center - pelvis
-            
-            # Only apply if there's a significant offset (> 10cm)
-            if np.linalg.norm(offset_from_pelvis) > 0.1:
-                mesh_offset = offset_from_pelvis.tolist()
-                log.info(f"Mesh-to-skeleton alignment:")
-                log.info(f"  Pelvis (joint 0): [{pelvis[0]:.3f}, {pelvis[1]:.3f}, {pelvis[2]:.3f}]")
-                log.info(f"  Mesh center: [{mesh_center[0]:.3f}, {mesh_center[1]:.3f}, {mesh_center[2]:.3f}]")
-                log.info(f"  Alignment offset: [{mesh_offset[0]:.3f}, {mesh_offset[1]:.3f}, {mesh_offset[2]:.3f}]")
     
     # Get first frame world offset for initial position
     first_world_offset = Vector((0, 0, 0))
@@ -959,11 +951,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
     mesh = bpy.data.meshes.new("body_mesh")
     verts = []
     for v in first_verts:
-        # Apply mesh-to-skeleton alignment offset
-        v_aligned = [v[0] - mesh_offset[0], 
-                     v[1] - mesh_offset[1], 
-                     v[2] - mesh_offset[2]]
-        pos = Vector(transform_func(v_aligned))
+        pos = Vector(transform_func(v))
         if world_translation_mode == "baked":
             pos += first_world_offset
         verts.append(pos)
@@ -1000,11 +988,7 @@ def create_animated_mesh(all_frames, faces, fps, transform_func, world_translati
         
         for j, v in enumerate(frame_verts):
             if j < len(sk.data):
-                # Apply mesh-to-skeleton alignment offset (calculated from first frame)
-                v_aligned = [v[0] - mesh_offset[0], 
-                             v[1] - mesh_offset[1], 
-                             v[2] - mesh_offset[2]]
-                pos = Vector(transform_func(v_aligned))
+                pos = Vector(transform_func(v))
                 if world_translation_mode == "baked":
                     pos += frame_world_offset
                 sk.data[j].co = pos
@@ -1388,23 +1372,22 @@ def create_skeleton(all_frames, fps, transform_func, world_translation_mode="non
 
 def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     """
-    Create a root locator that carries the world translation.
-    """
-    log.info("Creating root locator with world translation...")
+    Create a root locator that carries the world translation from pred_cam_t.
     
-    if all_frames:
-        first_cam_t = all_frames[0].get("pred_cam_t")
-        if first_cam_t and len(first_cam_t) >= 3:
-            tx, ty, tz = first_cam_t[0], first_cam_t[1], first_cam_t[2]
-            world_x = tx * abs(tz) * 0.5
-            world_y = ty * abs(tz) * 0.5
+    v5.4.0: Uses tx, ty directly from pred_cam_t to match ScreenPosition locator.
+    This positions the body correctly relative to camera view.
+    """
+    log.info("Creating root locator with pred_cam_t translation...")
     
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
     bpy.context.collection.objects.link(root)
     
-    # Animate root position based on pred_cam_t
+    # Animate root position based on pred_cam_t (same as ScreenPosition locator)
+    first_cam_t = all_frames[0].get("pred_cam_t", [0, 0, 5]) if all_frames else [0, 0, 5]
+    log.info(f"  Frame 0 pred_cam_t: tx={first_cam_t[0]:.4f}, ty={first_cam_t[1]:.4f}, tz={first_cam_t[2]:.4f}")
+    
     for frame_idx, frame_data in enumerate(all_frames):
         frame_cam_t = frame_data.get("pred_cam_t")
         world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
@@ -1416,6 +1399,8 @@ def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
         root.location = world_offset
         root.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
     
+    first_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
+    log.info(f"  Frame 0 world offset: X={first_offset.x:.4f}, Y={first_offset.y:.4f}, Z={first_offset.z:.4f}")
     log.info(f"Root locator animated over {len(all_frames)} frames (offset={frame_offset}, flip_x={flip_x})")
     return root
 
@@ -2919,7 +2904,6 @@ def main():
     world_translation_mode = data.get("world_translation_mode", "none")
     skeleton_mode = data.get("skeleton_mode", "rotations")  # New: default to rotations
     flip_x = data.get("flip_x", False)  # Mirror on X axis
-    align_mesh_to_skeleton = data.get("align_mesh_to_skeleton", True)  # v5.2.0: Align mesh to skeleton
     frame_offset = data.get("frame_offset", 0)  # Start frame offset for Maya
     include_skeleton = data.get("include_skeleton", True)  # v4.6.10: Option to exclude skeleton
     animate_camera = data.get("animate_camera", False)  # Only animate camera if translation baked to it
@@ -3027,12 +3011,9 @@ def main():
             world_translation_mode = "none"
     
     # Get transformation
-    global FLIP_X, ALIGN_MESH_TO_SKELETON
+    global FLIP_X
     FLIP_X = flip_x
-    ALIGN_MESH_TO_SKELETON = align_mesh_to_skeleton
     transform_func, axis_forward, axis_up_export = get_transform_for_axis(up_axis, flip_x)
-    
-    log.info(f"Mesh alignment: {'enabled' if ALIGN_MESH_TO_SKELETON else 'disabled'}")
     
     clear_scene()
     
