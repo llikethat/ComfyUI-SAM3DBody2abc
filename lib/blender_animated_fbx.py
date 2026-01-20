@@ -2629,12 +2629,11 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         min_depth = min(min_depth, frame_depth)
         max_depth = max(max_depth, frame_depth)
         
-        # Convert screen position (tx, ty) to world coordinates
-        # In weak perspective: world_pos = screen_pos * depth * scale_factor
-        # This matches how body_world_3d is calculated in Motion Analyzer:
-        #   body_world_3d = [tx * tz * scale_factor, ty * tz * scale_factor, tz * scale_factor]
-        world_x = tx * frame_depth * scale_factor
-        world_y = ty * frame_depth * scale_factor
+        # v5.4.0: Use tx, ty directly as world offset
+        # This matches the original third-party SAM3DBody behavior
+        # tx, ty are already in normalized camera coordinates
+        world_x = tx
+        world_y = ty
         
         # Z position (only if position mode)
         if use_depth and depth_mode in ["position", "both"]:
@@ -2644,7 +2643,6 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
             world_z = 0
         
         # Mesh scale factor for scale mode: closer = smaller mesh
-        # (This is separate from scale_factor parameter which is for world coordinate conversion)
         if use_depth and depth_mode in ["scale", "both"]:
             mesh_scale = frame_depth / ref_depth if ref_depth > 0 else 1.0
         else:
@@ -2652,8 +2650,8 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         
         # Debug logging for first frame
         if i == 0:
-            log.info(f"  Frame 0 world coords: X={world_x:.3f}m, Y={world_y:.3f}m, Z={world_z:.3f}m")
-            log.debug(f"    Calculation: tx={tx:.4f} * depth={frame_depth:.2f}m * scale={scale_factor:.3f}")
+            log.info(f"  Frame 0: tx={tx:.4f}, ty={ty:.4f}, depth={frame_depth:.2f}m")
+            log.info(f"  Frame 0 offset: X={world_x:.3f}, Y={-world_y:.3f}, Z={world_z:.3f}")
         
         # Compute body offset for this frame
         # ty is negated: in image space +Y is down, in world space +Y is up
