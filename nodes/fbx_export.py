@@ -307,12 +307,6 @@ class ExportAnimatedFBX:
                     "tooltip": "Position: character moves in Z axis (correct for 3D lighting/shadows). Scale: mesh scales with depth (2D compositing only). Both: combined."
                 }),
                 
-                # SAM3DBody mesh alignment (v5.2.0)
-                "align_mesh_to_skeleton": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Align mesh vertices to skeleton origin (pelvis). Required for new SAM3DBody where mesh uses ground-centered coordinates."
-                }),
-                
                 # Video metadata (direct inputs - auto-filled from mesh_sequence if available)
                 "source_video_fps": ("FLOAT", {
                     "default": 0.0,
@@ -614,7 +608,6 @@ class ExportAnimatedFBX:
         scale_info: Optional[Dict] = None,
         use_depth_positioning: bool = True,
         depth_mode: str = "Position (Z-axis)",
-        align_mesh_to_skeleton: bool = True,
         source_video_fps: float = 0.0,
         skip_first_frames: int = 0,
         output_dir: str = "",
@@ -872,7 +865,6 @@ Or specify the path in the blender_path input."""
             "world_translation_mode": translation_mode,
             "skeleton_mode": "rotations" if use_rotations else "positions",
             "flip_x": flip_x,
-            "align_mesh_to_skeleton": align_mesh_to_skeleton,  # v5.2.0: Align mesh to skeleton origin
             "include_skeleton": include_skeleton,  # v4.6.10: Option to exclude skeleton
             "animate_camera": animate_camera,
             "camera_follow_root": camera_follow_root,

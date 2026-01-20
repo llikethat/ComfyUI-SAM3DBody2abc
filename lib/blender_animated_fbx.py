@@ -1372,36 +1372,23 @@ def create_skeleton(all_frames, fps, transform_func, world_translation_mode="non
 
 def create_root_locator(all_frames, fps, up_axis, flip_x=False, frame_offset=0):
     """
-    Create a root locator that carries the world translation from pred_cam_t.
+    Create a root locator as a static parent for mesh and skeleton.
     
-    v5.4.0: Uses tx, ty directly from pred_cam_t to match ScreenPosition locator.
-    This positions the body correctly relative to camera view.
+    v5.4.0: Root locator is now static (no animation).
+    Animation is applied directly to mesh/skeleton via apply_per_frame_body_offset.
+    This matches the behavior of the original third-party SAM3DBody.
     """
-    log.info("Creating root locator with pred_cam_t translation...")
+    log.info("Creating root locator (static)...")
     
     root = bpy.data.objects.new("root_locator", None)
     root.empty_display_type = 'ARROWS'
     root.empty_display_size = 0.1
     bpy.context.collection.objects.link(root)
     
-    # Animate root position based on pred_cam_t (same as ScreenPosition locator)
-    first_cam_t = all_frames[0].get("pred_cam_t", [0, 0, 5]) if all_frames else [0, 0, 5]
-    log.info(f"  Frame 0 pred_cam_t: tx={first_cam_t[0]:.4f}, ty={first_cam_t[1]:.4f}, tz={first_cam_t[2]:.4f}")
+    # Root locator stays at origin - mesh/skeleton will be animated relative to it
+    root.location = Vector((0, 0, 0))
     
-    for frame_idx, frame_data in enumerate(all_frames):
-        frame_cam_t = frame_data.get("pred_cam_t")
-        world_offset = get_world_offset_from_cam_t(frame_cam_t, up_axis)
-        
-        # Apply flip_x to the world offset
-        if flip_x:
-            world_offset = Vector((-world_offset.x, world_offset.y, world_offset.z))
-        
-        root.location = world_offset
-        root.keyframe_insert(data_path="location", frame=frame_idx + frame_offset)
-    
-    first_offset = get_world_offset_from_cam_t(first_cam_t, up_axis)
-    log.info(f"  Frame 0 world offset: X={first_offset.x:.4f}, Y={first_offset.y:.4f}, Z={first_offset.z:.4f}")
-    log.info(f"Root locator animated over {len(all_frames)} frames (offset={frame_offset}, flip_x={flip_x})")
+    log.info(f"Root locator created at origin (static, no animation)")
     return root
 
 
