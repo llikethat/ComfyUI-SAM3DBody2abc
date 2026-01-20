@@ -2598,7 +2598,8 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     log.info(f"  Depth settings: use_depth={use_depth}, depth_mode='{depth_mode}', scale_factor={scale_factor:.3f}")
     
     # Check if tracked depth is available (from CharacterTrajectoryTracker)
-    has_tracked_depth = "tracked_depth" in frames[0] if frames else False
+    # Need to check both key existence AND that value is not None
+    has_tracked_depth = frames[0].get("tracked_depth") is not None if frames else False
     if has_tracked_depth:
         log.info(f"  Depth source: tracked_depth (from Character Trajectory Tracker + DepthAnything V2)")
     else:
@@ -2607,7 +2608,13 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     # Get reference depth from first frame
     first_frame = frames[0]
     if has_tracked_depth:
-        ref_depth = abs(first_frame.get("tracked_depth", 5.0))
+        tracked_val = first_frame.get("tracked_depth")
+        if tracked_val is not None:
+            ref_depth = abs(float(tracked_val))
+        else:
+            # Fall back to pred_cam_t if tracked_depth is None
+            first_cam_t = first_frame.get("pred_cam_t", [0, 0, 5])
+            ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
     else:
         first_cam_t = first_frame.get("pred_cam_t", [0, 0, 5])
         ref_depth = abs(first_cam_t[2]) if len(first_cam_t) > 2 and abs(first_cam_t[2]) > 0.1 else 5.0
@@ -2625,9 +2632,9 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
         tx = pred_cam_t[0] if pred_cam_t and len(pred_cam_t) > 0 else 0
         ty = pred_cam_t[1] if pred_cam_t and len(pred_cam_t) > 1 else 0
         
-        # Get depth - prefer tracked_depth if available
-        if has_tracked_depth and "tracked_depth" in frame_data:
-            frame_depth = abs(frame_data["tracked_depth"])
+        # Get depth - prefer tracked_depth if available and not None
+        if has_tracked_depth and frame_data.get("tracked_depth") is not None:
+            frame_depth = abs(float(frame_data["tracked_depth"]))
         else:
             tz = pred_cam_t[2] if pred_cam_t and len(pred_cam_t) > 2 else 5
             frame_depth = abs(tz) if abs(tz) > 0.1 else ref_depth
@@ -2694,7 +2701,7 @@ def apply_per_frame_body_offset(mesh_obj, armature_obj, frames: list, up_axis: s
     
     # Debug output
     last_frame = frames[-1]
-    if has_tracked_depth and "tracked_depth" in last_frame:
+    if has_tracked_depth and last_frame.get("tracked_depth") is not None:
         last_depth = abs(last_frame["tracked_depth"])
     else:
         last_cam_t = last_frame.get("pred_cam_t", [0, 0, 5])
