@@ -38,6 +38,141 @@ def to_numpy(data):
     return data
 
 
+def normalize_intrinsics(intrinsics: Optional[Dict], frame_count: int) -> Optional[Dict]:
+    """
+    Normalize any intrinsics format to a standard internal format.
+    
+    Supports multiple input formats:
+    
+    Format 1 - Simple dict (single focal length):
+        {"focal_length": 1108.5, "cx": 640, "cy": 360, "width": 1280, "height": 720}
+    
+    Format 2 - Per-frame (zoom lenses / externally solved):
+        {"per_frame": True, "frames": [{"focal_length": 1100}, ...], "width": 1280, "height": 720}
+    
+    Format 3 - MoGe2 format:
+        {"focal_length": 1108.5, "per_frame_focal": [...], "cx": 640, "cy": 360, ...}
+    
+    Format 4 - Calibration format:
+        {"fx": 1108.5, "fy": 1108.5, "cx": 640, "cy": 360, ...}
+    
+    Returns normalized format:
+        {
+            "focal_length": float,           # Primary focal length (frame 0 or average)
+            "per_frame_focal": [float, ...], # Per-frame focal lengths (same length as frame_count)
+            "cx": float,                     # Principal point X
+            "cy": float,                     # Principal point Y
+            "width": int,                    # Image width
+            "height": int,                   # Image height
+            "source": str,                   # Source identifier
+        }
+    """
+    if intrinsics is None:
+        return None
+    
+    normalized = {
+        "source": "external",
+        "cx": None,
+        "cy": None,
+        "width": None,
+        "height": None,
+    }
+    
+    # Extract image dimensions
+    normalized["width"] = intrinsics.get("width") or intrinsics.get("image_width")
+    normalized["height"] = intrinsics.get("height") or intrinsics.get("image_height")
+    
+    # Extract principal point (try multiple key names)
+    normalized["cx"] = (
+        intrinsics.get("cx") or 
+        intrinsics.get("principal_point_x") or 
+        intrinsics.get("principal_x")
+    )
+    normalized["cy"] = (
+        intrinsics.get("cy") or 
+        intrinsics.get("principal_point_y") or 
+        intrinsics.get("principal_y")
+    )
+    
+    # Extract focal length (try multiple key names)
+    # INTRINSICS format uses "focal_px", CAMERA_INTRINSICS uses "focal_length"
+    focal = (
+        intrinsics.get("focal_length") or
+        intrinsics.get("focal_length_px") or
+        intrinsics.get("focal_px") or  # INTRINSICS format from IntrinsicsFromJSON
+        intrinsics.get("focal") or
+        intrinsics.get("fx")  # Calibration format
+    )
+    
+    # Handle per-frame focal lengths
+    per_frame_focal = None
+    
+    if intrinsics.get("per_frame"):
+        # Format 2: Explicit per-frame format
+        frames_data = intrinsics.get("frames", [])
+        if frames_data:
+            per_frame_focal = []
+            for f in frames_data:
+                f_focal = f.get("focal_length") or f.get("focal") or f.get("fx") or focal
+                per_frame_focal.append(float(f_focal) if f_focal else None)
+            # Use first frame as primary
+            if per_frame_focal and per_frame_focal[0] is not None:
+                focal = per_frame_focal[0]
+    
+    elif "per_frame_focal" in intrinsics:
+        # Format 3: MoGe2 style
+        per_frame_focal = intrinsics["per_frame_focal"]
+        if isinstance(per_frame_focal, (list, np.ndarray)) and len(per_frame_focal) > 0:
+            # Use first frame as primary focal if not already set
+            if focal is None:
+                focal = per_frame_focal[0]
+    
+    # Convert focal to float
+    if focal is not None:
+        if hasattr(focal, 'item'):
+            focal = focal.item()
+        focal = float(focal)
+    
+    normalized["focal_length"] = focal
+    
+    # Expand per_frame_focal to match frame_count if needed
+    if per_frame_focal is not None:
+        per_frame_focal = list(per_frame_focal)
+        if len(per_frame_focal) < frame_count:
+            # Pad with last value
+            last_val = per_frame_focal[-1] if per_frame_focal else focal
+            per_frame_focal.extend([last_val] * (frame_count - len(per_frame_focal)))
+        elif len(per_frame_focal) > frame_count:
+            # Truncate
+            per_frame_focal = per_frame_focal[:frame_count]
+        normalized["per_frame_focal"] = per_frame_focal
+    elif focal is not None:
+        # Single focal - expand to all frames
+        normalized["per_frame_focal"] = [focal] * frame_count
+    
+    # Set source identifier
+    if "source" in intrinsics:
+        normalized["source"] = intrinsics["source"]
+    elif "moge" in str(intrinsics.get("type", "")).lower():
+        normalized["source"] = "MoGe2"
+    elif intrinsics.get("per_frame"):
+        normalized["source"] = "external_per_frame"
+    else:
+        normalized["source"] = "external"
+    
+    # Log what we got
+    log.info(f"Normalized intrinsics from {normalized['source']}:")
+    log.info(f"  Focal length: {normalized['focal_length']}")
+    if normalized.get('per_frame_focal'):
+        focal_range = (min(normalized['per_frame_focal']), max(normalized['per_frame_focal']))
+        if focal_range[0] != focal_range[1]:
+            log.info(f"  Per-frame focal range: {focal_range[0]:.1f} - {focal_range[1]:.1f}px")
+    if normalized['cx'] is not None:
+        log.info(f"  Principal point: ({normalized['cx']}, {normalized['cy']})")
+    
+    return normalized
+
+
 class VideoBatchProcessor:
     """
     Process video frames through SAM3DBody and collect mesh_data.
@@ -107,6 +242,12 @@ class VideoBatchProcessor:
                     "min": 1,
                     "max": 50,
                     "tooltip": "Frames to process per batch. Lower = less VRAM, Higher = faster."
+                }),
+                "external_intrinsics": ("CAMERA_INTRINSICS", {
+                    "tooltip": "External camera intrinsics from MoGe2 (overrides SAM3DBody estimation)."
+                }),
+                "intrinsics_json": ("INTRINSICS", {
+                    "tooltip": "Camera intrinsics from JSON file or IntrinsicsEstimator (overrides SAM3DBody estimation)."
                 }),
             }
         }
@@ -186,6 +327,8 @@ class VideoBatchProcessor:
         end_frame: int = -1,
         skip_frames: int = 1,
         batch_size: int = 10,
+        external_intrinsics: Optional[Dict] = None,
+        intrinsics_json: Optional[Dict] = None,
     ) -> Tuple[Dict, torch.Tensor, int, str, float]:
         """Process video frames.
         
@@ -270,6 +413,26 @@ class VideoBatchProcessor:
         if active_mask is not None:
             mask_frames = active_mask.shape[0] if hasattr(active_mask, 'shape') and active_mask.ndim >= 1 else 1
             log.info(f"Using per-frame masks ({mask_frames} masks available)")
+        
+        # Normalize external intrinsics if provided
+        # Priority: external_intrinsics (CAMERA_INTRINSICS) > intrinsics_json (INTRINSICS) > SAM3DBody
+        ext_intrinsics = None
+        if external_intrinsics is not None:
+            ext_intrinsics = normalize_intrinsics(external_intrinsics, len(frame_indices))
+            if ext_intrinsics and ext_intrinsics.get("focal_length"):
+                log.info(f"Using CAMERA_INTRINSICS (MoGe2/external) - will override SAM3DBody estimation")
+            else:
+                log.info(f"CAMERA_INTRINSICS provided but no valid focal length found")
+                ext_intrinsics = None
+        
+        if ext_intrinsics is None and intrinsics_json is not None:
+            ext_intrinsics = normalize_intrinsics(intrinsics_json, len(frame_indices))
+            if ext_intrinsics and ext_intrinsics.get("focal_length"):
+                ext_intrinsics["source"] = "json"
+                log.info(f"Using INTRINSICS from JSON - will override SAM3DBody estimation")
+            else:
+                log.info(f"INTRINSICS from JSON provided but no valid focal length found")
+                ext_intrinsics = None
         
         # Load SAM3D model from config dict
         # Expected format from "Load SAM3DBody Model (Direct)" node:
@@ -547,6 +710,32 @@ class VideoBatchProcessor:
                                     # If mesh has an inherent offset from origin, we need to account for it
                                     log.info(f"========================================")
                         
+                        # Determine focal length to use: external > SAM3DBody
+                        final_focal_length = focal_length
+                        final_cx = None
+                        final_cy = None
+                        intrinsics_source = "SAM3DBody"
+                        
+                        if ext_intrinsics is not None:
+                            # Use external intrinsics
+                            per_frame = ext_intrinsics.get("per_frame_focal")
+                            if per_frame and i < len(per_frame):
+                                final_focal_length = per_frame[i]
+                            else:
+                                final_focal_length = ext_intrinsics.get("focal_length", focal_length)
+                            
+                            final_cx = ext_intrinsics.get("cx")
+                            final_cy = ext_intrinsics.get("cy")
+                            intrinsics_source = ext_intrinsics.get("source", "external")
+                            
+                            if i == 0:
+                                log.info(f"Using {intrinsics_source} intrinsics: focal={final_focal_length:.1f}px")
+                                if final_cx is not None:
+                                    log.info(f"  Principal point: ({final_cx:.1f}, {final_cy:.1f})")
+                                if focal_length is not None:
+                                    diff = final_focal_length - focal_length
+                                    log.info(f"  SAM3DBody focal was: {focal_length:.1f}px (diff: {diff:+.1f}px)")
+                        
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
                             "joint_coords": to_numpy(output.get("pred_joint_coords")),
@@ -554,7 +743,11 @@ class VideoBatchProcessor:
                             "pred_keypoints_2d": to_numpy(output.get("pred_keypoints_2d")),  # 2D keypoints for overlay
                             "pred_keypoints_3d": to_numpy(output.get("pred_keypoints_3d")),  # 3D keypoints for projection validation
                             "pred_cam_t": to_numpy(output.get("pred_cam_t")),
-                            "focal_length": focal_length,
+                            "focal_length": final_focal_length,
+                            "focal_length_sam3d": focal_length,  # Keep original for comparison
+                            "cx": final_cx,
+                            "cy": final_cy,
+                            "intrinsics_source": intrinsics_source,
                             "global_rot": to_numpy(output.get("global_rot")),  # Keep for compatibility
                             "bbox": to_numpy(output.get("bbox")),  # Store bbox for debugging
                             "image_size": (img_np.shape[1], img_np.shape[0]),  # (width, height) for alignment
@@ -581,12 +774,26 @@ class VideoBatchProcessor:
         
         # Compute average focal length from all frames
         focal_lengths = []
+        focal_lengths_sam3d = []
         for f in frames.values():
             if f.get("focal_length") is not None:
                 focal_lengths.append(f["focal_length"])
+            if f.get("focal_length_sam3d") is not None:
+                focal_lengths_sam3d.append(f["focal_length_sam3d"])
         
         avg_focal_length = sum(focal_lengths) / len(focal_lengths) if focal_lengths else 1000.0
-        log.info(f"Focal length: {avg_focal_length:.1f}px (from {len(focal_lengths)} frames)")
+        avg_focal_sam3d = sum(focal_lengths_sam3d) / len(focal_lengths_sam3d) if focal_lengths_sam3d else None
+        
+        # Determine intrinsics source
+        intrinsics_source = "SAM3DBody"
+        if ext_intrinsics is not None:
+            intrinsics_source = ext_intrinsics.get("source", "external")
+            log.info(f"Final focal length: {avg_focal_length:.1f}px (source: {intrinsics_source})")
+            if avg_focal_sam3d is not None:
+                diff = avg_focal_length - avg_focal_sam3d
+                log.info(f"  SAM3DBody avg was: {avg_focal_sam3d:.1f}px (diff: {diff:+.1f}px)")
+        else:
+            log.info(f"Focal length: {avg_focal_length:.1f}px (from {len(focal_lengths)} frames)")
         
         # Build output - include fps for downstream nodes
         mesh_sequence = {
@@ -597,6 +804,9 @@ class VideoBatchProcessor:
             "mhr_path": mhr_path,
             "fps": fps,  # Pass through for export
             "focal_length_px": avg_focal_length,  # Add for camera solver
+            "focal_length_sam3d": avg_focal_sam3d,  # Original SAM3DBody estimation
+            "intrinsics_source": intrinsics_source,
+            "external_intrinsics": ext_intrinsics,  # Full external intrinsics if provided
         }
         
         if debug_images:

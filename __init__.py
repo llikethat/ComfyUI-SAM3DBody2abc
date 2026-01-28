@@ -262,6 +262,12 @@ if _moge_intrinsics:
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = "📐 MoGe2 Intrinsics Estimator"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = "📐 Apply Intrinsics to Mesh"
 
+# Load and register foot contact test node
+_foot_contact_test = _load_module("sam3d2abc_foot_contact_test", os.path.join(_nodes, "foot_contact_test.py"))
+if _foot_contact_test:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootContactTest"] = _foot_contact_test.FootContactTest
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootContactTest"] = "🦶 Foot Contact Test (Calibration)"
+
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
 for name in NODE_CLASS_MAPPINGS:

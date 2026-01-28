@@ -1,6 +1,6 @@
 # SAM3DBody2abc Node Reference
 
-## Version 4.8.8
+## Version 5.4.0
 
 This document provides detailed information about all nodes in the SAM3DBody2abc extension.
 
@@ -14,6 +14,7 @@ This document provides detailed information about all nodes in the SAM3DBody2abc
 4. [Camera Nodes](#camera-nodes)
 5. [Multi-Camera Nodes](#multi-camera-nodes)
 6. [Utility Nodes](#utility-nodes)
+7. [External Intrinsics](#external-intrinsics)
 
 ---
 
@@ -38,20 +39,40 @@ Accumulates per-frame SAM3DBody outputs into a MESH_SEQUENCE.
 
 ---
 
-### SAM3DBody2abc Video Processor
+### SAM3DBody2abc Video Batch Processor
 
-Processes video through SAM3DBody frame-by-frame.
+Processes video through SAM3DBody frame-by-frame with optional external intrinsics.
 
 **Inputs:**
 | Input | Type | Description |
 |-------|------|-------------|
+| model | SAM3D_MODEL | From Load SAM3DBody Model node |
 | images | IMAGE | Video frames |
-| sam3dbody_model | MODEL | SAM3DBody model |
+| masks | MASK | Per-frame masks (optional) |
+| fps | FLOAT | Source video FPS |
+| external_intrinsics | CAMERA_INTRINSICS | From MoGe2 Intrinsics (optional) |
+| intrinsics_json | INTRINSICS | From JSON/IntrinsicsEstimator (optional) |
+
+**Intrinsics Priority:**
+1. `external_intrinsics` (CAMERA_INTRINSICS) - MoGe2 or external source
+2. `intrinsics_json` (INTRINSICS) - From JSON file or estimator
+3. SAM3DBody internal estimation - Default fallback
 
 **Outputs:**
 | Output | Type | Description |
 |--------|------|-------------|
-| mesh_sequence | MESH_SEQUENCE | Complete sequence |
+| mesh_sequence | MESH_SEQUENCE | Complete sequence with intrinsics |
+| debug_images | IMAGE | Processed frames |
+| frame_count | INT | Number of frames |
+| status | STRING | Processing summary |
+| fps | FLOAT | Output FPS |
+| focal_length_px | FLOAT | Average focal length used |
+
+**Stored in mesh_sequence:**
+- `focal_length_px`: Active focal length (external or SAM3DBody)
+- `focal_length_sam3d`: Original SAM3DBody estimation
+- `intrinsics_source`: "SAM3DBody", "MoGe2", "json", or "external"
+- `external_intrinsics`: Full normalized intrinsics if provided
 
 ---
 
@@ -350,6 +371,19 @@ Video → SAM3DBody → Mesh Accumulator → Motion Analyzer
 
 ## Changelog
 
+### v5.4.0
+- **NEW**: Direct Meta SAM-3D-Body integration (no third-party wrappers)
+- **NEW**: Automatic model download with HuggingFace token
+- **NEW**: External intrinsics support in Video Batch Processor
+  - `external_intrinsics` input (CAMERA_INTRINSICS type)
+  - `intrinsics_json` input (INTRINSICS type)
+  - Priority: external > json > SAM3DBody
+- **NEW**: Format-agnostic intrinsics normalization
+- **FIXED**: Double transformation issue with root_locator
+- **FIXED**: pred_cam_t offset calculation
+- **REMOVED**: align_mesh_to_skeleton option
+- **REMOVED**: Third-party SAM3DBody wrapper dependencies
+
 ### v4.8.8
 - Added Joint-Guided smoothing method to Trajectory Smoother
 - Added reference joint selection (SMPL-H/COCO)
@@ -365,4 +399,127 @@ Video → SAM3DBody → Mesh Accumulator → Motion Analyzer
 
 ---
 
-*Generated for SAM3DBody2abc v4.8.8*
+## External Intrinsics
+
+The Video Batch Processor supports external camera intrinsics to override SAM3DBody's internal estimation.
+
+### Use Cases
+
+- **Pre-calibrated cameras**: Use known lens parameters from camera calibration
+- **Professional footage**: Known focal length from camera metadata
+- **Zoom lenses**: Per-frame variable focal length
+- **Multi-camera setups**: Consistent intrinsics across cameras
+- **Better accuracy**: MoGe2 often provides more accurate intrinsics than SAM3DBody
+
+### Supported Input Formats
+
+The `normalize_intrinsics()` function accepts multiple formats and converts them internally:
+
+#### Format 1: Simple Dict (Single Focal Length)
+```json
+{
+  "focal_length": 1108.5,
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720
+}
+```
+
+#### Format 2: INTRINSICS Type (from IntrinsicsFromJSON)
+```json
+{
+  "focal_px": 1108.5,
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720,
+  "focal_mm": 35.0,
+  "sensor_width_mm": 36.0
+}
+```
+
+#### Format 3: Per-Frame (Zoom Lenses)
+```json
+{
+  "per_frame": true,
+  "frames": [
+    {"focal_length": 1100.0},
+    {"focal_length": 1105.0},
+    {"focal_length": 1110.0}
+  ],
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720
+}
+```
+
+#### Format 4: MoGe2 Format (CAMERA_INTRINSICS)
+```json
+{
+  "focal_length": 1108.5,
+  "per_frame_focal": [1100.0, 1105.0, 1110.0],
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720,
+  "sensor_width_mm": 36.0
+}
+```
+
+#### Format 5: Calibration Format (OpenCV-style)
+```json
+{
+  "fx": 1108.5,
+  "fy": 1108.5,
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720
+}
+```
+
+### Normalized Output Format
+
+All input formats are converted to:
+```json
+{
+  "focal_length": 1108.5,
+  "per_frame_focal": [1108.5, 1108.5, ...],
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720,
+  "source": "external"
+}
+```
+
+### Key Name Aliases
+
+The normalizer recognizes these equivalent key names:
+
+| Canonical | Aliases |
+|-----------|---------|
+| `focal_length` | `focal_length_px`, `focal_px`, `focal`, `fx` |
+| `cx` | `principal_point_x`, `principal_x` |
+| `cy` | `principal_point_y`, `principal_y` |
+| `width` | `image_width` |
+| `height` | `image_height` |
+
+### Verifying Intrinsics
+
+Use the **Verify Overlay** node to compare intrinsics:
+
+1. Connect both `mesh_sequence` and `camera_intrinsics` to Verify Overlay
+2. Set `intrinsics_source` to **"Compare Both"**
+3. Enable `show_mesh` to see wireframe comparison
+
+The overlay shows:
+- **Green wireframe**: SAM3DBody intrinsics projection
+- **Orange wireframe**: External/MoGe2 intrinsics projection
+- **Text overlay**: Focal length values and difference
+
+---
+
+*Generated for SAM3DBody2abc v5.4.0*

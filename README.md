@@ -77,6 +77,89 @@ After first run, everything is cached - no token needed, instant startup.
 | 📷 Camera Solver | Camera motion estimation |
 | 📊 Motion Analyzer | Motion statistics |
 
+## External Camera Intrinsics
+
+The Video Batch Processor supports external camera intrinsics to override SAM3DBody's internal estimation. This is useful for:
+- Pre-calibrated cameras with known lens parameters
+- Professional footage with known focal length
+- Zoom lenses with variable focal length
+- Multi-camera setups
+
+### Intrinsics Priority
+
+```
+1. external_intrinsics (CAMERA_INTRINSICS) - MoGe2 or external
+2. intrinsics_json (INTRINSICS) - From JSON file
+3. SAM3DBody internal estimation - Default fallback
+```
+
+### Input Types
+
+**`external_intrinsics`** (type: `CAMERA_INTRINSICS`)
+- Connect from: MoGe2 Intrinsics node
+- Provides per-frame focal length estimation
+
+**`intrinsics_json`** (type: `INTRINSICS`)  
+- Connect from: IntrinsicsFromJSON, IntrinsicsEstimator, or IntrinsicsFromSAM3DBody nodes
+- Load from calibration JSON files
+
+### Supported JSON Formats
+
+**Simple format (single focal length):**
+```json
+{
+  "focal_px": 1108.5,
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720
+}
+```
+
+**Per-frame format (zoom lenses):**
+```json
+{
+  "focal_px": 1108.5,
+  "per_frame": [
+    {"focal_px": 1100.0},
+    {"focal_px": 1105.0},
+    {"focal_px": 1110.0}
+  ],
+  "width": 1280,
+  "height": 720
+}
+```
+
+**MoGe2 format:**
+```json
+{
+  "focal_length": 1108.5,
+  "per_frame_focal": [1100.0, 1105.0, 1110.0],
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720
+}
+```
+
+**Calibration format:**
+```json
+{
+  "fx": 1108.5,
+  "fy": 1108.5,
+  "cx": 640.0,
+  "cy": 360.0,
+  "width": 1280,
+  "height": 720
+}
+```
+
+### Verifying Intrinsics
+
+Use the **Verify Overlay** node with `intrinsics_source: "Compare Both"` to visualize the difference between SAM3DBody estimation and external intrinsics:
+- **Green wireframe**: SAM3DBody intrinsics
+- **Orange wireframe**: External intrinsics
+
 ## Requirements
 
 - ComfyUI
