@@ -420,8 +420,11 @@ class GroundLinkContactEnforcer:
         cop = None
         conversion_mode = "none"
         
+        # Check if groundlink is enabled
+        use_groundlink = getattr(self, '_use_groundlink', True)
+        
         # === TRY 1: GroundLink ===
-        if self.model is not None and self.model.is_ready:
+        if use_groundlink and self.model is not None and self.model.is_ready:
             self._debug_info["methods_tried"].append("groundlink")
             
             poses, root_trans, conversion_mode = convert_to_groundlink_poses(
@@ -448,6 +451,10 @@ class GroundLinkContactEnforcer:
                 self._debug_info["groundlink_error"] = f"Pose extraction failed: {conversion_mode}"
                 if verbose:
                     print(f"[GroundLink] ✗ Could not extract pose data: {conversion_mode}")
+        elif not use_groundlink:
+            self._debug_info["groundlink_error"] = "Disabled by user"
+            if verbose:
+                print(f"[GroundLink] → GroundLink disabled by user")
         else:
             error = self.model.load_error if self.model else "Model not loaded"
             self._debug_info["groundlink_error"] = error
@@ -744,13 +751,14 @@ class GroundLinkSolverNode:
             },
             "optional": {
                 "images": ("IMAGE",),
+                "use_groundlink": ("BOOLEAN", {"default": True, "tooltip": "Use GroundLink physics-based detection (primary)"}),
+                "use_tapnet": ("BOOLEAN", {"default": True, "tooltip": "Use TAPNet visual tracking (fallback or primary if GroundLink disabled)"}),
+                "use_heuristic": ("BOOLEAN", {"default": True, "tooltip": "Use heuristic height+velocity (final fallback)"}),
                 "checkpoint_path": ("STRING", {"default": ""}),
                 "grf_threshold": ("FLOAT", {"default": 0.1, "min": 0.01, "max": 0.5, "step": 0.01}),
                 "smooth_window": ("INT", {"default": 5, "min": 1, "max": 15, "step": 2}),
                 "pin_feet": ("BOOLEAN", {"default": True}),
                 "up_axis": (["y", "z"], {"default": "y"}),
-                "fallback_to_heuristic": ("BOOLEAN", {"default": True}),
-                "fallback_to_tapnet": ("BOOLEAN", {"default": True}),
                 "log_level": (["Normal", "Verbose", "Silent"], {"default": "Verbose"}),
             }
         }
@@ -760,10 +768,11 @@ class GroundLinkSolverNode:
     FUNCTION = "solve"
     CATEGORY = "SAM3DBody2abc/Processing"
     
-    def solve(self, mesh_sequence: Dict, images=None, checkpoint_path: str = "", 
-              grf_threshold: float = 0.1, smooth_window: int = 5, pin_feet: bool = True,
-              up_axis: str = "y", fallback_to_heuristic: bool = True, 
-              fallback_to_tapnet: bool = True, log_level: str = "Verbose") -> Tuple[Dict, str, Dict]:
+    def solve(self, mesh_sequence: Dict, images=None, 
+              use_groundlink: bool = True, use_tapnet: bool = True, use_heuristic: bool = True,
+              checkpoint_path: str = "", grf_threshold: float = 0.1, smooth_window: int = 5, 
+              pin_feet: bool = True, up_axis: str = "y", 
+              log_level: str = "Verbose") -> Tuple[Dict, str, Dict]:
         
         verbose = log_level != "Silent"
         
@@ -773,11 +782,13 @@ class GroundLinkSolverNode:
             smooth_window=smooth_window,
             pin_feet=pin_feet,
             up_axis=up_axis,
-            fallback_to_heuristic=fallback_to_heuristic,
-            fallback_to_tapnet=fallback_to_tapnet,
+            fallback_to_heuristic=use_heuristic,
+            fallback_to_tapnet=use_tapnet,
         )
         
+        # Pass use_groundlink flag to enforcer
         enforcer = GroundLinkContactEnforcer(config)
+        enforcer._use_groundlink = use_groundlink
         
         image_list = None
         if images is not None:
