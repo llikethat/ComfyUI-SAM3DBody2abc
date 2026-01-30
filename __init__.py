@@ -15,18 +15,25 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.5.0
+- NEW: ⚡ GroundLink Physics-Based Foot Contact (PRIMARY solver)
+  - Neural network predicts Ground Reaction Forces (GRF) from poses
+  - More accurate than heuristics for complex movements
+  - MIT License (commercial use OK)
+  - Pretrained checkpoints included
+  - Falls back to heuristic if needed
+- NEW: 📊 GroundLink Contact Visualizer
+  - Debug/visualize contact predictions
+
 Version: 5.4.0
 - NEW: 🔧 Direct SAM3DBody Integration (MAJOR CHANGE!)
   - No longer requires third-party ComfyUI-SAM3DBody wrapper
   - Load Meta's SAM-3D-Body model directly using new "Load SAM3DBody Model (Direct)" node
   - Just clone https://github.com/facebookresearch/sam-3d-body and download weights
   - Full control over model loading and coordinate system
+- NEW: 🦶 Foot Tracker (TAPNet) - Visual foot tracking
 - NEW: Coordinate system documentation
-  - pred_cam_t = [tx, ty, tz]: tx=horizontal, ty=vertical (image Y-down), tz=depth
-  - For FBX export: world_y = -ty (flip to Y-up world space)
 - FIX: Mesh-to-skeleton alignment for new SAM3DBody
-  - New SAM3DBody uses ground-centered mesh, pelvis-centered skeleton
-  - align_mesh_to_skeleton option fixes this offset automatically
 
 Version: 5.2.0
 - NEW: Added flip_ty option to FBX Export for newer SAM3DBody versions
@@ -38,7 +45,7 @@ Version: 5.2.0
 - NEW: 📹 SLAM Camera Solver node
 """
 
-__version__ = "5.4.0"
+__version__ = "5.5.0"
 
 import os
 import sys
@@ -273,6 +280,14 @@ _foot_tracker = _load_module("sam3d2abc_foot_tracker", os.path.join(_nodes, "foo
 if _foot_tracker:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootTracker"] = _foot_tracker.FootTracker
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootTracker"] = "🦶 Foot Tracker (TAPNet)"
+
+# Load and register GroundLink physics-based foot contact solver (PRIMARY)
+_groundlink_solver = _load_module("sam3d2abc_groundlink_solver", os.path.join(_nodes, "groundlink_solver.py"))
+if _groundlink_solver:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_GroundLinkSolver"] = _groundlink_solver.GroundLinkSolverNode
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_GroundLinkVisualizer"] = _groundlink_solver.GroundLinkContactVisualizer
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_GroundLinkSolver"] = "⚡ GroundLink Foot Contact (Physics)"
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_GroundLinkVisualizer"] = "📊 GroundLink Contact Visualizer"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
