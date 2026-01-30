@@ -268,6 +268,12 @@ if _foot_contact_test:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootContactTest"] = _foot_contact_test.FootContactTest
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootContactTest"] = "🦶 Foot Contact Test (Calibration)"
 
+# Load and register foot tracker (TAPNet-based)
+_foot_tracker = _load_module("sam3d2abc_foot_tracker", os.path.join(_nodes, "foot_tracker.py"))
+if _foot_tracker:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootTracker"] = _foot_tracker.FootTracker
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootTracker"] = "🦶 Foot Tracker (TAPNet)"
+
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
 for name in NODE_CLASS_MAPPINGS:
