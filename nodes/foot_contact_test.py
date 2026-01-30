@@ -1,9 +1,14 @@
 """
-Foot Contact Detection Test Node (v2 - Joint Based)
-====================================================
+Foot Contact Detection Test Node (v3 - Ground Plane Based)
+==========================================================
 
-Standalone node to test foot contact detection using skeleton joints.
-Tracks ankle, ball, and toe joints for accurate contact detection.
+Detects foot ground contact using skeleton joints with a proper ground plane.
+
+Key Concepts:
+1. Single ground plane defined by calibration frames
+2. Left and right ground points connected to form plane with perspective
+3. Each joint checked against interpolated ground height
+4. Anatomically correct: toe is lowest, then ball, then ankle
 
 Joint Indices (confirmed):
     Left:  ankle=17, ball=15, toe=16
@@ -11,8 +16,8 @@ Joint Indices (confirmed):
 
 Usage:
 1. Connect mesh_sequence and images
-2. Provide calibration frames for each joint (minimum 1 per foot)
-3. View debug overlay showing contact states per joint
+2. Provide ONE calibration frame per foot (where foot is FLAT on ground)
+3. View debug overlay showing ground plane and contact states
 """
 
 import numpy as np
@@ -48,21 +53,57 @@ JOINT_INDICES = {
 
 
 @dataclass
-class JointContactState:
-    """Contact state for a single joint."""
-    grounded: bool
-    distance: float
-    velocity: float
+class GroundPlane:
+    """Ground plane defined by left and right foot ground positions."""
+    left_ground_y: float
+    right_ground_y: float
+    left_x: float  # X position of left foot at calibration
+    right_x: float  # X position of right foot at calibration
+    
+    @property
+    def slope(self) -> float:
+        """Ground plane slope (difference between left and right)."""
+        return self.right_ground_y - self.left_ground_y
+    
+    @property
+    def average_ground_y(self) -> float:
+        """Average ground height."""
+        return (self.left_ground_y + self.right_ground_y) / 2
+    
+    def get_ground_y_at_x(self, x: float) -> float:
+        """
+        Interpolate ground height at given X position.
+        
+        Uses linear interpolation between left and right ground points.
+        Extrapolates for positions outside the foot range.
+        """
+        if abs(self.right_x - self.left_x) < 0.001:
+            # Feet at same X position - use average
+            return self.average_ground_y
+        
+        # Linear interpolation/extrapolation
+        t = (x - self.left_x) / (self.right_x - self.left_x)
+        return self.left_ground_y + t * (self.right_ground_y - self.left_ground_y)
+
+
+@dataclass 
+class JointState:
+    """State of a single joint relative to ground."""
+    name: str
+    y: float
+    x: float
     ground_y: float
-    current_y: float
+    distance: float  # Positive = above ground, negative = below
+    velocity: float
+    grounded: bool
 
 
 @dataclass
-class FootContactState:
-    """Contact state for one foot (3 joints)."""
-    ankle: JointContactState
-    ball: JointContactState
-    toe: JointContactState
+class FootState:
+    """State of one foot (3 joints)."""
+    ankle: JointState
+    ball: JointState
+    toe: JointState
     
     @property
     def any_grounded(self) -> bool:
@@ -70,37 +111,34 @@ class FootContactState:
         return self.ankle.grounded or self.ball.grounded or self.toe.grounded
     
     @property
-    def all_grounded(self) -> bool:
-        """True if all joints are grounded."""
-        return self.ankle.grounded and self.ball.grounded and self.toe.grounded
+    def lowest_joint(self) -> JointState:
+        """Return the joint closest to ground."""
+        joints = [self.toe, self.ball, self.ankle]
+        return min(joints, key=lambda j: j.distance)
     
     @property
     def contact_type(self) -> str:
-        """Return contact type: full, ankle, ball, toe, or none."""
-        if self.all_grounded:
+        """Return contact type based on which joints are grounded."""
+        if self.toe.grounded and self.ball.grounded and self.ankle.grounded:
             return "full"
-        elif self.ankle.grounded and not self.ball.grounded and not self.toe.grounded:
-            return "ankle"
-        elif self.ball.grounded and not self.ankle.grounded and not self.toe.grounded:
-            return "ball"
-        elif self.toe.grounded and not self.ankle.grounded and not self.ball.grounded:
+        elif self.toe.grounded and self.ball.grounded:
+            return "forefoot"
+        elif self.toe.grounded:
             return "toe"
-        elif self.ankle.grounded or self.ball.grounded or self.toe.grounded:
-            return "partial"
+        elif self.ankle.grounded:
+            return "heel"
+        elif self.ball.grounded:
+            return "ball"
         else:
-            return "none"
+            return "air"
 
 
 class FootContactTest:
     """
-    Test node for foot contact detection using skeleton joints.
+    Test node for foot contact detection with ground plane.
     
-    Tracks 3 joints per foot:
-    - Ankle (joint 17 left, 14 right) - heel area
-    - Ball (joint 15 left, 18 right) - mid-foot
-    - Toe (joint 16 left, 19 right) - toe tip
-    
-    Contact = ANY of the 3 joints is grounded
+    Uses a single ground plane defined by two calibration frames
+    (one per foot, where each foot is flat on ground).
     """
     
     @classmethod
@@ -111,43 +149,18 @@ class FootContactTest:
                 "images": ("IMAGE",),
             },
             "optional": {
-                # Left foot calibration
-                "left_ankle_frame": ("INT", {
-                    "default": -1,
-                    "min": -1,
+                # Calibration frames (one per foot)
+                "left_foot_ground_frame": ("INT", {
+                    "default": 0,
+                    "min": 0,
                     "max": 10000,
-                    "tooltip": "Frame where LEFT ANKLE touches ground (-1 = not provided)"
+                    "tooltip": "Frame where LEFT foot is FLAT on ground"
                 }),
-                "left_ball_frame": ("INT", {
-                    "default": -1,
-                    "min": -1,
+                "right_foot_ground_frame": ("INT", {
+                    "default": 0,
+                    "min": 0,
                     "max": 10000,
-                    "tooltip": "Frame where LEFT BALL touches ground (-1 = not provided)"
-                }),
-                "left_toe_frame": ("INT", {
-                    "default": -1,
-                    "min": -1,
-                    "max": 10000,
-                    "tooltip": "Frame where LEFT TOE touches ground (-1 = not provided)"
-                }),
-                # Right foot calibration
-                "right_ankle_frame": ("INT", {
-                    "default": -1,
-                    "min": -1,
-                    "max": 10000,
-                    "tooltip": "Frame where RIGHT ANKLE touches ground (-1 = not provided)"
-                }),
-                "right_ball_frame": ("INT", {
-                    "default": -1,
-                    "min": -1,
-                    "max": 10000,
-                    "tooltip": "Frame where RIGHT BALL touches ground (-1 = not provided)"
-                }),
-                "right_toe_frame": ("INT", {
-                    "default": -1,
-                    "min": -1,
-                    "max": 10000,
-                    "tooltip": "Frame where RIGHT TOE touches ground (-1 = not provided)"
+                    "tooltip": "Frame where RIGHT foot is FLAT on ground"
                 }),
                 # Detection parameters
                 "height_threshold": ("FLOAT", {
@@ -155,7 +168,7 @@ class FootContactTest:
                     "min": 0.01,
                     "max": 0.3,
                     "step": 0.01,
-                    "tooltip": "Distance from calibrated ground to count as contact (meters)"
+                    "tooltip": "Distance from ground plane to count as contact (meters)"
                 }),
                 "velocity_threshold": ("FLOAT", {
                     "default": 0.03,
@@ -193,36 +206,129 @@ class FootContactTest:
         """Compute velocity magnitude between two positions."""
         return float(np.linalg.norm(curr_pos - prev_pos))
     
-    def _detect_joint_contact(
+    def _calibrate_ground_plane(
         self,
-        current_y: float,
-        ground_y: float,
-        velocity: float,
+        frames: List[Dict],
+        left_frame_idx: int,
+        right_frame_idx: int,
+    ) -> GroundPlane:
+        """
+        Calibrate ground plane from two frames.
+        
+        For each foot, finds the lowest joint Y position as ground reference.
+        """
+        # Get left foot ground (lowest joint in calibration frame)
+        left_joint_coords = frames[left_frame_idx].get("joint_coords")
+        if left_joint_coords is None:
+            raise ValueError(f"No joint_coords in frame {left_frame_idx}")
+        
+        left_toe = self._get_joint_position(left_joint_coords, JOINT_INDICES["left_toe"])
+        left_ball = self._get_joint_position(left_joint_coords, JOINT_INDICES["left_ball"])
+        left_ankle = self._get_joint_position(left_joint_coords, JOINT_INDICES["left_ankle"])
+        
+        # Ground = lowest point of left foot
+        left_ground_y = min(left_toe[1], left_ball[1], left_ankle[1])
+        left_x = (left_toe[0] + left_ball[0] + left_ankle[0]) / 3  # Average X
+        
+        # Get right foot ground
+        right_joint_coords = frames[right_frame_idx].get("joint_coords")
+        if right_joint_coords is None:
+            raise ValueError(f"No joint_coords in frame {right_frame_idx}")
+        
+        right_toe = self._get_joint_position(right_joint_coords, JOINT_INDICES["right_toe"])
+        right_ball = self._get_joint_position(right_joint_coords, JOINT_INDICES["right_ball"])
+        right_ankle = self._get_joint_position(right_joint_coords, JOINT_INDICES["right_ankle"])
+        
+        # Ground = lowest point of right foot
+        right_ground_y = min(right_toe[1], right_ball[1], right_ankle[1])
+        right_x = (right_toe[0] + right_ball[0] + right_ankle[0]) / 3
+        
+        log.info(f"Left foot ground: Y={left_ground_y:.4f} at X={left_x:.4f} (frame {left_frame_idx})")
+        log.info(f"Right foot ground: Y={right_ground_y:.4f} at X={right_x:.4f} (frame {right_frame_idx})")
+        log.info(f"Ground plane slope: {right_ground_y - left_ground_y:.4f}")
+        
+        return GroundPlane(
+            left_ground_y=left_ground_y,
+            right_ground_y=right_ground_y,
+            left_x=left_x,
+            right_x=right_x,
+        )
+    
+    def _detect_foot_contact(
+        self,
+        joint_coords: np.ndarray,
+        ground_plane: GroundPlane,
+        prev_positions: Dict[str, np.ndarray],
+        side: str,  # "left" or "right"
         height_threshold: float,
         velocity_threshold: float,
-        is_first_frame: bool = False,
-    ) -> JointContactState:
-        """Detect contact state for a single joint."""
-        distance = current_y - ground_y
+        is_first_frame: bool,
+    ) -> Tuple[FootState, Dict[str, np.ndarray]]:
+        """Detect contact state for one foot."""
         
-        # Height check
-        height_ok = distance <= height_threshold
+        # Get joint indices for this side
+        ankle_idx = JOINT_INDICES[f"{side}_ankle"]
+        ball_idx = JOINT_INDICES[f"{side}_ball"]
+        toe_idx = JOINT_INDICES[f"{side}_toe"]
         
-        # Velocity check (skip for first frame)
+        # Get current positions
+        ankle_pos = self._get_joint_position(joint_coords, ankle_idx)
+        ball_pos = self._get_joint_position(joint_coords, ball_idx)
+        toe_pos = self._get_joint_position(joint_coords, toe_idx)
+        
+        # Compute velocities
         if is_first_frame:
-            velocity_ok = True
+            ankle_vel = ball_vel = toe_vel = 0.0
         else:
-            velocity_ok = velocity <= velocity_threshold
+            ankle_vel = self._compute_velocity(ankle_pos, prev_positions.get(f"{side}_ankle", ankle_pos))
+            ball_vel = self._compute_velocity(ball_pos, prev_positions.get(f"{side}_ball", ball_pos))
+            toe_vel = self._compute_velocity(toe_pos, prev_positions.get(f"{side}_toe", toe_pos))
         
-        grounded = height_ok and velocity_ok
+        # Get ground Y at each joint's X position (interpolated from ground plane)
+        ankle_ground_y = ground_plane.get_ground_y_at_x(ankle_pos[0])
+        ball_ground_y = ground_plane.get_ground_y_at_x(ball_pos[0])
+        toe_ground_y = ground_plane.get_ground_y_at_x(toe_pos[0])
         
-        return JointContactState(
-            grounded=grounded,
-            distance=distance,
-            velocity=velocity,
-            ground_y=ground_y,
-            current_y=current_y,
+        # Calculate distances from ground
+        ankle_dist = ankle_pos[1] - ankle_ground_y
+        ball_dist = ball_pos[1] - ball_ground_y
+        toe_dist = toe_pos[1] - toe_ground_y
+        
+        # Determine contact for each joint
+        def is_grounded(dist: float, vel: float) -> bool:
+            height_ok = dist <= height_threshold
+            velocity_ok = is_first_frame or (vel <= velocity_threshold)
+            return height_ok and velocity_ok
+        
+        ankle_grounded = is_grounded(ankle_dist, ankle_vel)
+        ball_grounded = is_grounded(ball_dist, ball_vel)
+        toe_grounded = is_grounded(toe_dist, toe_vel)
+        
+        # Build joint states
+        ankle_state = JointState(
+            name="ankle", y=ankle_pos[1], x=ankle_pos[0],
+            ground_y=ankle_ground_y, distance=ankle_dist,
+            velocity=ankle_vel, grounded=ankle_grounded
         )
+        ball_state = JointState(
+            name="ball", y=ball_pos[1], x=ball_pos[0],
+            ground_y=ball_ground_y, distance=ball_dist,
+            velocity=ball_vel, grounded=ball_grounded
+        )
+        toe_state = JointState(
+            name="toe", y=toe_pos[1], x=toe_pos[0],
+            ground_y=toe_ground_y, distance=toe_dist,
+            velocity=toe_vel, grounded=toe_grounded
+        )
+        
+        # Update previous positions
+        new_prev = {
+            f"{side}_ankle": ankle_pos,
+            f"{side}_ball": ball_pos,
+            f"{side}_toe": toe_pos,
+        }
+        
+        return FootState(ankle=ankle_state, ball=ball_state, toe=toe_state), new_prev
     
     def _apply_min_contact_frames(
         self,
@@ -236,13 +342,11 @@ class FootContactTest:
         result = []
         consecutive = 0
         
-        for i, contact in enumerate(contact_history):
+        for contact in contact_history:
             if contact:
                 consecutive += 1
             else:
                 consecutive = 0
-            
-            # Only mark as grounded if we've had enough consecutive frames
             result.append(consecutive >= min_frames)
         
         return result
@@ -251,8 +355,9 @@ class FootContactTest:
         self,
         image: np.ndarray,
         frame_idx: int,
-        left_state: FootContactState,
-        right_state: FootContactState,
+        left_state: FootState,
+        right_state: FootState,
+        ground_plane: GroundPlane,
         height_threshold: float,
         velocity_threshold: float,
         min_contact_frames: int,
@@ -298,74 +403,68 @@ class FootContactTest:
             overall_color = COLOR_AIRBORNE
         
         # Draw info panel background
-        panel_height = 280
-        panel_width = 350
+        panel_height = 320
+        panel_width = 380
         cv2.rectangle(frame, (5, 5), (panel_width, panel_height), COLOR_TEXT_BG, -1)
         cv2.rectangle(frame, (5, 5), (panel_width, panel_height), COLOR_TEXT, 1)
         
         # Draw text info
         y_offset = 25
-        line_height = 20
+        line_height = 18
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.5
         
         # Frame number and overall state
-        cv2.putText(frame, f"Frame: {frame_idx}", (15, y_offset),
-                   font, font_scale, COLOR_TEXT, 1)
+        cv2.putText(frame, f"Frame: {frame_idx}", (15, y_offset), font, 0.5, COLOR_TEXT, 1)
         y_offset += line_height
         
-        cv2.putText(frame, f"Contact: {overall_state}", (15, y_offset),
-                   font, 0.7, overall_color, 2)
+        cv2.putText(frame, f"Contact: {overall_state}", (15, y_offset), font, 0.7, overall_color, 2)
         y_offset += line_height + 5
+        
+        # Ground plane info
+        cv2.putText(frame, f"Ground Plane: L={ground_plane.left_ground_y:.3f} R={ground_plane.right_ground_y:.3f}", 
+                   (15, y_offset), font, 0.4, COLOR_GROUND_LINE, 1)
+        y_offset += line_height - 2
+        cv2.putText(frame, f"Slope: {ground_plane.slope:.4f}", (15, y_offset), font, 0.4, COLOR_GROUND_LINE, 1)
+        y_offset += line_height + 2
         
         # Left foot details
         left_color = COLOR_GROUNDED if left_grounded else COLOR_AIRBORNE
-        cv2.putText(frame, f"LEFT FOOT: {left_state.contact_type.upper()}", (15, y_offset),
-                   font, font_scale, left_color, 1)
+        cv2.putText(frame, f"LEFT FOOT: {left_state.contact_type.upper()}", (15, y_offset), font, 0.5, left_color, 1)
         y_offset += line_height
         
-        # Left joints
-        for name, state in [("Ankle", left_state.ankle), ("Ball", left_state.ball), ("Toe", left_state.toe)]:
-            joint_color = COLOR_GROUNDED if state.grounded else COLOR_AIRBORNE
-            status = "GND" if state.grounded else "AIR"
-            cv2.putText(frame, f"  {name}: {status}", (15, y_offset),
-                       font, 0.45, joint_color, 1)
-            cv2.putText(frame, f"d={state.distance:.3f} v={state.velocity:.3f}", (120, y_offset),
-                       font, 0.4, COLOR_GRAY, 1)
+        for joint in [left_state.toe, left_state.ball, left_state.ankle]:
+            joint_color = COLOR_GROUNDED if joint.grounded else COLOR_AIRBORNE
+            status = "GND" if joint.grounded else "AIR"
+            cv2.putText(frame, f"  {joint.name.capitalize():6s}: {status}", (15, y_offset), font, 0.4, joint_color, 1)
+            cv2.putText(frame, f"dist={joint.distance:+.3f} vel={joint.velocity:.3f}", (140, y_offset), font, 0.35, COLOR_GRAY, 1)
             y_offset += line_height - 2
         
         y_offset += 5
         
         # Right foot details
         right_color = COLOR_GROUNDED if right_grounded else COLOR_AIRBORNE
-        cv2.putText(frame, f"RIGHT FOOT: {right_state.contact_type.upper()}", (15, y_offset),
-                   font, font_scale, right_color, 1)
+        cv2.putText(frame, f"RIGHT FOOT: {right_state.contact_type.upper()}", (15, y_offset), font, 0.5, right_color, 1)
         y_offset += line_height
         
-        # Right joints
-        for name, state in [("Ankle", right_state.ankle), ("Ball", right_state.ball), ("Toe", right_state.toe)]:
-            joint_color = COLOR_GROUNDED if state.grounded else COLOR_AIRBORNE
-            status = "GND" if state.grounded else "AIR"
-            cv2.putText(frame, f"  {name}: {status}", (15, y_offset),
-                       font, 0.45, joint_color, 1)
-            cv2.putText(frame, f"d={state.distance:.3f} v={state.velocity:.3f}", (120, y_offset),
-                       font, 0.4, COLOR_GRAY, 1)
+        for joint in [right_state.toe, right_state.ball, right_state.ankle]:
+            joint_color = COLOR_GROUNDED if joint.grounded else COLOR_AIRBORNE
+            status = "GND" if joint.grounded else "AIR"
+            cv2.putText(frame, f"  {joint.name.capitalize():6s}: {status}", (15, y_offset), font, 0.4, joint_color, 1)
+            cv2.putText(frame, f"dist={joint.distance:+.3f} vel={joint.velocity:.3f}", (140, y_offset), font, 0.35, COLOR_GRAY, 1)
             y_offset += line_height - 2
         
         y_offset += 5
         
         # Thresholds
-        cv2.putText(frame, f"Thresholds: h={height_threshold:.3f}m v={velocity_threshold:.3f}m/f", (15, y_offset),
-                   font, 0.4, COLOR_GRAY, 1)
+        cv2.putText(frame, f"Thresholds: height={height_threshold:.3f}m  vel={velocity_threshold:.3f}m/f", 
+                   (15, y_offset), font, 0.35, COLOR_GRAY, 1)
         y_offset += line_height - 2
-        cv2.putText(frame, f"Min contact frames: {min_contact_frames}", (15, y_offset),
-                   font, 0.4, COLOR_GRAY, 1)
+        cv2.putText(frame, f"Min contact frames: {min_contact_frames}", (15, y_offset), font, 0.35, COLOR_GRAY, 1)
         
-        # Draw ground plane line at bottom
+        # Draw ground plane line at bottom (visual reference)
         ground_line_y = int(h * 0.85)
         cv2.line(frame, (0, ground_line_y), (w, ground_line_y), COLOR_GROUND_LINE, 2)
-        cv2.putText(frame, "Ground Plane", (10, ground_line_y - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_GROUND_LINE, 1)
+        cv2.putText(frame, "Ground Plane Reference", (10, ground_line_y - 10), font, 0.4, COLOR_GROUND_LINE, 1)
         
         # Convert back to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -376,35 +475,13 @@ class FootContactTest:
         self,
         mesh_sequence: Dict,
         images: torch.Tensor,
-        left_ankle_frame: int = -1,
-        left_ball_frame: int = -1,
-        left_toe_frame: int = -1,
-        right_ankle_frame: int = -1,
-        right_ball_frame: int = -1,
-        right_toe_frame: int = -1,
+        left_foot_ground_frame: int = 0,
+        right_foot_ground_frame: int = 0,
         height_threshold: float = 0.05,
         velocity_threshold: float = 0.03,
         min_contact_frames: int = 1,
     ) -> Tuple[torch.Tensor, Dict, str]:
         """Test foot contact detection and generate debug overlay."""
-        
-        # Validate: minimum 1 calibration frame per foot
-        left_provided = sum([
-            left_ankle_frame >= 0,
-            left_ball_frame >= 0,
-            left_toe_frame >= 0,
-        ])
-        right_provided = sum([
-            right_ankle_frame >= 0,
-            right_ball_frame >= 0,
-            right_toe_frame >= 0,
-        ])
-        
-        if left_provided < 1 or right_provided < 1:
-            raise ValueError(
-                "Please provide at least 1 calibration frame per foot. "
-                f"Got: left={left_provided}, right={right_provided}"
-            )
         
         # Get frames data
         frames_data = mesh_sequence.get("frames", {})
@@ -415,73 +492,17 @@ class FootContactTest:
             frames = frames_data
         
         num_frames = len(frames)
-        log.info(f"Processing {num_frames} frames with joint-based detection")
-        log.info(f"Left calibration: ankle={left_ankle_frame}, ball={left_ball_frame}, toe={left_toe_frame}")
-        log.info(f"Right calibration: ankle={right_ankle_frame}, ball={right_ball_frame}, toe={right_toe_frame}")
+        log.info(f"Processing {num_frames} frames with ground plane detection")
         
         # Validate frame indices
         max_frame = num_frames - 1
-        for name, idx in [
-            ("left_ankle", left_ankle_frame),
-            ("left_ball", left_ball_frame),
-            ("left_toe", left_toe_frame),
-            ("right_ankle", right_ankle_frame),
-            ("right_ball", right_ball_frame),
-            ("right_toe", right_toe_frame),
-        ]:
-            if idx > max_frame:
-                raise ValueError(f"Calibration frame {name}={idx} out of range (max {max_frame})")
+        if left_foot_ground_frame > max_frame:
+            raise ValueError(f"left_foot_ground_frame={left_foot_ground_frame} out of range (max {max_frame})")
+        if right_foot_ground_frame > max_frame:
+            raise ValueError(f"right_foot_ground_frame={right_foot_ground_frame} out of range (max {max_frame})")
         
-        # Extract calibration ground heights from joint_coords
-        ground_heights = {
-            "left_ankle": None,
-            "left_ball": None,
-            "left_toe": None,
-            "right_ankle": None,
-            "right_ball": None,
-            "right_toe": None,
-        }
-        
-        calibration_map = {
-            "left_ankle": (left_ankle_frame, JOINT_INDICES["left_ankle"]),
-            "left_ball": (left_ball_frame, JOINT_INDICES["left_ball"]),
-            "left_toe": (left_toe_frame, JOINT_INDICES["left_toe"]),
-            "right_ankle": (right_ankle_frame, JOINT_INDICES["right_ankle"]),
-            "right_ball": (right_ball_frame, JOINT_INDICES["right_ball"]),
-            "right_toe": (right_toe_frame, JOINT_INDICES["right_toe"]),
-        }
-        
-        for joint_name, (frame_idx, joint_idx) in calibration_map.items():
-            if frame_idx >= 0:
-                joint_coords = frames[frame_idx].get("joint_coords")
-                if joint_coords is not None:
-                    pos = self._get_joint_position(joint_coords, joint_idx)
-                    ground_heights[joint_name] = pos[1]  # Y coordinate
-                    log.info(f"Calibrated {joint_name} ground Y = {pos[1]:.4f} from frame {frame_idx}")
-        
-        # Fill missing calibrations with available ones from same foot
-        # Left foot: use first available
-        left_available = [v for k, v in ground_heights.items() if k.startswith("left_") and v is not None]
-        if left_available:
-            left_default = left_available[0]
-            for key in ["left_ankle", "left_ball", "left_toe"]:
-                if ground_heights[key] is None:
-                    ground_heights[key] = left_default
-                    log.info(f"Using default for {key}: {left_default:.4f}")
-        
-        # Right foot: use first available
-        right_available = [v for k, v in ground_heights.items() if k.startswith("right_") and v is not None]
-        if right_available:
-            right_default = right_available[0]
-            for key in ["right_ankle", "right_ball", "right_toe"]:
-                if ground_heights[key] is None:
-                    ground_heights[key] = right_default
-                    log.info(f"Using default for {key}: {right_default:.4f}")
-        
-        # Verify all calibrations are set
-        for key, val in ground_heights.items():
-            if val is None:
-                raise ValueError(f"Could not calibrate {key}. Check joint_coords in calibration frames.")
+        # Calibrate ground plane
+        ground_plane = self._calibrate_ground_plane(frames, left_foot_ground_frame, right_foot_ground_frame)
         
         log.info(f"Thresholds: height={height_threshold}m, velocity={velocity_threshold}m/frame, min_frames={min_contact_frames}")
         
@@ -492,97 +513,63 @@ class FootContactTest:
         else:
             images_np = images_np.astype(np.uint8)
         
-        # Process all frames - first pass (raw detection)
-        raw_contact_data = []  # List of (left_state, right_state) per frame
-        prev_positions = {}  # joint_name -> previous position
+        # Process all frames
+        all_states = []  # List of (left_state, right_state) per frame
+        prev_positions = {}
         
         for i, frame_data in enumerate(frames):
             joint_coords = frame_data.get("joint_coords")
             
             if joint_coords is None:
                 # No data - assume airborne
-                dummy_state = JointContactState(False, 1.0, 0.0, 0.0, 1.0)
-                left_state = FootContactState(dummy_state, dummy_state, dummy_state)
-                right_state = FootContactState(dummy_state, dummy_state, dummy_state)
-                raw_contact_data.append((left_state, right_state))
+                dummy_joint = JointState("none", 0, 0, 0, 1.0, 0, False)
+                left_state = FootState(dummy_joint, dummy_joint, dummy_joint)
+                right_state = FootState(dummy_joint, dummy_joint, dummy_joint)
+                all_states.append((left_state, right_state))
                 continue
             
             is_first_frame = (i == 0)
             
-            # Detect each joint
-            joint_states = {}
-            for joint_name, joint_idx in JOINT_INDICES.items():
-                pos = self._get_joint_position(joint_coords, joint_idx)
-                
-                # Compute velocity
-                if is_first_frame or joint_name not in prev_positions:
-                    velocity = 0.0
-                else:
-                    velocity = self._compute_velocity(pos, prev_positions[joint_name])
-                
-                # Detect contact
-                state = self._detect_joint_contact(
-                    current_y=pos[1],
-                    ground_y=ground_heights[joint_name],
-                    velocity=velocity,
-                    height_threshold=height_threshold,
-                    velocity_threshold=velocity_threshold,
-                    is_first_frame=is_first_frame,
-                )
-                
-                joint_states[joint_name] = state
-                prev_positions[joint_name] = pos
-            
-            # Build foot states
-            left_state = FootContactState(
-                ankle=joint_states["left_ankle"],
-                ball=joint_states["left_ball"],
-                toe=joint_states["left_toe"],
-            )
-            right_state = FootContactState(
-                ankle=joint_states["right_ankle"],
-                ball=joint_states["right_ball"],
-                toe=joint_states["right_toe"],
+            # Detect left foot
+            left_state, left_prev = self._detect_foot_contact(
+                joint_coords, ground_plane, prev_positions, "left",
+                height_threshold, velocity_threshold, is_first_frame
             )
             
-            raw_contact_data.append((left_state, right_state))
+            # Detect right foot
+            right_state, right_prev = self._detect_foot_contact(
+                joint_coords, ground_plane, prev_positions, "right",
+                height_threshold, velocity_threshold, is_first_frame
+            )
+            
+            all_states.append((left_state, right_state))
+            prev_positions.update(left_prev)
+            prev_positions.update(right_prev)
         
         # Apply min_contact_frames filter if needed
         if min_contact_frames > 1:
-            # Extract per-joint contact history
-            joint_histories = {name: [] for name in JOINT_INDICES.keys()}
-            
-            for left_state, right_state in raw_contact_data:
-                joint_histories["left_ankle"].append(left_state.ankle.grounded)
-                joint_histories["left_ball"].append(left_state.ball.grounded)
-                joint_histories["left_toe"].append(left_state.toe.grounded)
-                joint_histories["right_ankle"].append(right_state.ankle.grounded)
-                joint_histories["right_ball"].append(right_state.ball.grounded)
-                joint_histories["right_toe"].append(right_state.toe.grounded)
+            # Extract contact histories
+            left_history = [s[0].any_grounded for s in all_states]
+            right_history = [s[1].any_grounded for s in all_states]
             
             # Apply filter
-            filtered_histories = {
-                name: self._apply_min_contact_frames(history, min_contact_frames)
-                for name, history in joint_histories.items()
-            }
+            left_filtered = self._apply_min_contact_frames(left_history, min_contact_frames)
+            right_filtered = self._apply_min_contact_frames(right_history, min_contact_frames)
             
-            # Update contact data with filtered results
-            for i, (left_state, right_state) in enumerate(raw_contact_data):
-                left_state.ankle.grounded = filtered_histories["left_ankle"][i]
-                left_state.ball.grounded = filtered_histories["left_ball"][i]
-                left_state.toe.grounded = filtered_histories["left_toe"][i]
-                right_state.ankle.grounded = filtered_histories["right_ankle"][i]
-                right_state.ball.grounded = filtered_histories["right_ball"][i]
-                right_state.toe.grounded = filtered_histories["right_toe"][i]
+            # Note: We keep individual joint states but overall grounded status is filtered
+            # This is for display purposes - the filtered status overrides joint-level decisions
+        else:
+            left_filtered = [s[0].any_grounded for s in all_states]
+            right_filtered = [s[1].any_grounded for s in all_states]
         
         # Generate output frames and statistics
         output_frames = []
         contact_states = []
         
-        for i, (left_state, right_state) in enumerate(raw_contact_data):
-            # Determine overall state
-            left_grounded = left_state.any_grounded
-            right_grounded = right_state.any_grounded
+        for i, (left_state, right_state) in enumerate(all_states):
+            # Use filtered grounded status for overall contact
+            left_grounded = left_filtered[i]
+            right_grounded = right_filtered[i]
             
             if left_grounded and right_grounded:
                 contact_state = "both"
@@ -602,6 +589,7 @@ class FootContactTest:
                     frame_idx=i,
                     left_state=left_state,
                     right_state=right_state,
+                    ground_plane=ground_plane,
                     height_threshold=height_threshold,
                     velocity_threshold=velocity_threshold,
                     min_contact_frames=min_contact_frames,
@@ -615,9 +603,9 @@ class FootContactTest:
         none_count = contact_states.count("none")
         
         status = (
-            f"Detected contacts: both={both_count}, left={left_count}, "
-            f"right={right_count}, airborne={none_count} "
-            f"(total {num_frames} frames)"
+            f"Ground plane: L={ground_plane.left_ground_y:.3f} R={ground_plane.right_ground_y:.3f} | "
+            f"Contacts: both={both_count}, left={left_count}, right={right_count}, air={none_count} "
+            f"({num_frames} frames)"
         )
         log.info(status)
         
@@ -625,7 +613,17 @@ class FootContactTest:
         result_sequence = mesh_sequence.copy()
         result_sequence["foot_contact"] = {
             "contact_states": contact_states,
-            "calibration": ground_heights,
+            "ground_plane": {
+                "left_ground_y": ground_plane.left_ground_y,
+                "right_ground_y": ground_plane.right_ground_y,
+                "left_x": ground_plane.left_x,
+                "right_x": ground_plane.right_x,
+                "slope": ground_plane.slope,
+            },
+            "calibration_frames": {
+                "left": left_foot_ground_frame,
+                "right": right_foot_ground_frame,
+            },
             "thresholds": {
                 "height": height_threshold,
                 "velocity": velocity_threshold,
@@ -635,21 +633,21 @@ class FootContactTest:
             "per_frame": [
                 {
                     "left": {
-                        "grounded": left_state.any_grounded,
+                        "grounded": left_filtered[i],
                         "contact_type": left_state.contact_type,
-                        "ankle": {"grounded": left_state.ankle.grounded, "distance": left_state.ankle.distance, "velocity": left_state.ankle.velocity},
-                        "ball": {"grounded": left_state.ball.grounded, "distance": left_state.ball.distance, "velocity": left_state.ball.velocity},
                         "toe": {"grounded": left_state.toe.grounded, "distance": left_state.toe.distance, "velocity": left_state.toe.velocity},
+                        "ball": {"grounded": left_state.ball.grounded, "distance": left_state.ball.distance, "velocity": left_state.ball.velocity},
+                        "ankle": {"grounded": left_state.ankle.grounded, "distance": left_state.ankle.distance, "velocity": left_state.ankle.velocity},
                     },
                     "right": {
-                        "grounded": right_state.any_grounded,
+                        "grounded": right_filtered[i],
                         "contact_type": right_state.contact_type,
-                        "ankle": {"grounded": right_state.ankle.grounded, "distance": right_state.ankle.distance, "velocity": right_state.ankle.velocity},
-                        "ball": {"grounded": right_state.ball.grounded, "distance": right_state.ball.distance, "velocity": right_state.ball.velocity},
                         "toe": {"grounded": right_state.toe.grounded, "distance": right_state.toe.distance, "velocity": right_state.toe.velocity},
+                        "ball": {"grounded": right_state.ball.grounded, "distance": right_state.ball.distance, "velocity": right_state.ball.velocity},
+                        "ankle": {"grounded": right_state.ankle.grounded, "distance": right_state.ankle.distance, "velocity": right_state.ankle.velocity},
                     },
                 }
-                for left_state, right_state in raw_contact_data
+                for i, (left_state, right_state) in enumerate(all_states)
             ],
         }
         
