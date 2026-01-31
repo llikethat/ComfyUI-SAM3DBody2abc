@@ -86,6 +86,8 @@ class GroundLinkNet:
         if checkpoint_path and os.path.exists(checkpoint_path):
             self._load_checkpoint(checkpoint_path)
         
+        # Ensure model is in float32 (not bfloat16) for broad compatibility
+        self.model.float()
         self.model.eval()
         self.model.to(self.device)
     
@@ -94,7 +96,17 @@ class GroundLinkNet:
         try:
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             state_dict = checkpoint.get('model', checkpoint)
-            self.model.load_state_dict(state_dict)
+            
+            # Convert BFloat16 weights to Float32 for compatibility
+            # BFloat16 is only supported on newer GPUs (Ampere+) and not on CPU
+            converted_state_dict = {}
+            for key, value in state_dict.items():
+                if hasattr(value, 'dtype') and value.dtype == torch.bfloat16:
+                    converted_state_dict[key] = value.float()
+                else:
+                    converted_state_dict[key] = value
+            
+            self.model.load_state_dict(converted_state_dict)
             self._checkpoint_loaded = True
             self._load_error = None
             print(f"[GroundLink] ✓ Loaded checkpoint from {path}")
@@ -117,6 +129,9 @@ class GroundLinkNet:
         if isinstance(poses, np.ndarray):
             poses = torch.from_numpy(poses).float()
         
+        # Ensure float32 (not bfloat16) for compatibility
+        poses = poses.float()
+        
         if poses.dim() == 3:
             poses = poses.unsqueeze(0)
         
@@ -125,7 +140,8 @@ class GroundLinkNet:
         with torch.no_grad():
             output = self.model(poses)
         
-        output = output.squeeze(0).cpu().numpy()
+        # Ensure output is float32 before converting to numpy
+        output = output.float().squeeze(0).cpu().numpy()
         cop = output[..., :3]
         grf = output[..., 3:]
         
