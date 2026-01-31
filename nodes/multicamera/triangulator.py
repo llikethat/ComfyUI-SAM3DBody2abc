@@ -110,23 +110,14 @@ class MultiCameraTriangulator:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "mesh_sequence_a": ("MESH_SEQUENCE", {
-                    "tooltip": "Mesh sequence from Camera A (primary view)"
-                }),
-                "mesh_sequence_b": ("MESH_SEQUENCE", {
-                    "tooltip": "Mesh sequence from Camera B (secondary view)"
+                "camera_list": ("CAMERA_LIST", {
+                    "tooltip": "Camera list from Camera Accumulator (minimum 2 cameras)"
                 }),
                 "calibration": ("CALIBRATION_DATA", {
-                    "tooltip": "Camera calibration data from CameraCalibrationLoader"
+                    "tooltip": "Camera calibration data from Auto-Calibrator or CalibrationLoader"
                 }),
             },
             "optional": {
-                "images_a": ("IMAGE", {
-                    "tooltip": "Video frames from Camera A (for debug visualization)"
-                }),
-                "images_b": ("IMAGE", {
-                    "tooltip": "Video frames from Camera B (for debug visualization)"
-                }),
                 "joint_to_track": (["Pelvis", "Head", "Left Ankle", "Right Ankle", "All Joints"], {
                     "default": "Pelvis",
                     "tooltip": "Which joint(s) to triangulate for trajectory"
@@ -163,11 +154,8 @@ class MultiCameraTriangulator:
     
     def triangulate(
         self,
-        mesh_sequence_a: Dict,
-        mesh_sequence_b: Dict,
+        camera_list: Dict,
         calibration: Dict,
-        images_a: Optional[torch.Tensor] = None,
-        images_b: Optional[torch.Tensor] = None,
         joint_to_track: str = "Pelvis",
         merge_mode: str = "Z only (depth)",
         confidence_threshold: float = 0.5,
@@ -175,36 +163,75 @@ class MultiCameraTriangulator:
         debug_visualization: bool = True,
     ) -> Tuple[Dict, Dict, torch.Tensor, str]:
         """
-        Triangulate 3D positions from two camera views.
+        Triangulate 3D positions from N camera views.
+        
+        Accepts CAMERA_LIST from Camera Accumulator.
+        Uses all available cameras for each joint at each frame.
         """
         
+        # Validate inputs
+        num_cameras = camera_list.get("num_cameras", 0)
+        cameras_data = camera_list.get("cameras", [])
+        
+        if num_cameras < 2:
+            raise ValueError(
+                f"Need at least 2 cameras for triangulation, got {num_cameras}. "
+                f"Chain Camera Accumulator nodes to add more cameras."
+            )
+        
         log.info("=" * 60)
-        log.info("MULTI-CAMERA TRIANGULATION")
+        log.info(f"MULTI-CAMERA TRIANGULATION ({num_cameras} cameras)")
         log.info("=" * 60)
         
-        # Get cameras from calibration
-        camera_a = calibration["camera_objects"]["camera_A"]
-        camera_b = calibration["camera_objects"]["camera_B"]
+        # Get calibrated Camera objects (ordered list)
+        cal_camera_list = calibration.get("camera_list", [])
         
-        log.info(f"Camera A: {camera_a.name} at {camera_a.position}")
-        log.info(f"Camera B: {camera_b.name} at {camera_b.position}")
-        log.info(f"Baseline: {calibration['geometry']['baseline_m']:.2f}m")
-        log.info(f"Angle: {calibration['geometry']['angle_between_views_deg']:.1f}°")
+        # Fallback: build from camera_objects dict if camera_list not present
+        if not cal_camera_list:
+            cam_objs = calibration.get("camera_objects", {})
+            for key in sorted(cam_objs.keys()):
+                cal_camera_list.append(cam_objs[key])
         
-        # Get frames from mesh sequences
-        frames_a = mesh_sequence_a.get("frames", {})
-        frames_b = mesh_sequence_b.get("frames", {})
+        if len(cal_camera_list) < 2:
+            raise ValueError("Calibration data has fewer than 2 cameras")
         
-        num_frames_a = len(frames_a)
-        num_frames_b = len(frames_b)
+        # Match camera_list entries to calibrated cameras
+        # Use as many as we have calibration for
+        num_usable = min(num_cameras, len(cal_camera_list))
         
-        if num_frames_a != num_frames_b:
-            log.warning(f"Frame count mismatch: Camera A={num_frames_a}, Camera B={num_frames_b}")
+        if num_usable < num_cameras:
+            log.warning(
+                f"Camera list has {num_cameras} cameras but calibration has "
+                f"{len(cal_camera_list)}. Using {num_usable} cameras."
+            )
         
-        num_frames = min(num_frames_a, num_frames_b)
-        log.info(f"Processing {num_frames} frames")
+        for i in range(num_usable):
+            cam = cal_camera_list[i]
+            label = cameras_data[i]["label"] if i < len(cameras_data) else f"cam_{i}"
+            log.info(f"  {label}: position={cam.position}, calibrated=✓")
         
-        fps = mesh_sequence_a.get("fps", 24.0)
+        # Get mesh sequences and images from camera_list
+        mesh_sequences = [c["mesh_sequence"] for c in cameras_data[:num_usable]]
+        all_images = [c.get("images") for c in cameras_data[:num_usable]]
+        
+        # Get frame counts
+        all_frames = [ms.get("frames", {}) for ms in mesh_sequences]
+        frame_counts = [len(f) for f in all_frames]
+        
+        num_frames = min(frame_counts)
+        if len(set(frame_counts)) > 1:
+            log.warning(f"Frame count mismatch: {frame_counts}, using min={num_frames}")
+        
+        log.info(f"Processing {num_frames} frames across {num_usable} cameras")
+        
+        fps = mesh_sequences[0].get("fps", 24.0)
+        
+        # Backward compat aliases for debug visualization
+        camera_a = cal_camera_list[0]
+        camera_b = cal_camera_list[1]
+        
+        images_a = all_images[0] if len(all_images) > 0 else None
+        images_b = all_images[1] if len(all_images) > 1 else None
         
         # Determine which joints to track
         if joint_to_track == "All Joints":
@@ -218,6 +245,7 @@ class MultiCameraTriangulator:
         trajectory_3d = {
             "frames": num_frames,
             "fps": fps,
+            "num_cameras": num_usable,
             "coordinate_system": "Y-up",
             "unit": "meters",
             "joints": {},
@@ -229,6 +257,8 @@ class MultiCameraTriangulator:
             "quality": {
                 "average_error": 0.0,
                 "max_error": 0.0,
+                "frames_with_all_cameras": 0,
+                "frames_with_partial_cameras": 0,
                 "frames_with_both_cameras": 0,
                 "frames_with_single_camera": 0,
                 "frames_failed": 0,
@@ -243,13 +273,12 @@ class MultiCameraTriangulator:
                 "visibility": [],
             }
         
-        # Get sorted frame indices
-        frame_indices_a = sorted(frames_a.keys())
-        frame_indices_b = sorted(frames_b.keys())
+        # Get sorted frame indices for each camera
+        all_frame_indices = [sorted(f.keys()) for f in all_frames]
         
-        # Determine keypoint source
-        first_frame_a = frames_a[frame_indices_a[0]]
-        use_simple_skeleton = "pred_keypoints_2d" in first_frame_a and first_frame_a["pred_keypoints_2d"] is not None
+        # Determine keypoint source from first camera's first frame
+        first_frame = all_frames[0][all_frame_indices[0][0]]
+        use_simple_skeleton = "pred_keypoints_2d" in first_frame and first_frame["pred_keypoints_2d"] is not None
         
         if use_simple_skeleton:
             joint_map = SIMPLE_JOINT_INDICES
@@ -267,27 +296,32 @@ class MultiCameraTriangulator:
         
         # Process each frame
         for i in range(num_frames):
-            idx_a = frame_indices_a[i]
-            idx_b = frame_indices_b[i]
-            
-            frame_a = frames_a[idx_a]
-            frame_b = frames_b[idx_b]
-            
             log.progress(i, num_frames, "Triangulating", interval=20)
+            
+            # Get frame data from all cameras
+            frame_data = []
+            for cam_idx in range(num_usable):
+                idx = all_frame_indices[cam_idx][i]
+                frame_data.append(all_frames[cam_idx][idx])
             
             # Process each joint
             for joint_name in joints_to_track:
                 joint_key = joint_name.lower()
                 joint_idx = joint_map.get(joint_name, 0)
                 
-                # Get 2D coordinates from both cameras
-                coords_a = self._get_joint_2d(frame_a, joint_idx, kp_key, camera_a)
-                coords_b = self._get_joint_2d(frame_b, joint_idx, kp_key, camera_b)
+                # Get 2D coordinates from ALL cameras
+                all_coords = []
+                for cam_idx in range(num_usable):
+                    coords = self._get_joint_2d(
+                        frame_data[cam_idx], joint_idx, kp_key, 
+                        cal_camera_list[cam_idx]
+                    )
+                    all_coords.append(coords)
                 
-                # Triangulate
+                # Triangulate using all available cameras
                 point_3d, error, num_cams = triangulate_point_from_cameras(
-                    [camera_a, camera_b],
-                    [coords_a, coords_b],
+                    cal_camera_list[:num_usable],
+                    all_coords,
                     confidences=None
                 )
                 
@@ -302,7 +336,13 @@ class MultiCameraTriangulator:
                         max_error = max(max_error, error)
                         valid_frames += 1
                     
-                    if num_cams == 2:
+                    if num_cams == num_usable:
+                        trajectory_3d["quality"]["frames_with_all_cameras"] += 1
+                    elif num_cams >= 2:
+                        trajectory_3d["quality"]["frames_with_partial_cameras"] += 1
+                    
+                    # Keep backward compat stats
+                    if num_cams >= 2:
                         trajectory_3d["quality"]["frames_with_both_cameras"] += 1
                     elif num_cams == 1:
                         trajectory_3d["quality"]["frames_with_single_camera"] += 1
@@ -342,16 +382,23 @@ class MultiCameraTriangulator:
             trajectory_3d["trajectory"]["average_speed"] = float(avg_speed)
         
         log.info(f"Triangulation complete!")
+        log.info(f"  Cameras used: {num_usable}")
         log.info(f"  Valid frames: {valid_frames}/{num_frames}")
         log.info(f"  Average error: {trajectory_3d['quality']['average_error']:.4f}m")
         log.info(f"  Max error: {trajectory_3d['quality']['max_error']:.4f}m")
+        if num_usable > 2:
+            log.info(f"  Frames with all {num_usable} cameras: {trajectory_3d['quality']['frames_with_all_cameras']}")
+            log.info(f"  Frames with partial cameras: {trajectory_3d['quality']['frames_with_partial_cameras']}")
         
-        # Merge triangulated data back into mesh_sequence_a
+        # Merge triangulated data back into first camera's mesh_sequence
         merged_sequence = self._merge_trajectory(
-            mesh_sequence_a, trajectory_3d, merge_mode, primary_joint
+            mesh_sequences[0], trajectory_3d, merge_mode, primary_joint
         )
         
-        # Generate debug visualization
+        # Update merge metadata for N cameras
+        merged_sequence["triangulation"]["method"] = f"{num_usable}_camera"
+        
+        # Generate debug visualization (uses first two cameras for backward compat)
         if debug_visualization and images_a is not None and images_b is not None:
             debug_view = self._create_debug_view(
                 images_a, images_b, camera_a, camera_b,
@@ -544,17 +591,22 @@ class MultiCameraTriangulator:
         traj = trajectory_3d.get("trajectory", {})
         
         lines = [
-            "=== TRIANGULATION RESULTS ===",
+            f"=== TRIANGULATION RESULTS ({trajectory_3d.get('num_cameras', 2)} cameras) ===",
             f"Frames: {trajectory_3d['frames']}",
             f"FPS: {trajectory_3d['fps']}",
             "",
             "=== QUALITY ===",
             f"Average error: {quality['average_error']:.4f}m",
             f"Max error: {quality['max_error']:.4f}m",
-            f"Frames with both cameras: {quality['frames_with_both_cameras']}",
+            f"Frames with 2+ cameras: {quality['frames_with_both_cameras']}",
             f"Frames with single camera: {quality['frames_with_single_camera']}",
             f"Frames failed: {quality['frames_failed']}",
         ]
+        
+        # Add N-camera specific stats if present
+        if quality.get('frames_with_all_cameras', 0) > 0:
+            lines.append(f"Frames with ALL cameras: {quality['frames_with_all_cameras']}")
+            lines.append(f"Frames with partial cameras: {quality.get('frames_with_partial_cameras', 0)}")
         
         if quality['average_error'] <= error_threshold:
             lines.append(f"✓ Quality: GOOD (error < {error_threshold}m)")

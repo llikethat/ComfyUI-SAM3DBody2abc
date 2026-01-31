@@ -74,3 +74,19 @@ yacs
 # Fast mode: CPU only (KLT, ORB)
 # Balanced/Best: GPU recommended for LightGlue/LoFTR
 # Falls back to ORB (CPU) if GPU unavailable
+
+# ============================================
+# SILHOUETTE REFINEMENT (Optional - v5.7.0+)
+# ============================================
+# For SMPL-based differentiable silhouette rendering
+
+# SMPL/SMPL-X body model
+# pip install smplx
+# Download body models from https://smpl-x.is.tue.mpg.de/
+
+# PyTorch3D for differentiable rendering
+# Requires CUDA toolkit matching your PyTorch version
+# conda install pytorch3d -c pytorch3d
+# OR: pip install pytorch3d (may need to build from source)
+
+# Without these, falls back to skeleton hull rendering (still works!)

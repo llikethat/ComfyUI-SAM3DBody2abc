@@ -88,11 +88,8 @@ class CameraAutoCalibrator:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "mesh_sequence_a": ("MESH_SEQUENCE", {
-                    "tooltip": "Mesh sequence from Camera A (will be reference/origin)"
-                }),
-                "mesh_sequence_b": ("MESH_SEQUENCE", {
-                    "tooltip": "Mesh sequence from Camera B"
+                "camera_list": ("CAMERA_LIST", {
+                    "tooltip": "Camera list from Camera Accumulator (minimum 2 cameras)"
                 }),
             },
             "optional": {
@@ -108,7 +105,7 @@ class CameraAutoCalibrator:
                     "min": 1.0,
                     "max": 500.0,
                     "step": 1.0,
-                    "tooltip": "Camera focal length in mm (assumed same for both)"
+                    "tooltip": "Camera focal length in mm (assumed same for all cameras)"
                 }),
                 "sensor_width_mm": ("FLOAT", {
                     "default": 36.0,
@@ -140,8 +137,7 @@ class CameraAutoCalibrator:
     
     def calibrate(
         self,
-        mesh_sequence_a: Dict,
-        mesh_sequence_b: Dict,
+        camera_list: Dict,
         person_height_m: float = 1.75,
         focal_length_mm: float = 35.0,
         sensor_width_mm: float = 36.0,
@@ -150,17 +146,42 @@ class CameraAutoCalibrator:
     ) -> Tuple[Dict, str]:
         """
         Auto-calibrate camera positions from person keypoints.
+        
+        Accepts CAMERA_LIST from Camera Accumulator.
+        Camera 0 (first in list) is the reference camera at origin.
+        Each subsequent camera is calibrated pairwise against the reference.
         """
         
+        # Validate camera list
+        num_cameras = camera_list.get("num_cameras", 0)
+        cameras = camera_list.get("cameras", [])
+        
+        if num_cameras < 2:
+            raise ValueError(
+                f"Need at least 2 cameras for calibration, got {num_cameras}. "
+                f"Chain Camera Accumulator nodes to add more cameras."
+            )
+        
         log.info("=" * 60)
-        log.info("CAMERA AUTO-CALIBRATION")
+        log.info(f"CAMERA AUTO-CALIBRATION ({num_cameras} cameras)")
         log.info("=" * 60)
         log.info(f"Person height: {person_height_m}m")
         log.info(f"Focal length: {focal_length_mm}mm")
         log.info(f"Calibration frames: {num_calibration_frames}")
         
-        # Get frames
+        for i, cam in enumerate(cameras):
+            n_frames = len(cam["mesh_sequence"].get("frames", {}))
+            log.info(f"  {cam['label']} ({cam['id']}): {n_frames} frames")
+        
+        # Reference camera is always the first in the list
+        mesh_sequence_a = cameras[0]["mesh_sequence"]
+        
+        # Get frames for reference camera
         frames_a = mesh_sequence_a.get("frames", {})
+        
+        # For N cameras, calibrate each against reference (cam_0)
+        # Start with the first secondary camera (cam_1) for backward compat
+        mesh_sequence_b = cameras[1]["mesh_sequence"]
         frames_b = mesh_sequence_b.get("frames", {})
         
         frame_indices_a = sorted(frames_a.keys())
@@ -372,10 +393,11 @@ class CameraAutoCalibrator:
         
         # Build calibration data
         calibration = {
-            "version": "1.0",
+            "version": "2.0",
             "name": "Auto-Calibration",
             "source": "auto",
             "method": "essential_matrix",
+            "num_cameras": num_cameras,
             "coordinate_system": {
                 "up": "Y",
                 "forward": "-Z",
@@ -383,7 +405,9 @@ class CameraAutoCalibrator:
             },
             "cameras": {
                 "camera_A": {
-                    "name": "Camera A (Reference)",
+                    "name": cameras[0]["label"],
+                    "label": cameras[0]["label"],
+                    "id": cameras[0]["id"],
                     "position": [0.0, 0.0, 0.0],
                     "rotation_euler": [0.0, 0.0, 0.0],
                     "rotation_order": "XYZ",
@@ -395,7 +419,9 @@ class CameraAutoCalibrator:
                     "distortion": {"k1": 0, "k2": 0, "p1": 0, "p2": 0}
                 },
                 "camera_B": {
-                    "name": "Camera B",
+                    "name": cameras[1]["label"],
+                    "label": cameras[1]["label"],
+                    "id": cameras[1]["id"],
                     "position": t_scaled.tolist(),
                     "rotation_euler": rotation_euler,
                     "rotation_order": "XYZ",
@@ -416,7 +442,7 @@ class CameraAutoCalibrator:
             }
         }
         
-        # Create Camera objects
+        # Create Camera objects for A and B
         camera_a = Camera.from_dict(calibration["cameras"]["camera_A"], "camera_A")
         camera_b = Camera.from_dict(calibration["cameras"]["camera_B"], "camera_B")
         
@@ -424,6 +450,67 @@ class CameraAutoCalibrator:
             "camera_A": camera_a,
             "camera_B": camera_b
         }
+        
+        # Also build ordered camera list for N-camera triangulation
+        calibration["camera_list"] = [camera_a, camera_b]
+        
+        # Calibrate additional cameras (cam_2, cam_3, ...) against reference
+        extra_cam_results = []
+        for cam_idx in range(2, num_cameras):
+            cam_data = cameras[cam_idx]
+            cam_key = f"camera_{chr(65 + cam_idx)}"  # camera_C, camera_D, ...
+            
+            log.info(f"")
+            log.info(f"--- Calibrating {cam_data['label']} ({cam_data['id']}) vs reference ---")
+            
+            try:
+                extra_R, extra_t_scaled, extra_rotation_euler, extra_info = self._calibrate_pair(
+                    frames_a, cam_data["mesh_sequence"].get("frames", {}),
+                    K, img_w, img_h,
+                    focal_length_mm, sensor_width_mm,
+                    num_calibration_frames, scale
+                )
+                
+                cam_dict = {
+                    "name": cam_data["label"],
+                    "label": cam_data["label"],
+                    "id": cam_data["id"],
+                    "position": extra_t_scaled.tolist(),
+                    "rotation_euler": extra_rotation_euler,
+                    "rotation_order": "XYZ",
+                    "focal_length_mm": focal_length_mm,
+                    "sensor_width_mm": sensor_width_mm,
+                    "sensor_height_mm": sensor_width_mm * img_h / img_w,
+                    "resolution": [img_w, img_h],
+                    "principal_point": [img_w / 2, img_h / 2],
+                    "distortion": {"k1": 0, "k2": 0, "p1": 0, "p2": 0}
+                }
+                
+                calibration["cameras"][cam_key] = cam_dict
+                
+                cam_obj = Camera.from_dict(cam_dict, cam_key)
+                calibration["camera_objects"][cam_key] = cam_obj
+                calibration["camera_list"].append(cam_obj)
+                
+                extra_cam_results.append({
+                    "key": cam_key,
+                    "label": cam_data["label"],
+                    "position": extra_t_scaled,
+                    "rotation": extra_rotation_euler,
+                    "info": extra_info,
+                    "success": True,
+                })
+                
+                log.info(f"  ✓ {cam_data['label']} position: [{extra_t_scaled[0]:.3f}, {extra_t_scaled[1]:.3f}, {extra_t_scaled[2]:.3f}]")
+                
+            except Exception as e:
+                log.warning(f"  ✗ Failed to calibrate {cam_data['label']}: {e}")
+                extra_cam_results.append({
+                    "key": cam_key,
+                    "label": cam_data["label"],
+                    "success": False,
+                    "error": str(e),
+                })
         
         # Compute geometry
         baseline = compute_baseline(camera_a, camera_b)
@@ -439,13 +526,13 @@ class CameraAutoCalibrator:
         
         # Generate info string
         info_lines = [
-            "=== AUTO-CALIBRATION RESULTS ===",
+            f"=== AUTO-CALIBRATION RESULTS ({num_cameras} cameras) ===",
             f"Method: Essential Matrix + Person Height",
             f"Point correspondences: {len(all_points_a)}",
             f"Inliers: {inliers}",
             f"Frames used: {len(sample_indices)}",
             "",
-            "=== CAMERA A (Reference) ===",
+            f"=== {cameras[0]['label']} (Reference) ===",
             f"Position: (0.0, 0.0, 0.0) m",
             f"Rotation: (0.0°, 0.0°, 0.0°)",
             f"Distance to person: {viewing_angles['camera_a']['distance_m']:.2f}m",
@@ -453,22 +540,39 @@ class CameraAutoCalibrator:
             f"  Azimuth (horizontal): {viewing_angles['camera_a']['azimuth_deg']:.1f}°",
             f"  Elevation (vertical): {viewing_angles['camera_a']['elevation_deg']:.1f}°",
             "",
-            "=== CAMERA B ===",
+            f"=== {cameras[1]['label']} ===",
             f"Position: ({t_scaled[0]:.3f}, {t_scaled[1]:.3f}, {t_scaled[2]:.3f}) m",
             f"Rotation: ({rotation_euler[0]:.1f}°, {rotation_euler[1]:.1f}°, {rotation_euler[2]:.1f}°)",
             f"Distance to person: {viewing_angles['camera_b']['distance_m']:.2f}m",
             f"Viewing angle to person: {viewing_angles['camera_b']['viewing_angle_deg']:.1f}°",
             f"  Azimuth (horizontal): {viewing_angles['camera_b']['azimuth_deg']:.1f}°",
             f"  Elevation (vertical): {viewing_angles['camera_b']['elevation_deg']:.1f}°",
+        ]
+        
+        # Add extra cameras info
+        for result in extra_cam_results:
+            info_lines.append("")
+            info_lines.append(f"=== {result['label']} ===")
+            if result["success"]:
+                pos = result["position"]
+                rot = result["rotation"]
+                info_lines.append(f"Position: ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) m")
+                info_lines.append(f"Rotation: ({rot[0]:.1f}°, {rot[1]:.1f}°, {rot[2]:.1f}°)")
+                info_lines.append(f"Correspondences: {result['info'].get('num_correspondences', '?')}")
+                info_lines.append(f"✓ Calibrated successfully")
+            else:
+                info_lines.append(f"✗ FAILED: {result.get('error', 'Unknown error')}")
+        
+        info_lines.extend([
             "",
             "=== PERSON POSITION ===",
             f"3D Position: ({person_3d[0]:.2f}, {person_3d[1]:.2f}, {person_3d[2]:.2f}) m",
             "",
             "=== GEOMETRY ===",
-            f"Baseline: {baseline:.2f}m",
-            f"Angle between views: {angle:.1f}°",
+            f"Baseline (A-B): {baseline:.2f}m",
+            f"Angle between A-B: {angle:.1f}°",
             f"Person height used: {person_height_m}m",
-        ]
+        ])
         
         if angle < 30:
             info_lines.append("⚠️ Warning: Small angle - depth accuracy may be limited")
@@ -545,6 +649,112 @@ class CameraAutoCalibrator:
         log.info(f"Target height: {person_height_m}m")
         
         return scale
+    
+    def _calibrate_pair(
+        self,
+        frames_ref: Dict,
+        frames_other: Dict,
+        K: np.ndarray,
+        img_w: int,
+        img_h: int,
+        focal_length_mm: float,
+        sensor_width_mm: float,
+        num_calibration_frames: int,
+        scale: float,
+    ) -> Tuple[np.ndarray, np.ndarray, List[float], Dict]:
+        """
+        Calibrate a single camera pair (reference vs other).
+        
+        Uses the same essential matrix approach but applies the pre-computed
+        scale from the reference pair.
+        
+        Returns:
+            R: Rotation matrix
+            t_scaled: Scaled translation vector
+            rotation_euler: Euler angles in degrees
+            info: Dict with calibration stats
+        """
+        frame_indices_ref = sorted(frames_ref.keys())
+        frame_indices_other = sorted(frames_other.keys())
+        
+        num_frames = min(len(frame_indices_ref), len(frame_indices_other))
+        
+        if num_frames < 1:
+            raise ValueError("No overlapping frames")
+        
+        # Sample frames evenly
+        step = max(1, num_frames // num_calibration_frames)
+        sample_indices = list(range(0, num_frames, step))[:num_calibration_frames]
+        
+        # Collect keypoint correspondences
+        all_points_ref = []
+        all_points_other = []
+        
+        for idx in sample_indices:
+            frame_ref = frames_ref[frame_indices_ref[idx]]
+            frame_other = frames_other[frame_indices_other[idx]]
+            
+            kp_ref = frame_ref.get("pred_keypoints_2d")
+            kp_other = frame_other.get("pred_keypoints_2d")
+            
+            if kp_ref is None or kp_other is None:
+                continue
+            
+            if hasattr(kp_ref, 'numpy'):
+                kp_ref = kp_ref.numpy()
+            if hasattr(kp_other, 'numpy'):
+                kp_other = kp_other.numpy()
+            
+            kp_ref = np.array(kp_ref)
+            kp_other = np.array(kp_other)
+            
+            for joint_name, joint_idx in CALIBRATION_JOINTS.items():
+                if joint_idx >= len(kp_ref) or joint_idx >= len(kp_other):
+                    continue
+                
+                pt_ref = kp_ref[joint_idx]
+                pt_other = kp_other[joint_idx]
+                
+                if pt_ref[0] < 0 or pt_ref[0] >= img_w or pt_ref[1] < 0 or pt_ref[1] >= img_h:
+                    continue
+                if pt_other[0] < 0 or pt_other[0] >= img_w or pt_other[1] < 0 or pt_other[1] >= img_h:
+                    continue
+                
+                all_points_ref.append(pt_ref[:2])
+                all_points_other.append(pt_other[:2])
+        
+        if len(all_points_ref) < 8:
+            raise ValueError(f"Not enough correspondences ({len(all_points_ref)}), need >= 8")
+        
+        points_ref = np.array(all_points_ref, dtype=np.float64)
+        points_other = np.array(all_points_other, dtype=np.float64)
+        
+        # Compute essential matrix
+        E, mask = cv2.findEssentialMat(
+            points_ref, points_other, K,
+            method=cv2.RANSAC, prob=0.999, threshold=1.0
+        )
+        
+        if E is None:
+            raise ValueError("Failed to compute Essential Matrix")
+        
+        inliers = mask.ravel().sum()
+        
+        # Recover pose
+        _, R, t, _ = cv2.recoverPose(E, points_ref, points_other, K)
+        
+        # Apply the pre-computed scale
+        t_scaled = t.flatten() * scale
+        
+        # Convert to euler
+        rotation_euler = self._rotation_matrix_to_euler(R)
+        
+        info = {
+            "num_correspondences": len(all_points_ref),
+            "num_inliers": int(inliers),
+        }
+        
+        return R, t_scaled, rotation_euler, info
     
     def _rotation_matrix_to_euler(self, R: np.ndarray) -> List[float]:
         """

@@ -15,6 +15,28 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.7.0
+- NEW: 🎭 Silhouette Refiner node
+  - Refine triangulated 3D trajectory using silhouette consistency
+  - Uses differentiable rendering to match projected body to SAM3 masks
+  - Supports SMPL body model (PyTorch3D) or skeleton hull fallback
+  - Multi-camera silhouette constraints for improved accuracy
+  - Temporal smoothness and bone length preservation
+  - 50-100 optimization iterations per frame for precise boundary alignment
+
+Version: 5.6.0
+- NEW: 📷 Camera Accumulator node (Option B - serial chaining)
+  - Build CAMERA_LIST by chaining cameras serially
+  - Supports 2 to unlimited cameras
+  - Uniform interface for auto-calibration and triangulation
+- UPDATED: 🎯 Camera Auto-Calibrator now accepts CAMERA_LIST
+  - Pairwise calibration against reference camera
+  - Supports N cameras (3, 4, 5+)
+- UPDATED: 🔺 Multi-Camera Triangulator now accepts CAMERA_LIST
+  - N-camera triangulation using weighted least squares
+  - Better accuracy with more camera views
+  - Backward-compatible quality metrics
+
 Version: 5.5.0
 - NEW: ⚡ GroundLink Physics-Based Foot Contact (PRIMARY solver)
   - Neural network predicts Ground Reaction Forces (GRF) from poses
@@ -45,7 +67,7 @@ Version: 5.2.0
 - NEW: 📹 SLAM Camera Solver node
 """
 
-__version__ = "5.5.0"
+__version__ = "5.7.0"
 
 import os
 import sys
@@ -192,6 +214,15 @@ if os.path.isdir(_slam_path):
 _multicamera_path = os.path.join(_nodes, "multicamera")
 if os.path.isdir(_multicamera_path):
     try:
+        # Load camera accumulator (NEW in v5.6.0)
+        _camera_accumulator = _load_module(
+            "sam3d2abc_camera_accumulator",
+            os.path.join(_multicamera_path, "camera_accumulator.py")
+        )
+        if _camera_accumulator:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraAccumulator"] = _camera_accumulator.CameraAccumulator
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraAccumulator"] = "📷 Camera Accumulator"
+        
         # Load auto calibrator
         _auto_calibrator = _load_module(
             "sam3d2abc_auto_calibrator",
@@ -218,6 +249,15 @@ if os.path.isdir(_multicamera_path):
         if _calibration_loader:
             NODE_CLASS_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = _calibration_loader.CameraCalibrationLoader
             NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_CameraCalibrationLoader"] = "📷 Camera Calibration Loader"
+        
+        # Load silhouette refiner (NEW in v5.7.0)
+        _silhouette_refiner = _load_module(
+            "sam3d2abc_silhouette_refiner",
+            os.path.join(_multicamera_path, "silhouette_refiner.py")
+        )
+        if _silhouette_refiner:
+            NODE_CLASS_MAPPINGS["SAM3DBody2abc_SilhouetteRefiner"] = _silhouette_refiner.SilhouetteRefiner
+            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SilhouetteRefiner"] = "🎭 Silhouette Refiner"
     except Exception as e:
         print(f"[SAM3DBody2abc] Error loading multicamera nodes: {e}")
 
