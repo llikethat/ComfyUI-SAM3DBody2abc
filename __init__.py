@@ -16,12 +16,18 @@ Outputs match SAM3DBody Process:
 - Animated FBX has shape keys + skeleton keyframes
 
 Version: 5.9.0
+- NEW: 🎭 Monocular Silhouette Refiner node
+  - Refine SAM3DBody pose using SAM3 segmentation masks
+  - Compares rendered silhouette vs mask, optimizes to match
+  - Uses skeleton hull rendering (no PyTorch3D required)
+  - Improves pose accuracy by enforcing silhouette boundary
+  - Works with single-camera (monocular) video
 - NEW: 🦶🦿 Smart GroundLink (Video + Pinning) node - UNIFIED SOLUTION
   - Combines video-based detection + physics-based pinning
   - Uses TAPNet to track feet in video (ground truth)
   - Uses GroundLink's proven pinning to lock feet during contacts
   - No foot sliding during contact frames
-  - Proper body adjustment without vertical pull-down
+  - Verification step compares pinned result vs video
   - Single node does detection + pinning together
 - NEW: 🦶✨ Smart Foot Contact (Visual Feedback) node
   - Unified foot contact detection using video as ground truth
@@ -371,6 +377,12 @@ _smart_groundlink = _load_module("sam3d2abc_smart_groundlink", os.path.join(_nod
 if _smart_groundlink:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_SmartGroundLink"] = _smart_groundlink.SmartGroundLinkNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SmartGroundLink"] = "🦶🦿 Smart GroundLink (Video + Pinning)"
+
+# Load and register Monocular Silhouette Refiner - NEW in v5.9.0
+_mono_silhouette = _load_module("sam3d2abc_mono_silhouette", os.path.join(_nodes, "monocular_silhouette_refiner.py"))
+if _mono_silhouette:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MonocularSilhouetteRefiner"] = _mono_silhouette.MonocularSilhouetteRefinerNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MonocularSilhouetteRefiner"] = "🎭 Monocular Silhouette Refiner"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

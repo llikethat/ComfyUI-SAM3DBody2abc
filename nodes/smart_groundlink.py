@@ -263,13 +263,12 @@ class TAPNetTracker:
         video_tensor = video_tensor.unsqueeze(0).to(self._device)
         
         # Query points: [1, 2, 3] where each is [t, y, x]
-        query_points = torch.zeros((1, 2, 3), dtype=torch.float32, device=self._device)
-        query_points[0, 0, 0] = 0  # frame
-        query_points[0, 0, 1] = query_xy[0, 1]  # y
-        query_points[0, 0, 2] = query_xy[0, 0]  # x
-        query_points[0, 1, 0] = 0
-        query_points[0, 1, 1] = query_xy[1, 1]
-        query_points[0, 1, 2] = query_xy[1, 0]
+        # Build on CPU first, then move to device
+        query_data = np.array([
+            [0, query_xy[0, 1], query_xy[0, 0]],  # left foot: [frame, y, x]
+            [0, query_xy[1, 1], query_xy[1, 0]],  # right foot: [frame, y, x]
+        ], dtype=np.float32)
+        query_points = torch.from_numpy(query_data).unsqueeze(0).to(self._device)
         
         try:
             with torch.no_grad():
