@@ -605,6 +605,37 @@ class TAPNetTracker:
         T, H, W, _ = video.shape
         N = len(query_points)
         
+        # Resize video for memory efficiency if too large
+        # TAPIR works well at lower resolutions
+        max_size = 512  # Maximum dimension
+        scale = 1.0
+        if max(H, W) > max_size:
+            scale = max_size / max(H, W)
+            new_H = int(H * scale)
+            new_W = int(W * scale)
+            # Make sure dimensions are multiples of 8 for TAPIR
+            new_H = (new_H // 8) * 8
+            new_W = (new_W // 8) * 8
+            
+            self.log.verbose(f"Resizing video from {W}x{H} to {new_W}x{new_H} for memory efficiency")
+            
+            import cv2
+            video_resized = np.zeros((T, new_H, new_W, 3), dtype=video.dtype)
+            for t in range(T):
+                video_resized[t] = cv2.resize(video[t], (new_W, new_H))
+            video = video_resized
+            
+            # Scale query points
+            query_points = query_points.copy()
+            query_points[:, 1] *= scale  # y
+            query_points[:, 2] *= scale  # x
+            
+            H, W = new_H, new_W
+        
+        # Clear GPU memory before processing
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         # Convert to tensor
         video_tensor = torch.from_numpy(video).float().permute(0, 3, 1, 2) / 255.0
         video_tensor = video_tensor.unsqueeze(0).to(self._device)  # (1, T, C, H, W)
@@ -612,11 +643,22 @@ class TAPNetTracker:
         # Convert query points
         query_tensor = torch.from_numpy(query_points).float().unsqueeze(0).to(self._device)
         
-        with torch.no_grad():
-            outputs = self._model(video_tensor, query_tensor)
+        try:
+            with torch.no_grad():
+                outputs = self._model(video_tensor, query_tensor)
+            
+            tracks = outputs['tracks'][0].cpu().numpy()  # (T, N, 2)
+            visibles = outputs['occlusion'][0].cpu().numpy() < 0.5  # (T, N)
+            
+        finally:
+            # Clean up GPU memory
+            del video_tensor, query_tensor
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
-        tracks = outputs['tracks'][0].cpu().numpy()  # (T, N, 2)
-        visibles = outputs['occlusion'][0].cpu().numpy() < 0.5  # (T, N)
+        # Scale tracks back to original resolution
+        if scale != 1.0:
+            tracks /= scale
         
         return tracks, visibles
     
@@ -752,8 +794,9 @@ class SmartFootContactConfig:
     
     # Memory management
     enable_chunking: bool = True
-    chunk_size: int = 500
-    chunk_overlap: int = 30
+    chunk_size: int = 24  # Reduced from 500 - TAPNet is memory hungry
+    chunk_overlap: int = 6  # Reduced proportionally
+    max_tracking_resolution: int = 512  # Max dimension for tracking (saves memory)
     
     # Foot indices (MHR skeleton)
     left_foot_idx: int = 10
@@ -1245,11 +1288,11 @@ class SmartFootContactNode:
                     "tooltip": "Enable chunked processing for long videos (saves memory)"
                 }),
                 "chunk_size": ("INT", {
-                    "default": 500,
-                    "min": 100,
-                    "max": 2000,
-                    "step": 100,
-                    "tooltip": "Frames per chunk when chunking enabled"
+                    "default": 24,
+                    "min": 8,
+                    "max": 100,
+                    "step": 4,
+                    "tooltip": "Frames per chunk when chunking enabled (lower = less memory)"
                 }),
                 "log_level": (["normal", "verbose", "debug", "silent"], {
                     "default": "verbose",
@@ -1274,7 +1317,7 @@ class SmartFootContactNode:
         ema_alpha: float = 0.2,
         gaussian_sigma: float = 2.0,
         enable_chunking: bool = True,
-        chunk_size: int = 500,
+        chunk_size: int = 24,
         log_level: str = "verbose",
     ) -> Tuple[Dict, str, Dict]:
         """Process mesh sequence with smart foot contact correction."""
