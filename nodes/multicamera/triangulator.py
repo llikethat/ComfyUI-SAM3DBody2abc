@@ -248,6 +248,12 @@ class MultiCameraTriangulator:
             "num_cameras": num_usable,
             "coordinate_system": "Y-up",
             "unit": "meters",
+            "primary_camera": {
+                "index": 0,
+                "id": cameras[0]["id"],
+                "label": cameras[0]["label"],
+                "note": "Use this camera's video for Maya image plane overlay"
+            },
             "joints": {},
             "trajectory": {
                 "positions": [],
@@ -589,11 +595,16 @@ class MultiCameraTriangulator:
         
         quality = trajectory_3d["quality"]
         traj = trajectory_3d.get("trajectory", {})
+        primary_cam = trajectory_3d.get("primary_camera", {})
         
         lines = [
             f"=== TRIANGULATION RESULTS ({trajectory_3d.get('num_cameras', 2)} cameras) ===",
             f"Frames: {trajectory_3d['frames']}",
             f"FPS: {trajectory_3d['fps']}",
+            "",
+            "=== PRIMARY CAMERA (for Maya image plane) ===",
+            f"Camera: {primary_cam.get('label', 'Camera A')} ({primary_cam.get('id', 'cam_0')})",
+            f"Index: {primary_cam.get('index', 0)}",
             "",
             "=== QUALITY ===",
             f"Average error: {quality['average_error']:.4f}m",
