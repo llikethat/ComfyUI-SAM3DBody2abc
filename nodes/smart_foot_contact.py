@@ -483,58 +483,71 @@ class TAPNetTracker:
         """Try to load TAPNet/TAPIR model (Apache 2.0 license)."""
         try:
             from tapnet.torch import tapir_model
+            import os
             
             self.log.info(f"Loading TAPNet on {self._device}")
             
-            # BootsTAPIR checkpoint URLs (try multiple for compatibility)
-            checkpoint_urls = [
-                "https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt",
+            # First, try local checkpoint paths (same as foot_tracker.py)
+            checkpoint_paths = [
+                "/workspace/ComfyUI/models/tapir/bootstapir_checkpoint_v2.pt",
+                "/workspace/models/tapir/bootstapir_checkpoint_v2.pt",
+                os.path.expanduser("~/models/tapir/bootstapir_checkpoint_v2.pt"),
+                "bootstapir_checkpoint_v2.pt",
+                # Also check torch hub cache
+                os.path.expanduser("~/.cache/torch/hub/checkpoints/bootstapir_checkpoint_v2.pt"),
+                "/root/.cache/torch/hub/checkpoints/bootstapir_checkpoint_v2.pt",
             ]
             
-            for url in checkpoint_urls:
+            checkpoint_path = None
+            for path in checkpoint_paths:
+                if os.path.exists(path):
+                    checkpoint_path = path
+                    self.log.verbose(f"Found checkpoint: {path}")
+                    break
+            
+            if checkpoint_path is not None:
+                # Load from local file (matching foot_tracker.py approach)
                 try:
-                    self.log.verbose(f"Trying checkpoint: {url.split('/')[-1]}")
-                    
-                    # Create model - try different configurations for compatibility
-                    try:
-                        # First try with extra_convs disabled (more compatible)
-                        model = tapir_model.TAPIR(
-                            pyramid_level=0,
-                            extra_convs=False,
-                        )
-                    except TypeError:
-                        # Older versions may not have extra_convs parameter
-                        model = tapir_model.TAPIR(pyramid_level=0)
-                    
-                    checkpoint = torch.hub.load_state_dict_from_url(
-                        url,
-                        map_location=self._device
-                    )
-                    
-                    # Handle different checkpoint formats
-                    if isinstance(checkpoint, dict):
-                        if 'model' in checkpoint:
-                            state_dict = checkpoint['model']
-                        elif 'state_dict' in checkpoint:
-                            state_dict = checkpoint['state_dict']
-                        else:
-                            state_dict = checkpoint
-                    else:
-                        state_dict = checkpoint
-                    
-                    # Load with strict=False to handle version mismatches
-                    model.load_state_dict(state_dict, strict=False)
+                    # Use pyramid_level=1 to match the checkpoint architecture
+                    model = tapir_model.TAPIR(pyramid_level=1)
+                    model.load_state_dict(torch.load(checkpoint_path, map_location=self._device))
                     model = model.to(self._device)
                     model.eval()
                     
                     self._model = model
                     self._model_type = "tapnet"
-                    self.log.info("TAPNet loaded successfully (Apache 2.0 license)")
+                    self.log.info(f"TAPNet loaded from {checkpoint_path} (Apache 2.0 license)")
                     return True
-                    
                 except Exception as e:
-                    self.log.debug(f"Checkpoint failed: {e}")
-                    continue
+                    self.log.debug(f"Local checkpoint failed: {e}")
+            
+            # If no local checkpoint, try to download
+            # Note: The downloaded checkpoint may have different architecture
+            self.log.verbose("No local checkpoint found, trying to download...")
+            
+            try:
+                # Try downloading the original TAPIR checkpoint (not BootsTAPIR)
+                # which has a simpler architecture
+                model = tapir_model.TAPIR(pyramid_level=0)
+                
+                checkpoint_url = "https://storage.googleapis.com/dm-tapnet/tapir_checkpoint_panning.pt"
+                checkpoint = torch.hub.load_state_dict_from_url(
+                    checkpoint_url,
+                    map_location=self._device
+                )
+                
+                # Try to load with strict=False
+                model.load_state_dict(checkpoint, strict=False)
+                model = model.to(self._device)
+                model.eval()
+                
+                self._model = model
+                self._model_type = "tapnet"
+                self.log.info("TAPNet loaded from URL (Apache 2.0 license)")
+                return True
+                
+            except Exception as e:
+                self.log.debug(f"Download checkpoint failed: {e}")
             
             return False
             
