@@ -16,7 +16,14 @@ Outputs match SAM3DBody Process:
 - Animated FBX has shape keys + skeleton keyframes
 
 Version: 5.9.0
-- NEW: 🦶✨ Smart Foot Contact (Visual Feedback) node - RECOMMENDED
+- NEW: 🦶🦿 Smart GroundLink (Video + Pinning) node - UNIFIED SOLUTION
+  - Combines video-based detection + physics-based pinning
+  - Uses TAPNet to track feet in video (ground truth)
+  - Uses GroundLink's proven pinning to lock feet during contacts
+  - No foot sliding during contact frames
+  - Proper body adjustment without vertical pull-down
+  - Single node does detection + pinning together
+- NEW: 🦶✨ Smart Foot Contact (Visual Feedback) node
   - Unified foot contact detection using video as ground truth
   - TAPNet 2D tracking validates and corrects SAM3DBody output
   - Reprojection error feedback loop for accurate correction
@@ -358,6 +365,12 @@ if _smart_foot_contact:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_SmartFootContact"] = _smart_foot_contact.SmartFootContactNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SmartFootContact"] = "🦶✨ Smart Foot Contact (Visual Feedback)"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_GroundLinkVisualizer"] = "📊 GroundLink Contact Visualizer"
+
+# Load and register Smart GroundLink (Unified Video + Pinning) - NEW in v5.9.0
+_smart_groundlink = _load_module("sam3d2abc_smart_groundlink", os.path.join(_nodes, "smart_groundlink.py"))
+if _smart_groundlink:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SmartGroundLink"] = _smart_groundlink.SmartGroundLinkNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SmartGroundLink"] = "🦶🦿 Smart GroundLink (Video + Pinning)"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

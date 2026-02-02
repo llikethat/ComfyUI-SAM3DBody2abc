@@ -808,6 +808,7 @@ class SmartFootContactConfig:
     blend_in_frames: int = 3  # Ease-in frames at contact start
     blend_out_frames: int = 3  # Ease-out frames at contact end
     max_correction_px: float = 50.0  # Maximum correction per frame (pixels)
+    horizontal_only: bool = True  # Only correct horizontal (X), not vertical (Y) - prevents body pull
     
     # Temporal filtering
     filter_type: str = "ema"  # none, ema, gaussian, savgol, bidirectional_ema
@@ -1147,10 +1148,13 @@ class SmartFootContactProcessor:
                 if abs(depth) < 0.1:
                     depth = 1.0  # Default depth
                 
+                # Correction in 3D space
+                # NOTE: Only apply HORIZONTAL correction by default
+                # Vertical correction moves the whole body up/down which looks wrong
                 correction_3d = np.array([
-                    error_2d[0] * depth / focal,
-                    -error_2d[1] * depth / focal,  # Y is inverted
-                    0.0  # Don't adjust depth
+                    error_2d[0] * depth / focal,  # X correction (horizontal)
+                    0.0 if cfg.horizontal_only else (-error_2d[1] * depth / focal),  # Y (vertical) - disabled by default
+                    0.0  # Z (depth) - never adjust
                 ], dtype=np.float32)
                 
                 # Apply blend weight
@@ -1287,6 +1291,10 @@ class SmartFootContactNode:
                     "max": 15,
                     "tooltip": "Frames to ease in/out of corrections"
                 }),
+                "horizontal_only": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Only correct horizontal drift (X). Disable to also correct vertical (Y) - may cause body to move up/down"
+                }),
                 "temporal_filter": (["ema", "gaussian", "savgol", "bidirectional_ema", "none"], {
                     "default": "ema",
                     "tooltip": "Temporal smoothing filter type"
@@ -1335,6 +1343,7 @@ class SmartFootContactNode:
         velocity_threshold: float = 3.0,
         min_contact_duration: int = 3,
         blend_frames: int = 3,
+        horizontal_only: bool = True,
         temporal_filter: str = "ema",
         ema_alpha: float = 0.2,
         gaussian_sigma: float = 2.0,
@@ -1350,6 +1359,7 @@ class SmartFootContactNode:
             min_contact_duration=min_contact_duration,
             blend_in_frames=blend_frames,
             blend_out_frames=blend_frames,
+            horizontal_only=horizontal_only,
             filter_type=temporal_filter,
             ema_alpha=ema_alpha,
             gaussian_sigma=gaussian_sigma,
@@ -1403,21 +1413,96 @@ class SmartFootContactNode:
         
         # Build foot_contacts output (compatible with existing visualizer)
         contacts_array = []
+        events = []  # Track contact events
         frames_dict = result.get("frames", {})
+        
+        prev_left = False
+        prev_right = False
+        
         for key in sorted(frames_dict.keys()):
             fc = frames_dict[key].get("foot_contact", {"left": False, "right": False})
-            contacts_array.append([fc["left"], fc["right"]])
+            left_contact = fc["left"]
+            right_contact = fc["right"]
+            contacts_array.append([left_contact, right_contact])
+            
+            # Detect events (transitions)
+            frame_events = []
+            frame_idx = int(key) if isinstance(key, str) else key
+            
+            if left_contact and not prev_left:
+                frame_events.append("L_START")
+            elif not left_contact and prev_left:
+                frame_events.append("L_END")
+            
+            if right_contact and not prev_right:
+                frame_events.append("R_START")
+            elif not right_contact and prev_right:
+                frame_events.append("R_END")
+            
+            if frame_events:
+                events.append({
+                    "frame": frame_idx,
+                    "events": frame_events
+                })
+            
+            prev_left = left_contact
+            prev_right = right_contact
+        
+        # Generate timeline string
+        timeline_lines = [
+            "",
+            "CONTACT TIMELINE",
+            "-" * 50,
+            "Frame | L | R | Event",
+            "-" * 50,
+        ]
+        
+        # Only show frames with changes or every 25th frame
+        shown_frames = set()
+        for evt in events:
+            shown_frames.add(evt["frame"])
+        shown_frames.add(0)  # Always show first
+        shown_frames.add(len(contacts_array) - 1)  # Always show last
+        
+        for i in range(0, len(contacts_array), 25):
+            shown_frames.add(i)
+        
+        for i in sorted(shown_frames):
+            if i < len(contacts_array):
+                left = contacts_array[i][0]
+                right = contacts_array[i][1]
+                
+                # Find events for this frame
+                frame_events = []
+                for evt in events:
+                    if evt["frame"] == i:
+                        frame_events = evt["events"]
+                        break
+                
+                event_str = ", ".join(frame_events) if frame_events else ""
+                left_str = "████" if left else "····"
+                right_str = "████" if right else "····"
+                
+                timeline_lines.append(f"{i:5d} | {left_str} | {right_str} | {event_str}")
+        
+        timeline_lines.append("-" * 50)
+        timeline_str = "\n".join(timeline_lines)
+        
+        # Append timeline to debug_info
+        debug_info += timeline_str
         
         foot_contacts = {
             "contacts": contacts_array,
             "method": "smart_visual_feedback",
             "segments": segments,
+            "events": events,
             "debug": {
                 "timings": timings,
                 "config": {
                     "velocity_threshold": velocity_threshold,
                     "min_contact_duration": min_contact_duration,
                     "temporal_filter": temporal_filter,
+                    "horizontal_only": horizontal_only,
                 }
             }
         }
