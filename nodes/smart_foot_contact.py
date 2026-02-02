@@ -658,10 +658,17 @@ class TAPNetTracker:
                 outputs = self._model(video_tensor, query_tensor)
             
             # tracks output: [B, N, T, 2] -> we want [T, N, 2]
-            tracks = outputs['tracks'][0].cpu().numpy()  # [N, T, 2]
+            # Handle BFloat16 by converting to float32 first
+            tracks_tensor = outputs['tracks'][0]
+            if tracks_tensor.dtype == torch.bfloat16:
+                tracks_tensor = tracks_tensor.float()
+            tracks = tracks_tensor.cpu().numpy()  # [N, T, 2]
             tracks = np.transpose(tracks, (1, 0, 2))  # [T, N, 2]
             
-            occlusion = outputs['occlusion'][0].cpu().numpy()  # [N, T]
+            occlusion_tensor = outputs['occlusion'][0]
+            if occlusion_tensor.dtype == torch.bfloat16:
+                occlusion_tensor = occlusion_tensor.float()
+            occlusion = occlusion_tensor.cpu().numpy()  # [N, T]
             visibles = (occlusion < 0).T  # [T, N] - occlusion < 0 means visible
             
         finally:
