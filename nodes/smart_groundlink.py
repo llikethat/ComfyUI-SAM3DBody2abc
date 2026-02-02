@@ -421,13 +421,17 @@ def detect_contacts_from_tracks(
 
 def extract_joints(frame: Dict) -> np.ndarray:
     """Extract joint positions from frame data."""
-    # Try different formats
-    if "joints_3d" in frame:
+    # Try different formats - SAM3DBody uses pred_keypoints_3d
+    if "pred_keypoints_3d" in frame:
+        joints = frame["pred_keypoints_3d"]
+    elif "joints_3d" in frame:
         joints = frame["joints_3d"]
     elif "smpl_params" in frame and "joints" in frame["smpl_params"]:
         joints = frame["smpl_params"]["joints"]
     elif "keypoints_3d" in frame:
         joints = frame["keypoints_3d"]
+    elif "joint_coords" in frame:
+        joints = frame["joint_coords"]
     else:
         return None
     
@@ -673,25 +677,36 @@ class SmartGroundLinkProcessor:
         mesh_sequence: Dict
     ) -> Optional[np.ndarray]:
         """Get initial 2D foot positions from SAM3D projection."""
-        # Try keypoints_2d first
-        if "keypoints_2d" in frame:
-            kp2d = np.array(frame["keypoints_2d"])
+        # Try pred_keypoints_2d first (SAM3DBody format)
+        kp2d = None
+        for key in ["pred_keypoints_2d", "keypoints_2d", "joints_2d"]:
+            if key in frame:
+                kp2d = np.array(frame[key])
+                break
+        
+        if kp2d is not None:
             if kp2d.ndim > 2:
                 kp2d = kp2d[0]
             
             left_idx = min(self.config.left_foot_idx, len(kp2d) - 1)
             right_idx = min(self.config.right_foot_idx, len(kp2d) - 1)
             
+            self.log.debug(f"Found 2D keypoints with {len(kp2d)} joints")
             return np.array([kp2d[left_idx, :2], kp2d[right_idx, :2]])
         
         # Fallback: project 3D joints
         joints = extract_joints(frame)
         if joints is None:
+            self.log.warning(f"No keypoints found. Available keys: {list(frame.keys())}")
             return None
         
+        self.log.debug(f"Projecting from 3D joints ({len(joints)} joints)")
+        
         # Get camera parameters
-        focal = mesh_sequence.get("focal_length", 1000.0)
+        focal = frame.get("focal_length", mesh_sequence.get("focal_length", 1000.0))
         cam_t = frame.get("pred_cam_t", [0, 0, 5])
+        cx = frame.get("cx", mesh_sequence.get("width", 1280) / 2)
+        cy = frame.get("cy", mesh_sequence.get("height", 720) / 2)
         
         # Simple projection
         left_idx = min(self.config.left_foot_idx, len(joints) - 1)
@@ -705,11 +720,9 @@ class SmartGroundLinkProcessor:
         z = np.maximum(z, 0.1)
         feet_2d = feet_3d_world[:, :2] * focal / z
         
-        # Add image center offset (assume center)
-        width = mesh_sequence.get("width", 1280)
-        height = mesh_sequence.get("height", 720)
-        feet_2d[:, 0] += width / 2
-        feet_2d[:, 1] += height / 2
+        # Add principal point offset
+        feet_2d[:, 0] += cx
+        feet_2d[:, 1] += cy
         
         return feet_2d
     
