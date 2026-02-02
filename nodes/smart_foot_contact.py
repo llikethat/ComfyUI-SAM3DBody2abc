@@ -609,6 +609,8 @@ class TAPNetTracker:
         # TAPIR works well at lower resolutions
         max_size = 512  # Maximum dimension
         scale = 1.0
+        original_H, original_W = H, W
+        
         if max(H, W) > max_size:
             scale = max_size / max(H, W)
             new_H = int(H * scale)
@@ -617,18 +619,23 @@ class TAPNetTracker:
             new_H = (new_H // 8) * 8
             new_W = (new_W // 8) * 8
             
+            if new_H < 8:
+                new_H = 8
+            if new_W < 8:
+                new_W = 8
+            
             self.log.verbose(f"Resizing video from {W}x{H} to {new_W}x{new_H} for memory efficiency")
             
             import cv2
-            video_resized = np.zeros((T, new_H, new_W, 3), dtype=video.dtype)
+            video_resized = np.zeros((T, new_H, new_W, 3), dtype=np.uint8)
             for t in range(T):
                 video_resized[t] = cv2.resize(video[t], (new_W, new_H))
             video = video_resized
             
             # Scale query points
             query_points = query_points.copy()
-            query_points[:, 1] *= scale  # y
-            query_points[:, 2] *= scale  # x
+            query_points[:, 1] *= (new_H / original_H)  # y
+            query_points[:, 2] *= (new_W / original_W)  # x
             
             H, W = new_H, new_W
         
@@ -636,19 +643,26 @@ class TAPNetTracker:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        # Convert to tensor
-        video_tensor = torch.from_numpy(video).float().permute(0, 3, 1, 2) / 255.0
-        video_tensor = video_tensor.unsqueeze(0).to(self._device)  # (1, T, C, H, W)
+        # Convert to tensor - TAPIR expects [B, T, H, W, C] format!
+        video_tensor = torch.from_numpy(video).float()
+        if video_tensor.max() > 1.0:
+            video_tensor = video_tensor / 255.0
+        video_tensor = video_tensor * 2 - 1  # Normalize to [-1, 1] as per TAPIR
+        video_tensor = video_tensor.unsqueeze(0).to(self._device)  # [1, T, H, W, C]
         
-        # Convert query points
+        # Convert query points: [B, N, 3] where each is [t, y, x]
         query_tensor = torch.from_numpy(query_points).float().unsqueeze(0).to(self._device)
         
         try:
             with torch.no_grad():
                 outputs = self._model(video_tensor, query_tensor)
             
-            tracks = outputs['tracks'][0].cpu().numpy()  # (T, N, 2)
-            visibles = outputs['occlusion'][0].cpu().numpy() < 0.5  # (T, N)
+            # tracks output: [B, N, T, 2] -> we want [T, N, 2]
+            tracks = outputs['tracks'][0].cpu().numpy()  # [N, T, 2]
+            tracks = np.transpose(tracks, (1, 0, 2))  # [T, N, 2]
+            
+            occlusion = outputs['occlusion'][0].cpu().numpy()  # [N, T]
+            visibles = (occlusion < 0).T  # [T, N] - occlusion < 0 means visible
             
         finally:
             # Clean up GPU memory
@@ -658,7 +672,8 @@ class TAPNetTracker:
         
         # Scale tracks back to original resolution
         if scale != 1.0:
-            tracks /= scale
+            tracks[:, :, 0] *= (original_W / W)  # x
+            tracks[:, :, 1] *= (original_H / H)  # y
         
         return tracks, visibles
     
