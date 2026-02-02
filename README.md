@@ -1,4 +1,4 @@
-# SAM3DBody2abc v5.4.0
+# SAM3DBody2abc v5.8.0
 
 **Standalone** ComfyUI package for video-to-animated-FBX export using Meta's SAM-3D-Body.
 
@@ -11,6 +11,9 @@
 - 🦴 **Full Skeleton** - 70-joint MHR skeleton with rotations
 - 📦 **FBX/Alembic Export** - Animated mesh + skeleton via Blender
 - 🔧 **Direct Meta Integration** - No third-party wrapper dependencies
+- 📷 **Multi-Camera Support** - N-camera triangulation for jitter-free 3D
+- ⚡ **Physics-Based Foot Contact** - GroundLink neural network for accurate ground contact
+- 🎭 **Silhouette Refinement** - SMPL-based differentiable rendering (optional)
 
 ## Installation
 
@@ -18,7 +21,7 @@
 
 ```bash
 cd ComfyUI/custom_nodes
-unzip ComfyUI-SAM3DBody2abc-v5.4.0.zip
+unzip ComfyUI-SAM3DBody2abc-v5.8.0.zip
 ```
 
 ### Step 2: Get HuggingFace Token
@@ -40,9 +43,9 @@ On first run, it automatically downloads:
 - **SAM-3D-Body source code** (~100MB from GitHub)
 - **Model weights** (~3GB from HuggingFace)
 
-## Usage
+## Workflows
 
-### Workflow
+### Single Camera (Basic)
 
 ```
 [Load Video] → [🔧 Load SAM3DBody Model] → [🎬 Video Batch Processor] → [📦 Export Animated FBX]
@@ -50,124 +53,115 @@ On first run, it automatically downloads:
                (paste hf_token here)
 ```
 
-### First Run Output
+### Single Camera with Foot Contact
 
 ```
-[SAM3DBody Loader] Cloning SAM-3D-Body to: .../custom_nodes/sam-3d-body
-[SAM3DBody Loader] SAM-3D-Body cloned successfully!
-[SAM3DBody Loader] ==================================================
-[SAM3DBody Loader]   FIRST RUN: Downloading model weights...
-[SAM3DBody Loader] ==================================================
-[SAM3DBody Loader] Downloading model weights to: .../models/sam3dbody
-[SAM3DBody Loader] Model weights downloaded successfully!
+[Load Video] → [🎬 Video Batch Processor] → [⚡ GroundLink Foot Contact] → [📦 Export Animated FBX]
 ```
 
-### Subsequent Runs
+### Multi-Camera Triangulation (Jitter-Free 3D)
 
-After first run, everything is cached - no token needed, instant startup.
+```
+Camera A: [Load Video] → [🎬 Video Batch Processor] → [📷 Camera Accumulator] ─┐
+                                                                                 │ (chain)
+Camera B: [Load Video] → [🎬 Video Batch Processor] → [📷 Camera Accumulator] ─┤
+                                                                                 │ (chain)
+Camera C: [Load Video] → [🎬 Video Batch Processor] → [📷 Camera Accumulator] ─┘
+                                                                                 ↓
+                                                                          CAMERA_LIST
+                                                                          ↓         ↓
+                                                          [🎯 Auto-Calibrator]  [📷 Calibration Loader]
+                                                                          ↓         ↓
+                                                                     CALIBRATION_DATA
+                                                                                 ↓
+                                                          [🔺 Multi-Camera Triangulator] ← CAMERA_LIST
+                                                                                 ↓
+                                                                          TRAJECTORY_3D
+                                                                                 ↓
+                                                          [🎭 Silhouette Refiner] (optional)
+                                                                                 ↓
+                                                                     REFINED_TRAJECTORY_3D
+```
 
 ## Nodes
+
+### Core Processing
 
 | Node | Description |
 |------|-------------|
 | 🔧 Load SAM3DBody Model (Direct) | Load model (auto-downloads on first run) |
 | 🎬 Video Batch Processor | Process video → MESH_SEQUENCE |
 | 📦 Export Animated FBX | Export to FBX/Alembic |
-| 🔍 Verify Overlay | Debug visualization |
-| 📷 Camera Solver | Camera motion estimation |
-| 📊 Motion Analyzer | Motion statistics |
+| 📄 Export BVH | Export to BVH motion capture format |
 
-## External Camera Intrinsics
+### Foot Contact Detection
 
-The Video Batch Processor supports external camera intrinsics to override SAM3DBody's internal estimation. This is useful for:
-- Pre-calibrated cameras with known lens parameters
-- Professional footage with known focal length
-- Zoom lenses with variable focal length
-- Multi-camera setups
+| Node | Description |
+|------|-------------|
+| ⚡ GroundLink Foot Contact (Physics) | **PRIMARY** - Neural network GRF prediction |
+| 🦶 Foot Tracker (TAPNet) | Visual foot tracking fallback |
+| 🦶 Foot Contact Enforcer | Heuristic height/velocity fallback |
+| 📊 GroundLink Contact Visualizer | Debug visualization |
 
-### Intrinsics Priority
+### Multi-Camera
 
-```
-1. external_intrinsics (CAMERA_INTRINSICS) - MoGe2 or external
-2. intrinsics_json (INTRINSICS) - From JSON file
-3. SAM3DBody internal estimation - Default fallback
-```
+| Node | Description |
+|------|-------------|
+| 📷 Camera Accumulator | Build CAMERA_LIST from multiple views |
+| 🎯 Camera Auto-Calibrator | Auto-calibrate from person keypoints |
+| 📷 Camera Calibration Loader | Load calibration from JSON |
+| 🔺 Multi-Camera Triangulator | Triangulate 3D from N cameras |
+| 🎭 Silhouette Refiner | Refine trajectory using mask constraints |
 
-### Input Types
+### Analysis & Debug
 
-**`external_intrinsics`** (type: `CAMERA_INTRINSICS`)
-- Connect from: MoGe2 Intrinsics node
-- Provides per-frame focal length estimation
+| Node | Description |
+|------|-------------|
+| 📊 Motion Analyzer | Motion statistics and trajectory |
+| 📈 Trajectory Smoother | Reduce jitter in trajectories |
+| 🔍 Verify Overlay | Debug visualization overlay |
+| 📷 Camera Solver V2 | Camera motion estimation (TAPIR) |
 
-**`intrinsics_json`** (type: `INTRINSICS`)  
-- Connect from: IntrinsicsFromJSON, IntrinsicsEstimator, or IntrinsicsFromSAM3DBody nodes
-- Load from calibration JSON files
+### Intrinsics
 
-### Supported JSON Formats
-
-**Simple format (single focal length):**
-```json
-{
-  "focal_px": 1108.5,
-  "cx": 640.0,
-  "cy": 360.0,
-  "width": 1280,
-  "height": 720
-}
-```
-
-**Per-frame format (zoom lenses):**
-```json
-{
-  "focal_px": 1108.5,
-  "per_frame": [
-    {"focal_px": 1100.0},
-    {"focal_px": 1105.0},
-    {"focal_px": 1110.0}
-  ],
-  "width": 1280,
-  "height": 720
-}
-```
-
-**MoGe2 format:**
-```json
-{
-  "focal_length": 1108.5,
-  "per_frame_focal": [1100.0, 1105.0, 1110.0],
-  "cx": 640.0,
-  "cy": 360.0,
-  "width": 1280,
-  "height": 720
-}
-```
-
-**Calibration format:**
-```json
-{
-  "fx": 1108.5,
-  "fy": 1108.5,
-  "cx": 640.0,
-  "cy": 360.0,
-  "width": 1280,
-  "height": 720
-}
-```
-
-### Verifying Intrinsics
-
-Use the **Verify Overlay** node with `intrinsics_source: "Compare Both"` to visualize the difference between SAM3DBody estimation and external intrinsics:
-- **Green wireframe**: SAM3DBody intrinsics
-- **Orange wireframe**: External intrinsics
+| Node | Description |
+|------|-------------|
+| 📐 MoGe2 Intrinsics Estimator | AI-based focal length estimation |
+| 📐 Intrinsics from SAM3DBody | Extract intrinsics from mesh sequence |
+| 📐 Intrinsics from JSON | Load from calibration file |
 
 ## Requirements
+
+### Required
 
 - ComfyUI
 - Python 3.10+
 - PyTorch with CUDA (recommended)
 - Git (for automatic sam-3d-body clone)
-- Blender 3.6+ (for FBX export)
 - HuggingFace account with model access
+
+### Optional
+
+- **Blender 3.6+** - For FBX export
+- **smplx** - For SMPL body model in Silhouette Refiner
+- **pytorch3d** - For differentiable rendering in Silhouette Refiner
+
+## External Dependencies & Licenses
+
+See [docs/Dependencies.md](docs/Dependencies.md) for full details.
+
+| Package | License | Usage |
+|---------|---------|-------|
+| SAM-3D-Body | Meta License | Core body reconstruction |
+| GroundLink | MIT | Physics-based foot contact |
+| TAPNet/TAPIR | Apache 2.0 | Point tracking |
+| LightGlue | Apache 2.0 | Feature matching |
+| Kornia/LoFTR | Apache 2.0 | Feature matching |
+| PyTorch3D | BSD | Differentiable rendering (optional) |
+| SMPL/SMPL-X | MPI License | Body model (optional) |
+| Ultralytics YOLO | AGPL-3.0 | Person detection |
+
+⚠️ **Note**: Ultralytics YOLO uses AGPL-3.0 which has copyleft requirements. For commercial use without AGPL obligations, disable YOLO-based features or obtain a commercial license.
 
 ## Troubleshooting
 
@@ -193,16 +187,77 @@ sudo apt install blender  # Linux
 # Or download from https://www.blender.org/download/
 ```
 
+### "BFloat16 not supported" (GroundLink)
+
+Fixed in v5.7.0+. Update to the latest version. The checkpoint is automatically converted to Float32 for compatibility with older GPUs and CPU.
+
+### GroundLink shows "L=0 R=0 frames"
+
+This means no foot contacts were detected. Check:
+1. Is the person walking/running in the video?
+2. Are feet visible in the frame?
+3. Try adjusting `grf_threshold` (lower = more sensitive)
+
 ## Changelog
 
-### v5.4.0 (Current)
-- **NEW**: Automatic download with HuggingFace token input
-- **NEW**: Direct SAM-3D-Body integration  
-- **REMOVED**: All third-party wrapper dependencies
-- **REMOVED**: Need for huggingface-cli installation
+### v5.8.0 (Current)
+- **NEW**: Camera Accumulator now accepts per-camera intrinsics
+  - `focal_length_mm` input (0 = auto-detect from mesh_sequence)
+  - `sensor_width_mm` input (default: 36mm full-frame)
+- **UPDATED**: Auto-Calibrator uses intrinsics from CAMERA_LIST
+- **UPDATED**: Comprehensive documentation overhaul
+  - Full version history
+  - External dependencies and licenses
+  - Updated node reference
+
+### v5.7.0
+- **NEW**: 🎭 Silhouette Refiner node
+  - Refine triangulated trajectory using silhouette consistency
+  - SMPL body model + PyTorch3D differentiable rendering
+  - Skeleton hull fallback (no dependencies required)
+  - Multi-camera silhouette constraints
+- **FIX**: GroundLink BFloat16 compatibility
+  - Converts checkpoint weights to Float32 automatically
+  - Works on older GPUs and CPU
+
+### v5.6.0
+- **NEW**: 📷 Camera Accumulator node (serial chaining pattern)
+  - Build CAMERA_LIST by chaining cameras
+  - Supports 2 to unlimited cameras
+- **UPDATED**: 🎯 Camera Auto-Calibrator accepts CAMERA_LIST
+  - Pairwise calibration against reference camera
+  - Supports N cameras (3, 4, 5+)
+- **UPDATED**: 🔺 Multi-Camera Triangulator accepts CAMERA_LIST
+  - N-camera triangulation using weighted least squares
+  - Better accuracy with more camera views
+
+### v5.5.0
+- **NEW**: ⚡ GroundLink Physics-Based Foot Contact (PRIMARY solver)
+  - Neural network predicts Ground Reaction Forces from poses
+  - MIT License (commercial use OK)
+  - Pretrained checkpoints included
+- **NEW**: 📊 GroundLink Contact Visualizer
+
+### v5.4.0
+- **NEW**: 🔧 Direct SAM3DBody Integration
+  - No longer requires third-party ComfyUI-SAM3DBody wrapper
+  - Load Meta's SAM-3D-Body model directly
+  - Full control over model loading and coordinate system
+- **NEW**: 🦶 Foot Tracker (TAPNet) - Visual foot tracking
+- **NEW**: Coordinate system documentation
+
+### v5.2.0
+- **NEW**: flip_ty option for newer SAM3DBody versions
+- **NEW**: 📐 Body Shape Lock node
+- **NEW**: 🔄 Pose Smoothing node
+- **NEW**: 🦶 Foot Contact Enforcer node
+- **NEW**: 📹 SLAM Camera Solver node
+- **FIX**: Improved Blender auto-detection
 
 ## License
 
 MIT License (this package)
+
+External dependencies have their own licenses - see [docs/Dependencies.md](docs/Dependencies.md)
 
 SAM-3D-Body model: [Meta License](https://github.com/facebookresearch/sam-3d-body/blob/main/LICENSE)

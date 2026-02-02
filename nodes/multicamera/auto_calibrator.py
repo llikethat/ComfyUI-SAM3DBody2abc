@@ -101,18 +101,18 @@ class CameraAutoCalibrator:
                     "tooltip": "Height of person in meters (for scale calibration)"
                 }),
                 "focal_length_mm": ("FLOAT", {
-                    "default": 35.0,
-                    "min": 1.0,
+                    "default": 0.0,
+                    "min": 0.0,
                     "max": 500.0,
                     "step": 1.0,
-                    "tooltip": "Camera focal length in mm (assumed same for all cameras)"
+                    "tooltip": "Override focal length in mm. 0 = use from Camera Accumulator (recommended)"
                 }),
                 "sensor_width_mm": ("FLOAT", {
-                    "default": 36.0,
-                    "min": 1.0,
+                    "default": 0.0,
+                    "min": 0.0,
                     "max": 100.0,
                     "step": 0.1,
-                    "tooltip": "Camera sensor width in mm (36 = full frame)"
+                    "tooltip": "Override sensor width in mm. 0 = use from Camera Accumulator (recommended)"
                 }),
                 "num_calibration_frames": ("INT", {
                     "default": 10,
@@ -139,8 +139,8 @@ class CameraAutoCalibrator:
         self,
         camera_list: Dict,
         person_height_m: float = 1.75,
-        focal_length_mm: float = 35.0,
-        sensor_width_mm: float = 36.0,
+        focal_length_mm: float = 0.0,
+        sensor_width_mm: float = 0.0,
         num_calibration_frames: int = 10,
         min_joint_confidence: float = 0.5,
     ) -> Tuple[Dict, str]:
@@ -150,6 +150,8 @@ class CameraAutoCalibrator:
         Accepts CAMERA_LIST from Camera Accumulator.
         Camera 0 (first in list) is the reference camera at origin.
         Each subsequent camera is calibrated pairwise against the reference.
+        
+        Intrinsics are taken from Camera Accumulator unless overridden here.
         """
         
         # Validate camera list
@@ -162,16 +164,43 @@ class CameraAutoCalibrator:
                 f"Chain Camera Accumulator nodes to add more cameras."
             )
         
+        # Get intrinsics from first camera (reference) or use overrides
+        ref_intrinsics = cameras[0].get("intrinsics", {})
+        
+        if focal_length_mm > 0:
+            # Override from node input
+            effective_focal_mm = focal_length_mm
+            intrinsics_source = "node_override"
+        elif ref_intrinsics.get("focal_length_mm", 0) > 0:
+            # Use from Camera Accumulator
+            effective_focal_mm = ref_intrinsics["focal_length_mm"]
+            intrinsics_source = ref_intrinsics.get("source", "camera_accumulator")
+        else:
+            # Fallback to default
+            effective_focal_mm = 35.0
+            intrinsics_source = "default"
+        
+        if sensor_width_mm > 0:
+            effective_sensor_mm = sensor_width_mm
+        elif ref_intrinsics.get("sensor_width_mm", 0) > 0:
+            effective_sensor_mm = ref_intrinsics["sensor_width_mm"]
+        else:
+            effective_sensor_mm = 36.0
+        
         log.info("=" * 60)
         log.info(f"CAMERA AUTO-CALIBRATION ({num_cameras} cameras)")
         log.info("=" * 60)
         log.info(f"Person height: {person_height_m}m")
-        log.info(f"Focal length: {focal_length_mm}mm")
+        log.info(f"Focal length: {effective_focal_mm}mm ({intrinsics_source})")
+        log.info(f"Sensor width: {effective_sensor_mm}mm")
         log.info(f"Calibration frames: {num_calibration_frames}")
         
         for i, cam in enumerate(cameras):
             n_frames = len(cam["mesh_sequence"].get("frames", {}))
-            log.info(f"  {cam['label']} ({cam['id']}): {n_frames} frames")
+            cam_intr = cam.get("intrinsics", {})
+            cam_focal = cam_intr.get("focal_length_mm", 0)
+            cam_src = cam_intr.get("source", "none")
+            log.info(f"  {cam['label']} ({cam['id']}): {n_frames} frames, focal={cam_focal:.1f}mm ({cam_src})")
         
         # Reference camera is always the first in the list
         mesh_sequence_a = cameras[0]["mesh_sequence"]
@@ -204,8 +233,8 @@ class CameraAutoCalibrator:
         
         log.info(f"Image resolution: {img_w}x{img_h}")
         
-        # Compute focal length in pixels
-        focal_px = focal_length_mm * img_w / sensor_width_mm
+        # Compute focal length in pixels using effective values
+        focal_px = effective_focal_mm * img_w / effective_sensor_mm
         
         # Build camera intrinsic matrix
         K = np.array([
@@ -411,9 +440,9 @@ class CameraAutoCalibrator:
                     "position": [0.0, 0.0, 0.0],
                     "rotation_euler": [0.0, 0.0, 0.0],
                     "rotation_order": "XYZ",
-                    "focal_length_mm": focal_length_mm,
-                    "sensor_width_mm": sensor_width_mm,
-                    "sensor_height_mm": sensor_width_mm * img_h / img_w,
+                    "focal_length_mm": effective_focal_mm,
+                    "sensor_width_mm": effective_sensor_mm,
+                    "sensor_height_mm": effective_sensor_mm * img_h / img_w,
                     "resolution": [img_w, img_h],
                     "principal_point": [img_w / 2, img_h / 2],
                     "distortion": {"k1": 0, "k2": 0, "p1": 0, "p2": 0}
@@ -425,9 +454,9 @@ class CameraAutoCalibrator:
                     "position": t_scaled.tolist(),
                     "rotation_euler": rotation_euler,
                     "rotation_order": "XYZ",
-                    "focal_length_mm": focal_length_mm,
-                    "sensor_width_mm": sensor_width_mm,
-                    "sensor_height_mm": sensor_width_mm * img_h / img_w,
+                    "focal_length_mm": effective_focal_mm,
+                    "sensor_width_mm": effective_sensor_mm,
+                    "sensor_height_mm": effective_sensor_mm * img_h / img_w,
                     "resolution": [img_w, img_h],
                     "principal_point": [img_w / 2, img_h / 2],
                     "distortion": {"k1": 0, "k2": 0, "p1": 0, "p2": 0}
@@ -439,6 +468,7 @@ class CameraAutoCalibrator:
                 "num_frames_used": len(sample_indices),
                 "person_height_m": person_height_m,
                 "scale_factor": scale,
+                "intrinsics_source": intrinsics_source,
             }
         }
         
@@ -467,7 +497,7 @@ class CameraAutoCalibrator:
                 extra_R, extra_t_scaled, extra_rotation_euler, extra_info = self._calibrate_pair(
                     frames_a, cam_data["mesh_sequence"].get("frames", {}),
                     K, img_w, img_h,
-                    focal_length_mm, sensor_width_mm,
+                    effective_focal_mm, effective_sensor_mm,
                     num_calibration_frames, scale
                 )
                 
@@ -478,9 +508,9 @@ class CameraAutoCalibrator:
                     "position": extra_t_scaled.tolist(),
                     "rotation_euler": extra_rotation_euler,
                     "rotation_order": "XYZ",
-                    "focal_length_mm": focal_length_mm,
-                    "sensor_width_mm": sensor_width_mm,
-                    "sensor_height_mm": sensor_width_mm * img_h / img_w,
+                    "focal_length_mm": effective_focal_mm,
+                    "sensor_width_mm": effective_sensor_mm,
+                    "sensor_height_mm": effective_sensor_mm * img_h / img_w,
                     "resolution": [img_w, img_h],
                     "principal_point": [img_w / 2, img_h / 2],
                     "distortion": {"k1": 0, "k2": 0, "p1": 0, "p2": 0}

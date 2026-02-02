@@ -15,6 +15,30 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.9.0
+- NEW: 🦶✨ Smart Foot Contact (Visual Feedback) node - RECOMMENDED
+  - Unified foot contact detection using video as ground truth
+  - TAPNet 2D tracking validates and corrects SAM3DBody output
+  - Reprojection error feedback loop for accurate correction
+  - Contact segments detected from 2D foot velocity (not 3D guesswork)
+  - Multiple temporal filters: EMA, Gaussian, Savitzky-Golay, Bidirectional EMA
+  - Smooth blend in/out at contact boundaries (no snapping)
+  - Memory-efficient chunked processing for long videos
+  - Comprehensive logging system for debugging
+- NEW: ContactSegmentDetector class for reusable segment detection
+- NEW: TemporalFilter class with multiple filter options
+
+Version: 5.8.0
+- NEW: Camera Accumulator now accepts per-camera intrinsics
+  - focal_length_mm input (0 = auto-detect from mesh_sequence)
+  - sensor_width_mm input (default: 36mm full-frame)
+- UPDATED: Auto-Calibrator uses intrinsics from CAMERA_LIST
+  - Intrinsics override inputs now default to 0 (use from camera)
+- UPDATED: Comprehensive documentation overhaul
+  - Full version history in README
+  - External dependencies and licenses (docs/Dependencies.md)
+  - Updated node reference
+
 Version: 5.7.0
 - NEW: 🎭 Silhouette Refiner node
   - Refine triangulated 3D trajectory using silhouette consistency
@@ -67,7 +91,7 @@ Version: 5.2.0
 - NEW: 📹 SLAM Camera Solver node
 """
 
-__version__ = "5.7.0"
+__version__ = "5.9.0"
 
 import os
 import sys
@@ -327,6 +351,12 @@ if _groundlink_solver:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_GroundLinkSolver"] = _groundlink_solver.GroundLinkSolverNode
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_GroundLinkVisualizer"] = _groundlink_solver.GroundLinkContactVisualizer
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_GroundLinkSolver"] = "⚡ GroundLink Foot Contact (Physics)"
+
+# Load and register Smart Foot Contact (Visual Feedback Loop) - RECOMMENDED
+_smart_foot_contact = _load_module("sam3d2abc_smart_foot_contact", os.path.join(_nodes, "smart_foot_contact.py"))
+if _smart_foot_contact:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SmartFootContact"] = _smart_foot_contact.SmartFootContactNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SmartFootContact"] = "🦶✨ Smart Foot Contact (Visual Feedback)"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_GroundLinkVisualizer"] = "📊 GroundLink Contact Visualizer"
 
 # Print loaded nodes
