@@ -447,50 +447,103 @@ class TAPNetTracker:
     Wrapper for TAPNet point tracking.
     
     Handles:
-    - Lazy loading of TAPNet
+    - Lazy loading of TAPNet (Apache 2.0 license - commercial OK)
     - GPU memory management
     - Batched processing for long videos
+    - Automatic fallback to optical flow if TAPNet unavailable
+    
+    Note: CoTracker is NOT used due to CC-BY-NC (non-commercial) license.
     """
     
     def __init__(self, logger: SmartFootContactLogger):
         self.log = logger
         self._model = None
         self._device = None
+        self._model_type = None  # "tapnet" or "fallback"
     
     def _ensure_model(self):
-        """Lazy load TAPNet model."""
+        """Lazy load TAPNet model with optical flow fallback."""
         if self._model is not None:
             return
         
         _ensure_imports()
+        self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
+        # Try TAPNet (Apache 2.0 - commercial friendly)
+        if self._try_load_tapnet():
+            return
+        
+        # Fallback to optical flow (OpenCV - Apache 2.0)
+        self.log.warning("TAPNet not available - using optical flow fallback")
+        self.log.warning("For better tracking, install: pip install tapnet")
+        self._model = "fallback"
+        self._model_type = "fallback"
+    
+    def _try_load_tapnet(self) -> bool:
+        """Try to load TAPNet/TAPIR model (Apache 2.0 license)."""
         try:
-            # Try to import TAPNet
             from tapnet.torch import tapir_model
-            from tapnet.utils import transforms
             
-            self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.log.info(f"Loading TAPNet on {self._device}")
             
-            # Load model (this will download weights if needed)
-            self._model = tapir_model.TAPIR(pyramid_level=1)
-            self._model.load_state_dict(
-                torch.hub.load_state_dict_from_url(
-                    "https://storage.googleapis.com/dm-tapnet/tapir_checkpoint_panning.pt",
-                    map_location=self._device
-                )
-            )
-            self._model = self._model.to(self._device)
-            self._model.eval()
+            # BootsTAPIR checkpoint URLs (try multiple for compatibility)
+            checkpoint_urls = [
+                "https://storage.googleapis.com/dm-tapnet/bootstap/bootstapir_checkpoint_v2.pt",
+            ]
             
-            self.log.info("TAPNet loaded successfully")
+            for url in checkpoint_urls:
+                try:
+                    self.log.verbose(f"Trying checkpoint: {url.split('/')[-1]}")
+                    
+                    # Create model - try different configurations for compatibility
+                    try:
+                        # First try with extra_convs disabled (more compatible)
+                        model = tapir_model.TAPIR(
+                            pyramid_level=0,
+                            extra_convs=False,
+                        )
+                    except TypeError:
+                        # Older versions may not have extra_convs parameter
+                        model = tapir_model.TAPIR(pyramid_level=0)
+                    
+                    checkpoint = torch.hub.load_state_dict_from_url(
+                        url,
+                        map_location=self._device
+                    )
+                    
+                    # Handle different checkpoint formats
+                    if isinstance(checkpoint, dict):
+                        if 'model' in checkpoint:
+                            state_dict = checkpoint['model']
+                        elif 'state_dict' in checkpoint:
+                            state_dict = checkpoint['state_dict']
+                        else:
+                            state_dict = checkpoint
+                    else:
+                        state_dict = checkpoint
+                    
+                    # Load with strict=False to handle version mismatches
+                    model.load_state_dict(state_dict, strict=False)
+                    model = model.to(self._device)
+                    model.eval()
+                    
+                    self._model = model
+                    self._model_type = "tapnet"
+                    self.log.info("TAPNet loaded successfully (Apache 2.0 license)")
+                    return True
+                    
+                except Exception as e:
+                    self.log.debug(f"Checkpoint failed: {e}")
+                    continue
+            
+            return False
             
         except ImportError:
-            self.log.warning("TAPNet not available - using fallback optical flow")
-            self._model = "fallback"
+            self.log.verbose("TAPNet not installed (pip install tapnet)")
+            return False
         except Exception as e:
-            self.log.error(f"Failed to load TAPNet: {e}")
-            self._model = "fallback"
+            self.log.debug(f"TAPNet loading failed: {e}")
+            return False
     
     def track_points(
         self,
@@ -516,27 +569,26 @@ class TAPNetTracker:
         T, H, W, _ = video.shape
         N = len(query_points)
         
-        if self._model == "fallback":
+        if self._model_type == "fallback":
+            self.log.info("Using optical flow tracking (OpenCV)")
             return self._track_optical_flow(video, query_points)
         
-        self.log.start_timer("tapnet_tracking")
+        self.log.info(f"Using TAPNet tracking")
         
         # Process in chunks if video is long
         if chunk_config and chunk_config.enabled and T > chunk_config.chunk_size:
             tracks, visibles = self._track_chunked(video, query_points, chunk_config)
         else:
-            tracks, visibles = self._track_single(video, query_points)
-        
-        self.log.end_timer("tapnet_tracking")
+            tracks, visibles = self._track_tapnet(video, query_points)
         
         return tracks, visibles
     
-    def _track_single(
+    def _track_tapnet(
         self,
         video: np.ndarray,
         query_points: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Track points in a single pass."""
+        """Track points using TAPNet/TAPIR (Apache 2.0 license)."""
         T, H, W, _ = video.shape
         N = len(query_points)
         
@@ -579,9 +631,9 @@ class TAPNetTracker:
             chunk_queries = query_points.copy()
             chunk_queries[:, 0] = np.clip(chunk_queries[:, 0] - start, 0, end - start - 1)
             
-            # Track this chunk
+            # Track this chunk using TAPNet
             chunk_video = video[start:end]
-            chunk_tracks, chunk_visibles = self._track_single(chunk_video, chunk_queries)
+            chunk_tracks, chunk_visibles = self._track_tapnet(chunk_video, chunk_queries)
             
             # Blend into result
             chunk_len = end - start
