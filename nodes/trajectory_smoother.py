@@ -565,13 +565,28 @@ class TrajectorySmoother:
         # Extract 2D joint trajectory for Joint-Guided smoothing
         joint_2d_trajectory = None
         if "Joint-Guided" in method and mesh_sequence is not None:
-            joint_2d_trajectory = self._extract_joint_2d_trajectory(
-                mesh_sequence, ref_joint_idx, skeleton_key
-            )
-            if joint_2d_trajectory is not None:
-                log.info(f"Extracted 2D trajectory for joint {ref_joint_idx}: {len(joint_2d_trajectory)} frames")
+            # Extract frames from mesh_sequence dict
+            frames_data = mesh_sequence.get("frames", mesh_sequence)
+            if isinstance(frames_data, dict):
+                # Dict with string keys like "0", "1", etc.
+                frame_keys = sorted(frames_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
+                frames_list = [frames_data[k] for k in frame_keys]
+            elif isinstance(frames_data, list):
+                frames_list = frames_data
             else:
-                log.warning(f"Could not extract 2D trajectory, falling back to Savitzky-Golay")
+                frames_list = []
+            
+            if frames_list:
+                joint_2d_trajectory = self._extract_joint_2d_trajectory(
+                    frames_list, ref_joint_idx, skeleton_key
+                )
+                if joint_2d_trajectory is not None:
+                    log.info(f"Extracted 2D trajectory for joint {ref_joint_idx}: {len(joint_2d_trajectory)} frames")
+                else:
+                    log.warning(f"Could not extract 2D trajectory, falling back to Savitzky-Golay")
+                    method = "Savitzky-Golay (Best)"
+            else:
+                log.warning("No frames found in mesh_sequence, falling back to Savitzky-Golay")
                 method = "Savitzky-Golay (Best)"
         
         # Map method name to internal name
