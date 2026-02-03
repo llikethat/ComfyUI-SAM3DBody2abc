@@ -617,15 +617,34 @@ class KinematicVisualizer:
             
             # Draw feet joints
             if self.config.show_feet:
+                # Get reprojection errors for this frame
+                reproj_left = debug_data.get("reproj_errors", {}).get("left", [])
+                reproj_right = debug_data.get("reproj_errors", {}).get("right", [])
+                l_err = reproj_left[t] if t < len(reproj_left) and reproj_left[t] is not None else None
+                r_err = reproj_right[t] if t < len(reproj_right) and reproj_right[t] is not None else None
+                
                 # Left foot
                 l_contact = contacts[t, 0] if t < len(contacts) else False
                 l_color = self.config.color_left_contact if l_contact else self.config.color_left_flight
                 l_conf = confidence[t, 0] if t < len(confidence) else 0.5
                 
-                for idx in [l_ankle_idx, l_toe_idx, l_heel_idx]:
+                # Draw joints with index labels
+                l_joint_info = [
+                    (l_ankle_idx, "A"),  # Ankle
+                    (l_toe_idx, "T"),    # Toe
+                    (l_heel_idx, "H"),   # Heel
+                ]
+                for idx, label in l_joint_info:
                     pos = tuple(joints_2d[idx].astype(int))
+                    # Draw joint circle
                     cv2.circle(frame_img, pos, self.config.joint_radius, l_color, -1)
                     cv2.circle(frame_img, pos, self.config.joint_radius + 2, l_color, 1)
+                    # Draw index label
+                    label_pos = (pos[0] - 20, pos[1] - 10)
+                    cv2.putText(frame_img, f"{idx}:{label}", label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 2)
+                    cv2.putText(frame_img, f"{idx}:{label}", label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, l_color, 1)
                 
                 # Connect foot joints
                 cv2.line(frame_img, tuple(joints_2d[l_ankle_idx].astype(int)),
@@ -633,20 +652,69 @@ class KinematicVisualizer:
                 cv2.line(frame_img, tuple(joints_2d[l_ankle_idx].astype(int)),
                         tuple(joints_2d[l_heel_idx].astype(int)), l_color, 2)
                 
+                # Draw reprojection error indicator for left foot
+                if l_err is not None:
+                    l_foot_center = (joints_2d[l_ankle_idx] + joints_2d[l_toe_idx] + joints_2d[l_heel_idx]) / 3
+                    err_pos = tuple(l_foot_center.astype(int))
+                    # Color based on error quality
+                    if l_err < 5:
+                        err_color = (0, 200, 0)  # Green - excellent
+                    elif l_err < 10:
+                        err_color = (0, 200, 200)  # Yellow - good
+                    elif l_err < 20:
+                        err_color = (0, 150, 255)  # Orange - acceptable
+                    else:
+                        err_color = (0, 0, 200)  # Red - poor
+                    cv2.putText(frame_img, f"{l_err:.1f}px", (err_pos[0] - 15, err_pos[1] + 25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 2)
+                    cv2.putText(frame_img, f"{l_err:.1f}px", (err_pos[0] - 15, err_pos[1] + 25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, err_color, 1)
+                
                 # Right foot
                 r_contact = contacts[t, 1] if t < len(contacts) else False
                 r_color = self.config.color_right_contact if r_contact else self.config.color_right_flight
                 r_conf = confidence[t, 1] if t < len(confidence) else 0.5
                 
-                for idx in [r_ankle_idx, r_toe_idx, r_heel_idx]:
+                # Draw joints with index labels
+                r_joint_info = [
+                    (r_ankle_idx, "A"),  # Ankle
+                    (r_toe_idx, "T"),    # Toe
+                    (r_heel_idx, "H"),   # Heel
+                ]
+                for idx, label in r_joint_info:
                     pos = tuple(joints_2d[idx].astype(int))
+                    # Draw joint circle
                     cv2.circle(frame_img, pos, self.config.joint_radius, r_color, -1)
                     cv2.circle(frame_img, pos, self.config.joint_radius + 2, r_color, 1)
+                    # Draw index label
+                    label_pos = (pos[0] + 8, pos[1] - 10)
+                    cv2.putText(frame_img, f"{idx}:{label}", label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 2)
+                    cv2.putText(frame_img, f"{idx}:{label}", label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.35, r_color, 1)
                 
                 cv2.line(frame_img, tuple(joints_2d[r_ankle_idx].astype(int)),
                         tuple(joints_2d[r_toe_idx].astype(int)), r_color, 2)
                 cv2.line(frame_img, tuple(joints_2d[r_ankle_idx].astype(int)),
                         tuple(joints_2d[r_heel_idx].astype(int)), r_color, 2)
+                
+                # Draw reprojection error indicator for right foot
+                if r_err is not None:
+                    r_foot_center = (joints_2d[r_ankle_idx] + joints_2d[r_toe_idx] + joints_2d[r_heel_idx]) / 3
+                    err_pos = tuple(r_foot_center.astype(int))
+                    # Color based on error quality
+                    if r_err < 5:
+                        err_color = (0, 200, 0)  # Green - excellent
+                    elif r_err < 10:
+                        err_color = (0, 200, 200)  # Yellow - good
+                    elif r_err < 20:
+                        err_color = (0, 150, 255)  # Orange - acceptable
+                    else:
+                        err_color = (0, 0, 200)  # Red - poor
+                    cv2.putText(frame_img, f"{r_err:.1f}px", (err_pos[0] - 15, err_pos[1] + 25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 2)
+                    cv2.putText(frame_img, f"{r_err:.1f}px", (err_pos[0] - 15, err_pos[1] + 25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, err_color, 1)
             
             # Draw hip joints
             if self.config.show_hips:
@@ -677,9 +745,54 @@ class KinematicVisualizer:
             if self.config.show_contact_status:
                 self._draw_contact_status(frame_img, t, contacts, confidence, W, H)
             
+            # Draw joint indices legend (top-right corner)
+            self._draw_joint_legend(frame_img, W, H, 
+                                   l_ankle_idx, l_toe_idx, l_heel_idx,
+                                   r_ankle_idx, r_toe_idx, r_heel_idx)
+            
             output[t] = frame_img
         
         return output
+    
+    def _draw_joint_legend(
+        self,
+        img: np.ndarray,
+        W: int, H: int,
+        l_ankle: int, l_toe: int, l_heel: int,
+        r_ankle: int, r_toe: int, r_heel: int
+    ):
+        """Draw legend showing joint indices used for reprojection."""
+        # Legend box position (top-right)
+        box_w = 180
+        box_h = 90
+        box_x = W - box_w - 10
+        box_y = 10
+        
+        # Semi-transparent background
+        overlay = img.copy()
+        cv2.rectangle(overlay, (box_x, box_y), (box_x + box_w, box_y + box_h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, img, 0.3, 0, img)
+        cv2.rectangle(img, (box_x, box_y), (box_x + box_w, box_y + box_h), (100, 100, 100), 1)
+        
+        # Title
+        cv2.putText(img, "REPROJECTION JOINTS", (box_x + 10, box_y + 15),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        
+        # Left foot
+        cv2.putText(img, "Left:", (box_x + 10, box_y + 35),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, self.config.color_left_contact, 1)
+        cv2.putText(img, f"A={l_ankle} T={l_toe} H={l_heel}", (box_x + 50, box_y + 35),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+        
+        # Right foot
+        cv2.putText(img, "Right:", (box_x + 10, box_y + 55),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, self.config.color_right_contact, 1)
+        cv2.putText(img, f"A={r_ankle} T={r_toe} H={r_heel}", (box_x + 50, box_y + 55),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+        
+        # Legend for A, T, H
+        cv2.putText(img, "A=Ankle T=Toe H=Heel", (box_x + 10, box_y + 75),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1)
     
     def _get_joints_2d(self, frame: Dict) -> Optional[np.ndarray]:
         """Extract 2D joints from frame."""

@@ -568,8 +568,15 @@ class TrajectorySmoother:
             # Extract frames from mesh_sequence dict
             frames_data = mesh_sequence.get("frames", mesh_sequence)
             if isinstance(frames_data, dict):
-                # Dict with string keys like "0", "1", etc.
-                frame_keys = sorted(frames_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
+                # Dict with keys (can be int or string like "0", "1", etc.)
+                def sort_key(x):
+                    if isinstance(x, int):
+                        return x
+                    elif isinstance(x, str) and x.isdigit():
+                        return int(x)
+                    else:
+                        return x
+                frame_keys = sorted(frames_data.keys(), key=sort_key)
                 frames_list = [frames_data[k] for k in frame_keys]
             elif isinstance(frames_data, list):
                 frames_list = frames_data
