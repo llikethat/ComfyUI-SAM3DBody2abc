@@ -335,15 +335,8 @@ class KinematicContactDetector:
                     debug_data["foot_flat"][side].append(False)
                     debug_data["pelvis_moving_away"][side].append(False)
                 
-                # Compute reprojection error
-                if joints_2d is not None:
-                    reproj_err = self._compute_reproj_error(
-                        frame, [ankle, toe, heel], joints_2d, 
-                        [ankle_idx, toe_idx, heel_idx]
-                    )
-                    debug_data["reproj_errors"][side].append(reproj_err)
-                else:
-                    debug_data["reproj_errors"][side].append(None)
+                # Note: Reprojection error removed - 2D px vs 3D meters comparison is invalid
+                debug_data["reproj_errors"][side].append(None)
                 
                 # Log contact events
                 is_contact = contacts[t, foot_idx]
@@ -1144,22 +1137,17 @@ def generate_debug_info(
     """Generate comprehensive debug info string."""
     T = contacts.shape[0]
     
-    # Get reprojection errors
-    reproj_left = [e for e in debug_data.get("reproj_errors", {}).get("left", []) if e is not None]
-    reproj_right = [e for e in debug_data.get("reproj_errors", {}).get("right", []) if e is not None]
+    # Get geometry differences
+    geom_left = [g for g in debug_data.get("geometry_diff", {}).get("left", []) if g is not None]
+    geom_right = [g for g in debug_data.get("geometry_diff", {}).get("right", []) if g is not None]
     
-    # Calculate overall quality
-    all_errors = reproj_left + reproj_right
-    if all_errors:
-        overall_error = np.mean(all_errors)
-        overall_quality, overall_symbol = get_quality_rating(overall_error)
-    else:
-        overall_error = 0
-        overall_quality, overall_symbol = "UNKNOWN", "?"
+    # Reference frames
+    ref_frames = debug_data.get("reference_frames", {})
+    ref_geom = debug_data.get("reference_geometry", {})
     
     lines = [
         "=" * 70,
-        "KINEMATIC CONTACT DETECTION RESULTS",
+        "KINEMATIC CONTACT DETECTION RESULTS (Reference-Based)",
         "=" * 70,
         "",
         f"Total frames: {T}",
@@ -1168,26 +1156,28 @@ def generate_debug_info(
         "",
     ]
     
-    # === REPROJECTION QUALITY SUMMARY (Prominent) ===
-    lines.append("=" * 70)
-    lines.append(f"  REPROJECTION QUALITY: {overall_symbol} {overall_quality} (mean={overall_error:.1f}px)")
-    lines.append("=" * 70)
+    # === REFERENCE FRAMES ===
+    lines.append("=== REFERENCE FRAMES (Flat Foot) ===")
+    lines.append(f"  Left foot reference:  Frame {ref_frames.get('left', 'N/A')}")
+    if ref_geom.get('left'):
+        lines.append(f"    Y-spread: {ref_geom['left'].get('y_spread', 0):.4f}m")
+    lines.append(f"  Right foot reference: Frame {ref_frames.get('right', 'N/A')}")
+    if ref_geom.get('right'):
+        lines.append(f"    Y-spread: {ref_geom['right'].get('y_spread', 0):.4f}m")
     lines.append("")
     
-    if reproj_left:
-        l_mean = np.mean(reproj_left)
-        l_max = np.max(reproj_left)
-        l_quality, l_sym = get_quality_rating(l_mean)
-        lines.append(f"  Left foot:  {l_sym} {l_quality:10s} mean={l_mean:5.1f}px, max={l_max:5.1f}px")
-    
-    if reproj_right:
-        r_mean = np.mean(reproj_right)
-        r_max = np.max(reproj_right)
-        r_quality, r_sym = get_quality_rating(r_mean)
-        lines.append(f"  Right foot: {r_sym} {r_quality:10s} mean={r_mean:5.1f}px, max={r_max:5.1f}px")
-    
-    lines.append("")
-    lines.append("  Quality thresholds: <5px=EXCELLENT, <10px=GOOD, <20px=ACCEPTABLE, ≥20px=POOR")
+    # === GEOMETRY DIFFERENCE SUMMARY ===
+    lines.append("=== GEOMETRY DIFFERENCE FROM REFERENCE ===")
+    if geom_left:
+        l_mean = np.mean(geom_left)
+        l_min = np.min(geom_left)
+        l_max = np.max(geom_left)
+        lines.append(f"  Left foot:  mean={l_mean:.4f}m, min={l_min:.4f}m, max={l_max:.4f}m")
+    if geom_right:
+        r_mean = np.mean(geom_right)
+        r_min = np.min(geom_right)
+        r_max = np.max(geom_right)
+        lines.append(f"  Right foot: mean={r_mean:.4f}m, min={r_min:.4f}m, max={r_max:.4f}m")
     lines.append("")
     
     # Events
@@ -1208,15 +1198,15 @@ def generate_debug_info(
         lines.append(f"  Max adjustment: {stabilization_info.get('max_adjustment', 0):.4f}m")
         lines.append("")
     
-    # === CONTACT TIMELINE WITH QUALITY ===
-    lines.append("=== CONTACT TIMELINE WITH QUALITY ===")
+    # === CONTACT TIMELINE ===
+    lines.append("=== CONTACT TIMELINE ===")
     lines.append("-" * 70)
-    lines.append("Frame |  L   |  R   | L_Err | R_Err | Quality")
+    lines.append("Frame |  L   |  R   | L_Geom | R_Geom | L_Conf | R_Conf")
     lines.append("-" * 70)
     
-    # Get per-frame reprojection errors
-    reproj_left_all = debug_data.get("reproj_errors", {}).get("left", [])
-    reproj_right_all = debug_data.get("reproj_errors", {}).get("right", [])
+    # Get per-frame geometry differences
+    geom_left_all = debug_data.get("geometry_diff", {}).get("left", [])
+    geom_right_all = debug_data.get("geometry_diff", {}).get("right", [])
     
     # Show key frames + every Nth frame
     shown_frames = set([0, T - 1])
@@ -1232,22 +1222,17 @@ def generate_debug_info(
         l_char = "████" if contacts[t, 0] else "····"
         r_char = "████" if contacts[t, 1] else "····"
         
-        # Get errors for this frame
-        l_err = reproj_left_all[t] if t < len(reproj_left_all) and reproj_left_all[t] is not None else None
-        r_err = reproj_right_all[t] if t < len(reproj_right_all) and reproj_right_all[t] is not None else None
+        # Get geometry diff for this frame
+        l_geom = geom_left_all[t] if t < len(geom_left_all) and geom_left_all[t] is not None else None
+        r_geom = geom_right_all[t] if t < len(geom_right_all) and geom_right_all[t] is not None else None
         
-        l_err_str = f"{l_err:5.1f}" if l_err is not None else "  N/A"
-        r_err_str = f"{r_err:5.1f}" if r_err is not None else "  N/A"
+        l_geom_str = f"{l_geom:.4f}" if l_geom is not None else "  N/A "
+        r_geom_str = f"{r_geom:.4f}" if r_geom is not None else "  N/A "
         
-        # Frame quality based on average error
-        frame_errors = [e for e in [l_err, r_err] if e is not None]
-        if frame_errors:
-            frame_avg = np.mean(frame_errors)
-            _, quality_sym = get_quality_rating(frame_avg)
-        else:
-            quality_sym = "?"
+        l_conf = confidence[t, 0] if t < len(confidence) else 0
+        r_conf = confidence[t, 1] if t < len(confidence) else 0
         
-        lines.append(f"{t:5d} | {l_char} | {r_char} | {l_err_str} | {r_err_str} |   {quality_sym}")
+        lines.append(f"{t:5d} | {l_char} | {r_char} | {l_geom_str} | {r_geom_str} | {l_conf:.2f}  | {r_conf:.2f}")
     
     lines.append("-" * 70)
     
@@ -1510,11 +1495,39 @@ def generate_motion_graph(
         "Right": (right_to_pelvis, color_r_ankle),
     }, "Dist (m)")
     
-    # Panel 6: Reprojection Errors
-    draw_multi_line_panel(6, "Reprojection Error (px) - Quality Bands", {
-        "Left": (reproj_left, color_l_ankle),
-        "Right": (reproj_right, color_r_ankle),
-    }, "Err (px)", show_quality_bands=True)
+    # Panel 6: Geometry Difference from Reference (used for contact detection)
+    geom_diff_left = debug_data.get("geometry_diff", {}).get("left", [])
+    geom_diff_right = debug_data.get("geometry_diff", {}).get("right", [])
+    threshold = 0.03  # Default geometry_threshold
+    
+    # Draw with threshold line
+    draw_multi_line_panel(6, f"Geometry Diff from Reference (m) - Below threshold = CONTACT", {
+        "Left": (geom_diff_left, color_l_ankle),
+        "Right": (geom_diff_right, color_r_ankle),
+    }, "Diff (m)")
+    
+    # Add threshold line to panel 6
+    panel_idx = 6
+    y_offset = panel_idx * panel_height
+    plot_x = margin_left
+    plot_y = y_offset + margin_top
+    
+    # Get data range for threshold line positioning
+    all_geom = [g for g in geom_diff_left + geom_diff_right if g is not None]
+    if all_geom:
+        data_min = min(all_geom)
+        data_max = max(all_geom)
+        margin_val = (data_max - data_min) * 0.1 + 0.001
+        data_min -= margin_val
+        data_max += margin_val
+        
+        # Draw threshold line
+        if data_max > data_min:
+            thresh_y = int(plot_y + plot_height - ((threshold - data_min) / (data_max - data_min)) * plot_height)
+            if plot_y <= thresh_y <= plot_y + plot_height:
+                cv2.line(img, (plot_x, thresh_y), (plot_x + plot_width, thresh_y), (0, 0, 255), 2)
+                cv2.putText(img, f"threshold={threshold:.3f}", (plot_x + plot_width - 120, thresh_y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
     
     # Panel 7: Contact Timeline
     panel_idx = 7
