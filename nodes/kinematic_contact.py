@@ -104,21 +104,40 @@ class KinematicLogger:
 
 class KinematicContactDetector:
     """
-    Detect foot contacts using pure kinematics.
-    No ML models, no tracking - just geometry and physics.
+    Detect foot contacts using reference-based geometry comparison.
+    
+    Method:
+    1. Auto-detect or use user-specified reference frames where each foot is flat
+    2. Extract foot geometry signature from reference frames
+    3. Compare each frame's foot geometry to reference
+    4. Normalize by camera distance (pred_cam_t) to handle depth changes
+    
+    This approach is robust to:
+    - Character moving toward/away from camera
+    - Camera motion
+    - Different skeleton scales
     """
     
     def __init__(self, config: KinematicContactConfig, log: KinematicLogger):
         self.config = config
         self.log = log
+        self.global_intrinsics = {}
     
-    def detect(self, frames: List[Dict], global_intrinsics: Optional[Dict] = None) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    def detect(
+        self, 
+        frames: List[Dict], 
+        global_intrinsics: Optional[Dict] = None,
+        left_ref_frame: int = -1,
+        right_ref_frame: int = -1
+    ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
-        Detect contacts for all frames.
+        Detect contacts for all frames using reference-based geometry.
         
         Args:
             frames: List of frame data with pred_keypoints_3d, pred_keypoints_2d
             global_intrinsics: Optional dict with focal_length, cx, cy, width, height
+            left_ref_frame: Frame number where left foot is flat (-1 = auto-detect)
+            right_ref_frame: Frame number where right foot is flat (-1 = auto-detect)
         
         Returns:
             contacts: (T, 2) boolean array [left, right]
@@ -129,7 +148,6 @@ class KinematicContactDetector:
         contacts = np.zeros((T, 2), dtype=bool)
         confidence = np.zeros((T, 2), dtype=np.float32)
         
-        # Store global intrinsics for use in reprojection
         self.global_intrinsics = global_intrinsics or {}
         
         # Debug data storage
@@ -139,13 +157,56 @@ class KinematicContactDetector:
             "foot_to_pelvis": {"left": [], "right": []},
             "pelvis_moving_away": {"left": [], "right": []},
             "reproj_errors": {"left": [], "right": []},
+            "geometry_diff": {"left": [], "right": []},  # NEW: geometry difference from reference
+            "depth_scale": [],  # NEW: depth scaling factor
             "pelvis_positions": [],
             "foot_positions": {"left": [], "right": []},
             "hip_positions": {"left": [], "right": []},
             "events": [],
+            "joints_2d": {
+                "l_ankle": [], "l_toe": [], "l_heel": [],
+                "r_ankle": [], "r_toe": [], "r_heel": [],
+                "pelvis": [],
+            },
+            "joints_3d": {
+                "l_ankle": [], "l_toe": [], "l_heel": [],
+                "r_ankle": [], "r_toe": [], "r_heel": [],
+                "pelvis": [],
+            },
+            "reference_frames": {"left": None, "right": None},
+            "reference_geometry": {"left": None, "right": None},
         }
         
-        prev_foot_to_pelvis = [None, None]
+        # Step 1: Extract all foot geometries for analysis
+        self.log.info("Extracting foot geometries from all frames...")
+        all_foot_data = self._extract_all_foot_data(frames)
+        
+        if not all_foot_data["left"] or not all_foot_data["right"]:
+            self.log.warning("Could not extract foot data from frames")
+            return contacts, confidence, debug_data
+        
+        # Step 2: Find reference frames (auto-detect or use user-specified)
+        left_ref = left_ref_frame if left_ref_frame >= 0 else self._auto_detect_reference_frame(all_foot_data["left"], "left")
+        right_ref = right_ref_frame if right_ref_frame >= 0 else self._auto_detect_reference_frame(all_foot_data["right"], "right")
+        
+        debug_data["reference_frames"]["left"] = left_ref
+        debug_data["reference_frames"]["right"] = right_ref
+        
+        self.log.info(f"Reference frames: Left={left_ref}, Right={right_ref}")
+        
+        # Step 3: Extract reference geometry and depth
+        left_ref_geom, left_ref_depth = self._get_reference_geometry(all_foot_data["left"], left_ref)
+        right_ref_geom, right_ref_depth = self._get_reference_geometry(all_foot_data["right"], right_ref)
+        
+        debug_data["reference_geometry"]["left"] = left_ref_geom
+        debug_data["reference_geometry"]["right"] = right_ref_geom
+        
+        if left_ref_geom:
+            self.log.info(f"Left ref geometry: Y-spread={left_ref_geom['y_spread']:.4f}m, depth={left_ref_depth:.2f}")
+        if right_ref_geom:
+            self.log.info(f"Right ref geometry: Y-spread={right_ref_geom['y_spread']:.4f}m, depth={right_ref_depth:.2f}")
+        
+        # Step 4: Process each frame
         prev_contacts = [False, False]
         
         for t, frame in enumerate(frames):
@@ -153,15 +214,27 @@ class KinematicContactDetector:
             joints_2d = self._get_joints_2d(frame)
             
             if joints_3d is None:
-                self.log.warning(f"Frame {t}: No 3D joints found")
+                self.log.debug(f"Frame {t}: No 3D joints found")
+                # Append None/empty values for this frame
+                self._append_empty_debug_data(debug_data)
                 continue
+            
+            # Get camera depth for scaling
+            pred_cam_t = frame.get("pred_cam_t", [0, 0, 5])
+            curr_depth = pred_cam_t[2] if len(pred_cam_t) > 2 else 5.0
+            debug_data["depth_scale"].append(curr_depth)
             
             # Get pelvis position
             pelvis_idx = min(self.config.pelvis_idx, len(joints_3d) - 1)
             pelvis = joints_3d[pelvis_idx]
             debug_data["pelvis_positions"].append(pelvis.tolist())
+            debug_data["joints_3d"]["pelvis"].append(pelvis.tolist())
+            if joints_2d is not None and pelvis_idx < len(joints_2d):
+                debug_data["joints_2d"]["pelvis"].append(joints_2d[pelvis_idx].tolist())
+            else:
+                debug_data["joints_2d"]["pelvis"].append(None)
             
-            # Get hip positions for debug
+            # Get hip positions
             l_hip_idx = min(self.config.l_hip_idx, len(joints_3d) - 1)
             r_hip_idx = min(self.config.r_hip_idx, len(joints_3d) - 1)
             debug_data["hip_positions"]["left"].append(joints_3d[l_hip_idx].tolist())
@@ -169,21 +242,20 @@ class KinematicContactDetector:
             
             # Process each foot
             for foot_idx, side in enumerate(["left", "right"]):
-                # Get foot joint indices
-                if side == "left":
-                    ankle_idx = self.config.l_ankle_idx
-                    toe_idx = self.config.l_toe_idx
-                    heel_idx = self.config.l_heel_idx
-                else:
-                    ankle_idx = self.config.r_ankle_idx
-                    toe_idx = self.config.r_toe_idx
-                    heel_idx = self.config.r_heel_idx
+                ref_geom = left_ref_geom if side == "left" else right_ref_geom
+                ref_depth = left_ref_depth if side == "left" else right_ref_depth
                 
-                # Clamp indices to valid range
-                n_joints = len(joints_3d)
-                ankle_idx = min(ankle_idx, n_joints - 1)
-                toe_idx = min(toe_idx, n_joints - 1)
-                heel_idx = min(heel_idx, n_joints - 1)
+                # Get joint indices
+                if side == "left":
+                    ankle_idx = min(self.config.l_ankle_idx, len(joints_3d) - 1)
+                    toe_idx = min(self.config.l_toe_idx, len(joints_3d) - 1)
+                    heel_idx = min(self.config.l_heel_idx, len(joints_3d) - 1)
+                    prefix = "l_"
+                else:
+                    ankle_idx = min(self.config.r_ankle_idx, len(joints_3d) - 1)
+                    toe_idx = min(self.config.r_toe_idx, len(joints_3d) - 1)
+                    heel_idx = min(self.config.r_heel_idx, len(joints_3d) - 1)
+                    prefix = "r_"
                 
                 ankle = joints_3d[ankle_idx]
                 toe = joints_3d[toe_idx]
@@ -192,78 +264,246 @@ class KinematicContactDetector:
                 foot_center = (ankle + toe + heel) / 3
                 debug_data["foot_positions"][side].append(foot_center.tolist())
                 
-                # Condition 1: Foot is flat (all joints at same height)
-                heights = [ankle[1], toe[1], heel[1]]  # Y is vertical
-                height_range = max(heights) - min(heights)
-                foot_flat = height_range < self.config.height_threshold
+                # Store 3D positions
+                debug_data["joints_3d"][f"{prefix}ankle"].append(ankle.tolist())
+                debug_data["joints_3d"][f"{prefix}toe"].append(toe.tolist())
+                debug_data["joints_3d"][f"{prefix}heel"].append(heel.tolist())
                 
+                # Store 2D positions
+                if joints_2d is not None:
+                    n_joints_2d = len(joints_2d)
+                    debug_data["joints_2d"][f"{prefix}ankle"].append(
+                        joints_2d[ankle_idx].tolist() if ankle_idx < n_joints_2d else None)
+                    debug_data["joints_2d"][f"{prefix}toe"].append(
+                        joints_2d[toe_idx].tolist() if toe_idx < n_joints_2d else None)
+                    debug_data["joints_2d"][f"{prefix}heel"].append(
+                        joints_2d[heel_idx].tolist() if heel_idx < n_joints_2d else None)
+                else:
+                    debug_data["joints_2d"][f"{prefix}ankle"].append(None)
+                    debug_data["joints_2d"][f"{prefix}toe"].append(None)
+                    debug_data["joints_2d"][f"{prefix}heel"].append(None)
+                
+                # Calculate current foot geometry
+                curr_geom = self._calculate_foot_geometry(ankle, toe, heel)
+                
+                # Store heights
                 debug_data["foot_heights"][side].append({
                     "ankle": float(ankle[1]),
                     "toe": float(toe[1]),
                     "heel": float(heel[1]),
-                    "range": float(height_range),
+                    "range": float(curr_geom["y_spread"]),
                 })
-                debug_data["foot_flat"][side].append(foot_flat)
                 
-                # Condition 2: Pelvis moving away from foot
+                # Calculate foot-to-pelvis distance
                 foot_to_pelvis = np.linalg.norm(pelvis - foot_center)
                 debug_data["foot_to_pelvis"][side].append(float(foot_to_pelvis))
                 
-                if prev_foot_to_pelvis[foot_idx] is not None:
-                    distance_delta = foot_to_pelvis - prev_foot_to_pelvis[foot_idx]
-                    pelvis_moving_away = distance_delta > self.config.distance_threshold
-                else:
+                # Compare geometry to reference (with depth normalization)
+                if ref_geom is not None and ref_depth > 0:
+                    # Depth scaling factor
+                    depth_scale = curr_depth / ref_depth
+                    
+                    # Calculate geometry difference
+                    geom_diff = self._compare_geometry(curr_geom, ref_geom, depth_scale)
+                    debug_data["geometry_diff"][side].append(geom_diff)
+                    
+                    # Primary: Y-axis spread comparison
+                    y_diff = abs(curr_geom["y_spread"] - ref_geom["y_spread"] * depth_scale)
+                    
+                    # Contact if geometry is similar to reference (foot is flat)
+                    is_flat = geom_diff < self.config.height_threshold
+                    debug_data["foot_flat"][side].append(is_flat)
+                    
+                    # Secondary validation: pelvis moving away (body moving over planted foot)
                     pelvis_moving_away = False
-                    distance_delta = 0
+                    if t > 0 and len(debug_data["foot_to_pelvis"][side]) > 1:
+                        prev_dist = debug_data["foot_to_pelvis"][side][-2]
+                        pelvis_moving_away = foot_to_pelvis > prev_dist - 0.01  # Small tolerance
+                    debug_data["pelvis_moving_away"][side].append(pelvis_moving_away)
+                    
+                    # Contact decision: flat geometry AND pelvis moving away (or first frame)
+                    is_contact = is_flat and (pelvis_moving_away or t == 0)
+                    contacts[t, foot_idx] = is_contact
+                    
+                    # Confidence based on how close to reference geometry
+                    # Lower difference = higher confidence
+                    conf = max(0.0, 1.0 - (geom_diff / (self.config.height_threshold * 2)))
+                    confidence[t, foot_idx] = conf
+                    
+                else:
+                    debug_data["geometry_diff"][side].append(None)
+                    debug_data["foot_flat"][side].append(False)
+                    debug_data["pelvis_moving_away"][side].append(False)
                 
-                debug_data["pelvis_moving_away"][side].append({
-                    "moving_away": pelvis_moving_away,
-                    "delta": float(distance_delta),
-                })
-                
-                prev_foot_to_pelvis[foot_idx] = foot_to_pelvis
-                
-                # Contact = flat foot + pelvis moving away
-                is_contact = foot_flat and pelvis_moving_away
-                contacts[t, foot_idx] = is_contact
-                
-                # Confidence from reprojection error
+                # Compute reprojection error
                 if joints_2d is not None:
-                    reproj_error = self._compute_reproj_error(
-                        frame, 
-                        [ankle, toe, heel],
-                        joints_2d,
+                    reproj_err = self._compute_reproj_error(
+                        frame, [ankle, toe, heel], joints_2d, 
                         [ankle_idx, toe_idx, heel_idx]
                     )
-                    # Convert error to confidence (0-1)
-                    # <5px = 1.0, >20px = 0.0
-                    conf = np.clip(1.0 - (reproj_error - 5) / 15, 0, 1)
-                    confidence[t, foot_idx] = conf
-                    debug_data["reproj_errors"][side].append(float(reproj_error))
+                    debug_data["reproj_errors"][side].append(reproj_err)
                 else:
-                    confidence[t, foot_idx] = 0.5  # Unknown confidence
                     debug_data["reproj_errors"][side].append(None)
                 
-                # Track events
-                if is_contact and not prev_contacts[foot_idx]:
+                # Log contact events
+                is_contact = contacts[t, foot_idx]
+                if is_contact != prev_contacts[foot_idx]:
+                    event = "CONTACT_START" if is_contact else "CONTACT_END"
                     debug_data["events"].append({
                         "frame": t,
                         "foot": side,
-                        "event": "contact_start",
+                        "event": event,
                     })
-                elif not is_contact and prev_contacts[foot_idx]:
-                    debug_data["events"].append({
-                        "frame": t,
-                        "foot": side,
-                        "event": "contact_end",
-                    })
+                    self.log.debug(f"Frame {t}: {side} {event}")
                 
                 prev_contacts[foot_idx] = is_contact
         
-        # Post-process: filter short contacts
+        # Filter short contacts
         contacts = self._filter_short_contacts(contacts)
         
         return contacts, confidence, debug_data
+    
+    def _extract_all_foot_data(self, frames: List[Dict]) -> Dict:
+        """Extract foot joint data from all frames for analysis."""
+        all_data = {"left": [], "right": []}
+        
+        for t, frame in enumerate(frames):
+            joints_3d = self._get_joints_3d(frame)
+            if joints_3d is None:
+                all_data["left"].append(None)
+                all_data["right"].append(None)
+                continue
+            
+            pred_cam_t = frame.get("pred_cam_t", [0, 0, 5])
+            depth = pred_cam_t[2] if len(pred_cam_t) > 2 else 5.0
+            
+            n_joints = len(joints_3d)
+            
+            # Left foot
+            l_ankle = joints_3d[min(self.config.l_ankle_idx, n_joints - 1)]
+            l_toe = joints_3d[min(self.config.l_toe_idx, n_joints - 1)]
+            l_heel = joints_3d[min(self.config.l_heel_idx, n_joints - 1)]
+            l_geom = self._calculate_foot_geometry(l_ankle, l_toe, l_heel)
+            all_data["left"].append({
+                "frame": t,
+                "geometry": l_geom,
+                "depth": depth,
+                "joints": [l_ankle, l_toe, l_heel],
+            })
+            
+            # Right foot
+            r_ankle = joints_3d[min(self.config.r_ankle_idx, n_joints - 1)]
+            r_toe = joints_3d[min(self.config.r_toe_idx, n_joints - 1)]
+            r_heel = joints_3d[min(self.config.r_heel_idx, n_joints - 1)]
+            r_geom = self._calculate_foot_geometry(r_ankle, r_toe, r_heel)
+            all_data["right"].append({
+                "frame": t,
+                "geometry": r_geom,
+                "depth": depth,
+                "joints": [r_ankle, r_toe, r_heel],
+            })
+        
+        return all_data
+    
+    def _calculate_foot_geometry(self, ankle: np.ndarray, toe: np.ndarray, heel: np.ndarray) -> Dict:
+        """Calculate foot geometry signature."""
+        # Y-axis spread (primary - height difference)
+        heights = [ankle[1], toe[1], heel[1]]
+        y_spread = max(heights) - min(heights)
+        
+        # X-axis spread (secondary - lateral spread)
+        x_coords = [ankle[0], toe[0], heel[0]]
+        x_spread = max(x_coords) - min(x_coords)
+        
+        # Z-axis spread (secondary - depth spread)
+        z_coords = [ankle[2], toe[2], heel[2]]
+        z_spread = max(z_coords) - min(z_coords)
+        
+        # Relative vectors (ankle as origin)
+        ankle_to_toe = toe - ankle
+        ankle_to_heel = heel - ankle
+        
+        return {
+            "y_spread": float(y_spread),
+            "x_spread": float(x_spread),
+            "z_spread": float(z_spread),
+            "ankle_to_toe": ankle_to_toe.tolist(),
+            "ankle_to_heel": ankle_to_heel.tolist(),
+            "min_height": float(min(heights)),
+            "max_height": float(max(heights)),
+        }
+    
+    def _auto_detect_reference_frame(self, foot_data: List, side: str) -> int:
+        """Auto-detect the best reference frame (where foot is most flat)."""
+        best_frame = 0
+        best_score = float('inf')
+        
+        for data in foot_data:
+            if data is None:
+                continue
+            
+            geom = data["geometry"]
+            # Score = Y-spread (lower is better = flatter foot)
+            # Add small penalty for extreme depths (might have more noise)
+            score = geom["y_spread"]
+            
+            if score < best_score:
+                best_score = score
+                best_frame = data["frame"]
+        
+        self.log.info(f"Auto-detected {side} foot reference: frame {best_frame} (y_spread={best_score:.4f}m)")
+        return best_frame
+    
+    def _get_reference_geometry(self, foot_data: List, ref_frame: int) -> Tuple[Optional[Dict], float]:
+        """Get geometry and depth from reference frame."""
+        if ref_frame < 0 or ref_frame >= len(foot_data):
+            return None, 1.0
+        
+        data = foot_data[ref_frame]
+        if data is None:
+            return None, 1.0
+        
+        return data["geometry"], data["depth"]
+    
+    def _compare_geometry(self, curr: Dict, ref: Dict, depth_scale: float) -> float:
+        """
+        Compare current foot geometry to reference.
+        Returns a difference score (lower = more similar = more likely contact).
+        """
+        # Primary: Y-spread comparison (height difference between joints)
+        # Scale reference by depth ratio to account for perspective changes
+        y_diff = abs(curr["y_spread"] - ref["y_spread"] * depth_scale)
+        
+        # Secondary: X and Z spread (should be roughly similar when foot is flat)
+        x_diff = abs(curr["x_spread"] - ref["x_spread"] * depth_scale) * 0.3  # Lower weight
+        z_diff = abs(curr["z_spread"] - ref["z_spread"] * depth_scale) * 0.3  # Lower weight
+        
+        # Combined score (Y is primary)
+        total_diff = y_diff + x_diff + z_diff
+        
+        return total_diff
+    
+    def _append_empty_debug_data(self, debug_data: Dict):
+        """Append None/empty values when frame has no data."""
+        debug_data["pelvis_positions"].append(None)
+        debug_data["depth_scale"].append(None)
+        debug_data["joints_3d"]["pelvis"].append(None)
+        debug_data["joints_2d"]["pelvis"].append(None)
+        
+        for side in ["left", "right"]:
+            debug_data["foot_heights"][side].append(None)
+            debug_data["foot_flat"][side].append(False)
+            debug_data["foot_to_pelvis"][side].append(None)
+            debug_data["pelvis_moving_away"][side].append(False)
+            debug_data["reproj_errors"][side].append(None)
+            debug_data["geometry_diff"][side].append(None)
+            debug_data["foot_positions"][side].append(None)
+            debug_data["hip_positions"][side].append(None)
+        
+        for key in debug_data["joints_3d"]:
+            debug_data["joints_3d"][key].append(None)
+        for key in debug_data["joints_2d"]:
+            debug_data["joints_2d"][key].append(None)
     
     def _get_joints_3d(self, frame: Dict) -> Optional[np.ndarray]:
         """Extract 3D joints from frame."""
@@ -763,8 +1003,8 @@ class KinematicVisualizer:
     ):
         """Draw legend showing joint indices used for reprojection."""
         # Legend box position (top-right)
-        box_w = 180
-        box_h = 90
+        box_w = 200
+        box_h = 105
         box_x = W - box_w - 10
         box_y = 10
         
@@ -778,13 +1018,13 @@ class KinematicVisualizer:
         cv2.putText(img, "REPROJECTION JOINTS", (box_x + 10, box_y + 15),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
-        # Left foot
+        # Left foot (anatomical - character's left)
         cv2.putText(img, "Left:", (box_x + 10, box_y + 35),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, self.config.color_left_contact, 1)
         cv2.putText(img, f"A={l_ankle} T={l_toe} H={l_heel}", (box_x + 50, box_y + 35),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
         
-        # Right foot
+        # Right foot (anatomical - character's right)
         cv2.putText(img, "Right:", (box_x + 10, box_y + 55),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, self.config.color_right_contact, 1)
         cv2.putText(img, f"A={r_ankle} T={r_toe} H={r_heel}", (box_x + 50, box_y + 55),
@@ -793,6 +1033,10 @@ class KinematicVisualizer:
         # Legend for A, T, H
         cv2.putText(img, "A=Ankle T=Toe H=Heel", (box_x + 10, box_y + 75),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1)
+        
+        # Clarification: anatomical naming
+        cv2.putText(img, "(Anatomical: Char's L/R)", (box_x + 10, box_y + 92),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.28, (120, 120, 120), 1)
     
     def _get_joints_2d(self, frame: Dict) -> Optional[np.ndarray]:
         """Extract 2D joints from frame."""
@@ -1014,13 +1258,15 @@ def generate_motion_graph(
     debug_data: Dict,
     contacts: np.ndarray,
     confidence: np.ndarray,
-    width: int = 1200,
-    height: int = 800
+    width: int = 1400,
+    height: int = 1600
 ) -> np.ndarray:
     """
     Generate motion analysis graph as an image.
     
     Creates a multi-panel plot showing:
+    - 2D Screen Space: X, Y positions of foot joints (px)
+    - 3D World Space: X, Y, Z positions of foot joints (m)
     - Foot heights over time
     - Foot-to-pelvis distance
     - Reprojection errors
@@ -1036,7 +1282,7 @@ def generate_motion_graph(
         # Return blank image if no data
         return np.ones((height, width, 3), dtype=np.uint8) * 255
     
-    # Extract data
+    # Extract existing data
     left_heights = []
     right_heights = []
     for h in debug_data.get("foot_heights", {}).get("left", []):
@@ -1057,87 +1303,94 @@ def generate_motion_graph(
     reproj_left = debug_data.get("reproj_errors", {}).get("left", [])
     reproj_right = debug_data.get("reproj_errors", {}).get("right", [])
     
-    # Create figure
+    # Extract 2D joint positions
+    joints_2d = debug_data.get("joints_2d", {})
+    joints_3d = debug_data.get("joints_3d", {})
+    
+    # Helper to extract component from list of [x,y] or [x,y,z]
+    def extract_component(data_list, component_idx):
+        result = []
+        for item in data_list:
+            if item is not None and len(item) > component_idx:
+                result.append(item[component_idx])
+            else:
+                result.append(None)
+        return result
+    
+    # Create figure - 8 panels
+    num_panels = 8
     img = np.ones((height, width, 3), dtype=np.uint8) * 255
     
-    # Layout: 4 panels stacked vertically
-    panel_height = height // 4
+    panel_height = height // num_panels
     margin_left = 80
-    margin_right = 40
-    margin_top = 25
-    margin_bottom = 25
+    margin_right = 100
+    margin_top = 22
+    margin_bottom = 18
     plot_width = width - margin_left - margin_right
     plot_height = panel_height - margin_top - margin_bottom
     
-    # Colors
-    color_left = (0, 150, 0)       # Green
-    color_right = (150, 0, 0)     # Blue (BGR)
-    color_contact = (0, 200, 0)   # Bright green
-    color_flight = (200, 200, 200)  # Gray
-    color_grid = (220, 220, 220)
+    # Colors - using distinct colors for ankle, toe, heel
+    color_l_ankle = (0, 180, 0)      # Green
+    color_l_toe = (0, 220, 100)      # Light green
+    color_l_heel = (0, 140, 0)       # Dark green
+    color_r_ankle = (180, 0, 0)      # Blue
+    color_r_toe = (220, 100, 0)      # Light blue
+    color_r_heel = (140, 0, 0)       # Dark blue
+    color_pelvis = (0, 0, 180)       # Red
+    color_contact = (0, 200, 0)
+    color_flight = (200, 200, 200)
+    color_grid = (230, 230, 230)
     color_text = (40, 40, 40)
     color_excellent = (0, 180, 0)
     color_good = (0, 200, 200)
     color_acceptable = (0, 150, 255)
     color_poor = (0, 0, 200)
     
-    def draw_panel(panel_idx: int, title: str, data_left: list, data_right: list, 
-                   y_label: str, show_quality_bands: bool = False):
-        """Draw a single panel."""
+    def draw_multi_line_panel(panel_idx: int, title: str, data_dict: Dict[str, tuple], 
+                              y_label: str, show_quality_bands: bool = False):
+        """Draw a panel with multiple data lines.
+        data_dict: {label: (data_list, color)}
+        """
         y_offset = panel_idx * panel_height
         
         # Panel background
-        cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (250, 250, 250), -1)
+        cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (252, 252, 252), -1)
         cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (200, 200, 200), 1)
         
         # Title
-        cv2.putText(img, title, (margin_left, y_offset + 18), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_text, 1)
+        cv2.putText(img, title, (margin_left, y_offset + 16), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_text, 1)
         
         # Y-axis label
         cv2.putText(img, y_label, (5, y_offset + panel_height // 2), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, color_text, 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.32, color_text, 1)
         
-        # Plot area
         plot_x = margin_left
         plot_y = y_offset + margin_top
         
         # Draw quality bands for reprojection panel
         if show_quality_bands:
-            # Excellent: 0-5px, Good: 5-10px, Acceptable: 10-20px, Poor: 20+
-            max_err = 30  # Assume max error for scaling
-            
-            def y_for_value(v):
+            max_err = 30
+            def y_for_val(v):
                 return int(plot_y + plot_height - (v / max_err) * plot_height)
-            
-            # Draw bands
-            cv2.rectangle(img, (plot_x, y_for_value(5)), (plot_x + plot_width, y_for_value(0)), 
-                         (220, 255, 220), -1)  # Excellent - light green
-            cv2.rectangle(img, (plot_x, y_for_value(10)), (plot_x + plot_width, y_for_value(5)), 
-                         (220, 255, 255), -1)  # Good - light cyan
-            cv2.rectangle(img, (plot_x, y_for_value(20)), (plot_x + plot_width, y_for_value(10)), 
-                         (220, 240, 255), -1)  # Acceptable - light orange
-            cv2.rectangle(img, (plot_x, y_for_value(max_err)), (plot_x + plot_width, y_for_value(20)), 
-                         (220, 220, 255), -1)  # Poor - light red
-            
-            # Labels
-            cv2.putText(img, "EXCELLENT", (plot_x + plot_width + 5, y_for_value(2.5)), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_excellent, 1)
-            cv2.putText(img, "GOOD", (plot_x + plot_width + 5, y_for_value(7.5)), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_good, 1)
-            cv2.putText(img, "ACCEPT", (plot_x + plot_width + 5, y_for_value(15)), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_acceptable, 1)
-            cv2.putText(img, "POOR", (plot_x + plot_width + 5, y_for_value(25)), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_poor, 1)
+            cv2.rectangle(img, (plot_x, y_for_val(5)), (plot_x + plot_width, y_for_val(0)), (220, 255, 220), -1)
+            cv2.rectangle(img, (plot_x, y_for_val(10)), (plot_x + plot_width, y_for_val(5)), (220, 255, 255), -1)
+            cv2.rectangle(img, (plot_x, y_for_val(20)), (plot_x + plot_width, y_for_val(10)), (220, 240, 255), -1)
+            cv2.rectangle(img, (plot_x, y_for_val(max_err)), (plot_x + plot_width, y_for_val(20)), (220, 220, 255), -1)
         
         # Grid lines
         for i in range(5):
             y = plot_y + int(i * plot_height / 4)
             cv2.line(img, (plot_x, y), (plot_x + plot_width, y), color_grid, 1)
         
-        # Get data range
-        all_data = [d for d in data_left + data_right if d is not None]
+        # Collect all data for range calculation
+        all_data = []
+        for label, (data, color) in data_dict.items():
+            all_data.extend([d for d in data if d is not None])
+        
         if not all_data:
+            cv2.putText(img, "No data", (plot_x + plot_width//2 - 30, plot_y + plot_height//2),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
             return
         
         if show_quality_bands:
@@ -1145,9 +1398,9 @@ def generate_motion_graph(
         else:
             data_min = min(all_data)
             data_max = max(all_data)
-            margin = (data_max - data_min) * 0.1 + 0.001
-            data_min -= margin
-            data_max += margin
+            margin_val = (data_max - data_min) * 0.1 + 0.001
+            data_min -= margin_val
+            data_max += margin_val
         
         def x_for_frame(f):
             return int(plot_x + (f / max(T - 1, 1)) * plot_width)
@@ -1161,13 +1414,15 @@ def generate_motion_graph(
         for t in range(T):
             x = x_for_frame(t)
             if t < len(contacts):
-                if contacts[t, 0]:  # Left contact
-                    cv2.line(img, (x, plot_y), (x, plot_y + plot_height), (200, 255, 200), 1)
-                if contacts[t, 1]:  # Right contact
-                    cv2.line(img, (x, plot_y), (x, plot_y + plot_height), (255, 200, 200), 1)
+                if contacts[t, 0]:
+                    cv2.line(img, (x, plot_y), (x, plot_y + plot_height), (220, 255, 220), 1)
+                if contacts[t, 1]:
+                    cv2.line(img, (x, plot_y), (x, plot_y + plot_height), (255, 220, 220), 1)
         
         # Draw data lines
-        def draw_line(data: list, color: tuple):
+        legend_x = plot_x + plot_width + 5
+        legend_y = plot_y + 10
+        for label, (data, color) in data_dict.items():
             points = []
             for t, v in enumerate(data):
                 if v is not None:
@@ -1177,76 +1432,123 @@ def generate_motion_graph(
                     points.append((x, y))
             
             for i in range(1, len(points)):
-                cv2.line(img, points[i-1], points[i], color, 2)
-        
-        draw_line(data_left, color_left)
-        draw_line(data_right, color_right)
+                cv2.line(img, points[i-1], points[i], color, 1)
+            
+            # Legend entry
+            cv2.line(img, (legend_x, legend_y), (legend_x + 15, legend_y), color, 2)
+            cv2.putText(img, label, (legend_x + 18, legend_y + 4), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.25, color_text, 1)
+            legend_y += 12
         
         # Y-axis ticks
         for i in range(5):
             y = plot_y + int(i * plot_height / 4)
             val = data_max - i * (data_max - data_min) / 4
-            cv2.putText(img, f"{val:.2f}", (plot_x - 45, y + 4), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_text, 1)
+            cv2.putText(img, f"{val:.1f}", (plot_x - 40, y + 4), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.28, color_text, 1)
         
-        # X-axis ticks (frames)
-        for f in range(0, T, max(1, T // 10)):
+        # X-axis ticks
+        for f in range(0, T, max(1, T // 8)):
             x = x_for_frame(f)
-            cv2.putText(img, str(f), (x - 10, plot_y + plot_height + 12), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_text, 1)
+            cv2.putText(img, str(f), (x - 8, plot_y + plot_height + 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.25, color_text, 1)
     
-    # Panel 1: Foot Heights
-    draw_panel(0, "Foot Heights (Y position) - Green=Left, Blue=Right", 
-               left_heights, right_heights, "Height")
+    # Panel 0: 2D Screen X (px)
+    draw_multi_line_panel(0, "2D Screen X Position (px) - Ankle/Toe/Heel", {
+        "L_Ank": (extract_component(joints_2d.get("l_ankle", []), 0), color_l_ankle),
+        "L_Toe": (extract_component(joints_2d.get("l_toe", []), 0), color_l_toe),
+        "L_Heel": (extract_component(joints_2d.get("l_heel", []), 0), color_l_heel),
+        "R_Ank": (extract_component(joints_2d.get("r_ankle", []), 0), color_r_ankle),
+        "R_Toe": (extract_component(joints_2d.get("r_toe", []), 0), color_r_toe),
+        "R_Heel": (extract_component(joints_2d.get("r_heel", []), 0), color_r_heel),
+    }, "X (px)")
     
-    # Panel 2: Foot-to-Pelvis Distance  
-    draw_panel(1, "Foot-to-Pelvis Distance (Contact = increasing)", 
-               left_to_pelvis, right_to_pelvis, "Distance")
+    # Panel 1: 2D Screen Y (px)
+    draw_multi_line_panel(1, "2D Screen Y Position (px) - Ankle/Toe/Heel", {
+        "L_Ank": (extract_component(joints_2d.get("l_ankle", []), 1), color_l_ankle),
+        "L_Toe": (extract_component(joints_2d.get("l_toe", []), 1), color_l_toe),
+        "L_Heel": (extract_component(joints_2d.get("l_heel", []), 1), color_l_heel),
+        "R_Ank": (extract_component(joints_2d.get("r_ankle", []), 1), color_r_ankle),
+        "R_Toe": (extract_component(joints_2d.get("r_toe", []), 1), color_r_toe),
+        "R_Heel": (extract_component(joints_2d.get("r_heel", []), 1), color_r_heel),
+    }, "Y (px)")
     
-    # Panel 3: Reprojection Errors with quality bands
-    draw_panel(2, "Reprojection Error (px) - Quality Bands", 
-               reproj_left, reproj_right, "Error(px)", show_quality_bands=True)
+    # Panel 2: 3D World X (m)
+    draw_multi_line_panel(2, "3D World X Position (m) - Ankle/Toe/Heel", {
+        "L_Ank": (extract_component(joints_3d.get("l_ankle", []), 0), color_l_ankle),
+        "L_Toe": (extract_component(joints_3d.get("l_toe", []), 0), color_l_toe),
+        "L_Heel": (extract_component(joints_3d.get("l_heel", []), 0), color_l_heel),
+        "R_Ank": (extract_component(joints_3d.get("r_ankle", []), 0), color_r_ankle),
+        "R_Toe": (extract_component(joints_3d.get("r_toe", []), 0), color_r_toe),
+        "R_Heel": (extract_component(joints_3d.get("r_heel", []), 0), color_r_heel),
+    }, "X (m)")
     
-    # Panel 4: Contact Timeline
-    y_offset = 3 * panel_height
-    cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (250, 250, 250), -1)
-    cv2.putText(img, "Contact Timeline - Green=Contact, Gray=Flight", 
-               (margin_left, y_offset + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_text, 1)
+    # Panel 3: 3D World Y (m) - Height
+    draw_multi_line_panel(3, "3D World Y Position (m) - HEIGHT - Ankle/Toe/Heel", {
+        "L_Ank": (extract_component(joints_3d.get("l_ankle", []), 1), color_l_ankle),
+        "L_Toe": (extract_component(joints_3d.get("l_toe", []), 1), color_l_toe),
+        "L_Heel": (extract_component(joints_3d.get("l_heel", []), 1), color_l_heel),
+        "R_Ank": (extract_component(joints_3d.get("r_ankle", []), 1), color_r_ankle),
+        "R_Toe": (extract_component(joints_3d.get("r_toe", []), 1), color_r_toe),
+        "R_Heel": (extract_component(joints_3d.get("r_heel", []), 1), color_r_heel),
+        "Pelvis": (extract_component(joints_3d.get("pelvis", []), 1), color_pelvis),
+    }, "Y (m)")
+    
+    # Panel 4: 3D World Z (m) - Depth
+    draw_multi_line_panel(4, "3D World Z Position (m) - DEPTH - Ankle/Toe/Heel", {
+        "L_Ank": (extract_component(joints_3d.get("l_ankle", []), 2), color_l_ankle),
+        "L_Toe": (extract_component(joints_3d.get("l_toe", []), 2), color_l_toe),
+        "L_Heel": (extract_component(joints_3d.get("l_heel", []), 2), color_l_heel),
+        "R_Ank": (extract_component(joints_3d.get("r_ankle", []), 2), color_r_ankle),
+        "R_Toe": (extract_component(joints_3d.get("r_toe", []), 2), color_r_toe),
+        "R_Heel": (extract_component(joints_3d.get("r_heel", []), 2), color_r_heel),
+    }, "Z (m)")
+    
+    # Panel 5: Foot-to-Pelvis Distance
+    draw_multi_line_panel(5, "Foot-to-Pelvis Distance (m) - Contact = Increasing", {
+        "Left": (left_to_pelvis, color_l_ankle),
+        "Right": (right_to_pelvis, color_r_ankle),
+    }, "Dist (m)")
+    
+    # Panel 6: Reprojection Errors
+    draw_multi_line_panel(6, "Reprojection Error (px) - Quality Bands", {
+        "Left": (reproj_left, color_l_ankle),
+        "Right": (reproj_right, color_r_ankle),
+    }, "Err (px)", show_quality_bands=True)
+    
+    # Panel 7: Contact Timeline
+    panel_idx = 7
+    y_offset = panel_idx * panel_height
+    cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (252, 252, 252), -1)
+    cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (200, 200, 200), 1)
+    cv2.putText(img, "Contact Timeline - Green=Contact, Gray=Flight (Anatomical L/R)", 
+               (margin_left, y_offset + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color_text, 1)
     
     plot_x = margin_left
     plot_y = y_offset + margin_top
-    bar_height = (plot_height - 20) // 2
+    bar_height = (plot_height - 15) // 2
     
     # Left foot contacts
-    cv2.putText(img, "Left:", (10, plot_y + bar_height // 2 + 5), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+    cv2.putText(img, "Left:", (10, plot_y + bar_height // 2 + 4), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.35, color_text, 1)
     for t in range(T):
         x = int(plot_x + (t / max(T - 1, 1)) * plot_width)
         color = color_contact if contacts[t, 0] else color_flight
         cv2.line(img, (x, plot_y), (x, plot_y + bar_height), color, max(1, plot_width // T))
     
     # Right foot contacts
-    cv2.putText(img, "Right:", (10, plot_y + bar_height + 15 + bar_height // 2 + 5), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+    cv2.putText(img, "Right:", (10, plot_y + bar_height + 12 + bar_height // 2 + 4), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.35, color_text, 1)
     for t in range(T):
         x = int(plot_x + (t / max(T - 1, 1)) * plot_width)
         color = color_contact if contacts[t, 1] else color_flight
-        cv2.line(img, (x, plot_y + bar_height + 15), (x, plot_y + 2 * bar_height + 15), color, max(1, plot_width // T))
+        cv2.line(img, (x, plot_y + bar_height + 12), (x, plot_y + 2 * bar_height + 12), color, max(1, plot_width // T))
     
-    # X-axis (frames)
-    for f in range(0, T, max(1, T // 10)):
+    # X-axis
+    for f in range(0, T, max(1, T // 8)):
         x = int(plot_x + (f / max(T - 1, 1)) * plot_width)
-        cv2.putText(img, str(f), (x - 10, y_offset + panel_height - 5), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_text, 1)
-    
-    # Legend
-    legend_y = 15
-    cv2.rectangle(img, (width - 180, legend_y - 10), (width - 10, legend_y + 35), (255, 255, 255), -1)
-    cv2.rectangle(img, (width - 180, legend_y - 10), (width - 10, legend_y + 35), (150, 150, 150), 1)
-    cv2.line(img, (width - 170, legend_y), (width - 140, legend_y), color_left, 2)
-    cv2.putText(img, "Left", (width - 135, legend_y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
-    cv2.line(img, (width - 170, legend_y + 20), (width - 140, legend_y + 20), color_right, 2)
-    cv2.putText(img, "Right", (width - 135, legend_y + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+        cv2.putText(img, str(f), (x - 8, y_offset + panel_height - 3), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.25, color_text, 1)
     
     return img
 
@@ -1257,14 +1559,18 @@ def generate_motion_graph(
 
 class KinematicContactNode:
     """
-    Kinematic Contact Detector - Pure geometry-based foot contact detection.
+    Kinematic Contact Detector - Reference-based foot contact detection.
     
-    Detects foot contacts using biomechanical principles:
-    - Foot flat (ankle, toe, heel at same height)
-    - Pelvis moving away from planted foot
+    Detects foot contacts by comparing foot geometry to a reference frame
+    where the foot is known to be flat on the ground.
+    
+    Method:
+    1. Auto-detect (or user-specify) reference frames where each foot is flat
+    2. Compare each frame's foot geometry to reference
+    3. Normalize by camera distance (pred_cam_t) for depth changes
     
     Works for walking, running, sprinting - any bipedal gait.
-    No ML models required.
+    Robust to character moving toward/away from camera.
     """
     
     @classmethod
@@ -1279,6 +1585,20 @@ class KinematicContactNode:
                 }),
             },
             "optional": {
+                # Reference frames (NEW)
+                "left_ref_frame": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 10000,
+                    "tooltip": "Frame where LEFT foot is flat on ground (-1 = auto-detect)"
+                }),
+                "right_ref_frame": ("INT", {
+                    "default": -1,
+                    "min": -1,
+                    "max": 10000,
+                    "tooltip": "Frame where RIGHT foot is flat on ground (-1 = auto-detect)"
+                }),
+                
                 # Joint indices
                 "pelvis_idx": ("INT", {"default": 0, "min": 0, "max": 50}),
                 "l_ankle_idx": ("INT", {"default": 15, "min": 0, "max": 50}),
@@ -1292,12 +1612,12 @@ class KinematicContactNode:
                 "spine_idx": ("INT", {"default": 6, "min": 0, "max": 50}),
                 
                 # Detection parameters
-                "height_threshold": ("FLOAT", {
+                "geometry_threshold": ("FLOAT", {
                     "default": 0.03,
-                    "min": 0.01,
-                    "max": 0.1,
+                    "min": 0.005,
+                    "max": 0.15,
                     "step": 0.005,
-                    "tooltip": "Height tolerance for 'foot flat' detection (meters)"
+                    "tooltip": "Max geometry difference from reference to count as contact (meters). Lower = stricter."
                 }),
                 "min_contact_frames": ("INT", {
                     "default": 2,
@@ -1344,6 +1664,8 @@ class KinematicContactNode:
         self,
         images,
         mesh_sequence: Dict,
+        left_ref_frame: int = -1,
+        right_ref_frame: int = -1,
         pelvis_idx: int = 0,
         l_ankle_idx: int = 15,
         l_toe_idx: int = 17,
@@ -1354,7 +1676,7 @@ class KinematicContactNode:
         l_hip_idx: int = 11,
         r_hip_idx: int = 12,
         spine_idx: int = 6,
-        height_threshold: float = 0.03,
+        geometry_threshold: float = 0.03,
         min_contact_frames: int = 2,
         enable_stabilization: bool = True,
         pin_strength: float = 0.8,
@@ -1365,11 +1687,11 @@ class KinematicContactNode:
         highlight_joints: str = "",
         log_level: str = "verbose",
     ):
-        """Process mesh sequence with kinematic contact detection."""
+        """Process mesh sequence with reference-based contact detection."""
         
         log = KinematicLogger(log_level)
         log.info("=" * 60)
-        log.info("KINEMATIC CONTACT DETECTION")
+        log.info("KINEMATIC CONTACT DETECTION (Reference-Based)")
         log.info("=" * 60)
         
         # Build config
@@ -1384,7 +1706,7 @@ class KinematicContactNode:
             l_hip_idx=l_hip_idx,
             r_hip_idx=r_hip_idx,
             spine_idx=spine_idx,
-            height_threshold=height_threshold,
+            height_threshold=geometry_threshold,  # Reuse this field for geometry threshold
             min_contact_frames=min_contact_frames,
             show_feet=show_feet,
             show_hips=show_hips,
@@ -1434,9 +1756,28 @@ class KinematicContactNode:
         
         log.verbose(f"Intrinsics: focal={global_intrinsics.get('focal_length')}, size={global_intrinsics.get('width')}x{global_intrinsics.get('height')}")
         
+        # Log reference frame settings
+        if left_ref_frame >= 0:
+            log.info(f"Left foot reference frame: {left_ref_frame} (user-specified)")
+        else:
+            log.info("Left foot reference frame: auto-detect")
+        if right_ref_frame >= 0:
+            log.info(f"Right foot reference frame: {right_ref_frame} (user-specified)")
+        else:
+            log.info("Right foot reference frame: auto-detect")
+        
         # Detect contacts
         detector = KinematicContactDetector(config, log)
-        contacts, confidence, debug_data = detector.detect(frames, global_intrinsics)
+        contacts, confidence, debug_data = detector.detect(
+            frames, global_intrinsics, 
+            left_ref_frame=left_ref_frame,
+            right_ref_frame=right_ref_frame
+        )
+        
+        # Log reference frames used
+        ref_left = debug_data.get("reference_frames", {}).get("left", "N/A")
+        ref_right = debug_data.get("reference_frames", {}).get("right", "N/A")
+        log.info(f"Reference frames used: Left={ref_left}, Right={ref_right}")
         
         log.info(f"Detected: Left={contacts[:, 0].sum()} frames, Right={contacts[:, 1].sum()} frames")
         
