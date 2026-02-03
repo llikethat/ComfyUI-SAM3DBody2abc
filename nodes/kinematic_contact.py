@@ -112,12 +112,13 @@ class KinematicContactDetector:
         self.config = config
         self.log = log
     
-    def detect(self, frames: List[Dict]) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    def detect(self, frames: List[Dict], global_intrinsics: Optional[Dict] = None) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
         Detect contacts for all frames.
         
         Args:
             frames: List of frame data with pred_keypoints_3d, pred_keypoints_2d
+            global_intrinsics: Optional dict with focal_length, cx, cy, width, height
         
         Returns:
             contacts: (T, 2) boolean array [left, right]
@@ -127,6 +128,9 @@ class KinematicContactDetector:
         T = len(frames)
         contacts = np.zeros((T, 2), dtype=bool)
         confidence = np.zeros((T, 2), dtype=np.float32)
+        
+        # Store global intrinsics for use in reprojection
+        self.global_intrinsics = global_intrinsics or {}
         
         # Debug data storage
         debug_data = {
@@ -289,10 +293,42 @@ class KinematicContactDetector:
         indices: List[int]
     ) -> float:
         """Compute reprojection error for given joints."""
-        focal = frame.get("focal_length", 1000)
-        cx = frame.get("cx", 640)
-        cy = frame.get("cy", 360)
-        trans = np.array(frame.get("pred_cam_t", [0, 0, 5]))
+        # Get intrinsics - try frame first, then global, then defaults
+        focal = frame.get("focal_length")
+        if focal is None:
+            focal = self.global_intrinsics.get("focal_length")
+        if focal is None:
+            focal = 1000.0
+        
+        cx = frame.get("cx")
+        if cx is None:
+            cx = self.global_intrinsics.get("cx")
+        
+        cy = frame.get("cy")
+        if cy is None:
+            cy = self.global_intrinsics.get("cy")
+        
+        # If cx/cy still None, try to get from image_size
+        if cx is None or cy is None:
+            image_size = frame.get("image_size") or self.global_intrinsics.get("image_size")
+            width = self.global_intrinsics.get("width")
+            height = self.global_intrinsics.get("height")
+            
+            if image_size is not None and len(image_size) >= 2:
+                cx = image_size[1] / 2 if cx is None else cx  # width / 2
+                cy = image_size[0] / 2 if cy is None else cy  # height / 2
+            elif width is not None and height is not None:
+                cx = width / 2 if cx is None else cx
+                cy = height / 2 if cy is None else cy
+            else:
+                # Final fallback - assume 1280x720
+                cx = 640.0 if cx is None else cx
+                cy = 360.0 if cy is None else cy
+        
+        trans = frame.get("pred_cam_t")
+        if trans is None:
+            trans = [0, 0, 5]
+        trans = np.array(trans)
         
         errors = []
         for j3d, idx in zip(joints_3d, indices):
@@ -1007,9 +1043,30 @@ class KinematicContactNode:
         log.info(f"Processing {T} frames")
         log.info(f"Joint indices: ankle=({l_ankle_idx},{r_ankle_idx}), toe=({l_toe_idx},{r_toe_idx}), heel=({l_heel_idx},{r_heel_idx})")
         
+        # Extract global intrinsics from mesh_sequence
+        global_intrinsics = {
+            "focal_length": mesh_sequence.get("focal_length"),
+            "cx": mesh_sequence.get("cx"),
+            "cy": mesh_sequence.get("cy"),
+            "width": mesh_sequence.get("width"),
+            "height": mesh_sequence.get("height"),
+        }
+        
+        # Also try to get from first frame if not in mesh_sequence
+        if frames and global_intrinsics["focal_length"] is None:
+            first_frame = frames[0]
+            global_intrinsics["focal_length"] = first_frame.get("focal_length")
+            if global_intrinsics["width"] is None:
+                img_size = first_frame.get("image_size")
+                if img_size and len(img_size) >= 2:
+                    global_intrinsics["height"] = img_size[0]
+                    global_intrinsics["width"] = img_size[1]
+        
+        log.verbose(f"Intrinsics: focal={global_intrinsics.get('focal_length')}, size={global_intrinsics.get('width')}x{global_intrinsics.get('height')}")
+        
         # Detect contacts
         detector = KinematicContactDetector(config, log)
-        contacts, confidence, debug_data = detector.detect(frames)
+        contacts, confidence, debug_data = detector.detect(frames, global_intrinsics)
         
         log.info(f"Detected: Left={contacts[:, 0].sum()} frames, Right={contacts[:, 1].sum()} frames")
         
