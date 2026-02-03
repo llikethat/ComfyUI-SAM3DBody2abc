@@ -15,6 +15,18 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.9.1
+- NEW: 🦶📐 Kinematic Contact Detector node - PURE GEOMETRY APPROACH
+  - Detects foot contacts using biomechanical principles, NO ML models
+  - Contact = foot flat (ankle, toe, heel at same height)
+  - Contact = pelvis moving away from planted foot
+  - Works universally for walking, running, sprinting - any gait
+  - Reprojection error provides confidence score (3D→2D consistency)
+  - Configurable joint indices for different skeleton formats
+  - Debug overlay shows feet, hips, torso with trajectories
+  - Motion plot data output for analyzing joint movement
+  - No TAPNet, no GroundLink, no velocity thresholds - just physics!
+
 Version: 5.9.0
 - NEW: 🎭 Monocular Silhouette Refiner node
   - Refine SAM3DBody pose using SAM3 segmentation masks
@@ -104,7 +116,7 @@ Version: 5.2.0
 - NEW: 📹 SLAM Camera Solver node
 """
 
-__version__ = "5.9.0"
+__version__ = "5.9.1"
 
 import os
 import sys
@@ -383,6 +395,12 @@ _mono_silhouette = _load_module("sam3d2abc_mono_silhouette", os.path.join(_nodes
 if _mono_silhouette:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_MonocularSilhouetteRefiner"] = _mono_silhouette.MonocularSilhouetteRefinerNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MonocularSilhouetteRefiner"] = "🎭 Monocular Silhouette Refiner"
+
+# Load and register Kinematic Contact Detector - NEW in v5.9.1
+_kinematic_contact = _load_module("sam3d2abc_kinematic_contact", os.path.join(_nodes, "kinematic_contact.py"))
+if _kinematic_contact:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_KinematicContact"] = _kinematic_contact.KinematicContactNode
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_KinematicContact"] = "🦶📐 Kinematic Contact Detector"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")

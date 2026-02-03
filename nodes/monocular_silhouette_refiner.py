@@ -132,7 +132,7 @@ class MonoSilhouetteConfig:
 class SkeletonHullRenderer:
     """
     Render silhouette using skeleton joints as ellipses/circles.
-    Works without PyTorch3D.
+    Works without PyTorch3D. Fully differentiable for optimization.
     """
     
     # Joint connections for body parts
@@ -154,6 +154,16 @@ class SkeletonHullRenderer:
     def __init__(self, image_size: Tuple[int, int], device: torch.device):
         self.image_size = image_size
         self.device = device
+        
+        # Pre-compute coordinate grids (as float for gradient flow)
+        H, W = image_size
+        y_coords, x_coords = torch.meshgrid(
+            torch.arange(H, dtype=torch.float32, device=device),
+            torch.arange(W, dtype=torch.float32, device=device),
+            indexing='ij'
+        )
+        self.y_coords = y_coords
+        self.x_coords = x_coords
     
     def render(
         self,
@@ -163,11 +173,11 @@ class SkeletonHullRenderer:
         principal_point: Tuple[float, float]
     ) -> torch.Tensor:
         """
-        Render skeleton as soft silhouette.
+        Render skeleton as soft silhouette (differentiable).
         
         Args:
             joints_3d: (N, 3) joint positions
-            translation: (3,) root translation
+            translation: (3,) root translation (requires_grad=True for optimization)
             focal_length: Camera focal length in pixels
             principal_point: (cx, cy)
         
@@ -177,37 +187,45 @@ class SkeletonHullRenderer:
         H, W = self.image_size
         cx, cy = principal_point
         
-        # Apply translation
+        # Apply translation (keeps gradients)
         joints_world = joints_3d + translation
         
-        # Project to 2D
+        # Project to 2D (differentiable)
         z = joints_world[:, 2:3].clamp(min=0.1)
         joints_2d = joints_world[:, :2] * focal_length / z
-        joints_2d[:, 0] += cx
-        joints_2d[:, 1] += cy
+        joints_2d = joints_2d.clone()
+        joints_2d[:, 0] = joints_2d[:, 0] + cx
+        joints_2d[:, 1] = joints_2d[:, 1] + cy
         
-        # Create silhouette image
-        silhouette = torch.zeros((H, W), device=self.device)
+        # Create silhouette using soft max over all joints
+        n_joints = min(len(joints_2d), 22)
         
-        # Draw circles at each joint
-        y_coords, x_coords = torch.meshgrid(
-            torch.arange(H, device=self.device),
-            torch.arange(W, device=self.device),
-            indexing='ij'
-        )
-        
-        n_joints = min(len(joints_2d), 22)  # Limit to expected joints
+        # Compute all circles at once for better gradient flow
+        circles = []
         for i in range(n_joints):
-            x, y = joints_2d[i, 0], joints_2d[i, 1]
+            x = joints_2d[i, 0]
+            y = joints_2d[i, 1]
             
-            # Radius based on depth (closer = larger)
-            depth = joints_world[i, 2].item()
-            radius = max(10, min(50, 500 / max(depth, 0.5)))
+            # Radius based on depth (differentiable)
+            depth = joints_world[i, 2].clamp(min=0.5)
+            radius = 500.0 / depth
+            radius = radius.clamp(min=10.0, max=50.0)
             
-            # Soft circle
-            dist = torch.sqrt((x_coords - x)**2 + (y_coords - y)**2)
+            # Soft circle using sigmoid (differentiable)
+            dist_sq = (self.x_coords - x)**2 + (self.y_coords - y)**2
+            dist = torch.sqrt(dist_sq + 1e-6)  # Add epsilon for numerical stability
             circle = torch.sigmoid((radius - dist) * 0.5)
-            silhouette = torch.maximum(silhouette, circle)
+            circles.append(circle)
+        
+        # Stack and take soft max (differentiable approximation of max)
+        if circles:
+            circles_stack = torch.stack(circles, dim=0)  # (N, H, W)
+            # Use logsumexp for differentiable soft max
+            temperature = 10.0
+            silhouette = torch.logsumexp(circles_stack * temperature, dim=0) / temperature
+            silhouette = silhouette.clamp(0, 1)
+        else:
+            silhouette = torch.zeros((H, W), device=self.device)
         
         return silhouette
 
