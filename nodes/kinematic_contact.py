@@ -766,6 +766,18 @@ class KinematicVisualizer:
 # Debug Info Generator
 # =============================================================================
 
+def get_quality_rating(error_px: float) -> Tuple[str, str]:
+    """Convert reprojection error to quality rating."""
+    if error_px < 5:
+        return "EXCELLENT", "✓✓"
+    elif error_px < 10:
+        return "GOOD", "✓"
+    elif error_px < 20:
+        return "ACCEPTABLE", "~"
+    else:
+        return "POOR", "✗"
+
+
 def generate_debug_info(
     contacts: np.ndarray,
     confidence: np.ndarray,
@@ -775,18 +787,51 @@ def generate_debug_info(
     """Generate comprehensive debug info string."""
     T = contacts.shape[0]
     
+    # Get reprojection errors
+    reproj_left = [e for e in debug_data.get("reproj_errors", {}).get("left", []) if e is not None]
+    reproj_right = [e for e in debug_data.get("reproj_errors", {}).get("right", []) if e is not None]
+    
+    # Calculate overall quality
+    all_errors = reproj_left + reproj_right
+    if all_errors:
+        overall_error = np.mean(all_errors)
+        overall_quality, overall_symbol = get_quality_rating(overall_error)
+    else:
+        overall_error = 0
+        overall_quality, overall_symbol = "UNKNOWN", "?"
+    
     lines = [
-        "=" * 60,
+        "=" * 70,
         "KINEMATIC CONTACT DETECTION RESULTS",
-        "=" * 60,
+        "=" * 70,
         "",
         f"Total frames: {T}",
         f"Left contact frames: {contacts[:, 0].sum()} ({100*contacts[:, 0].mean():.1f}%)",
         f"Right contact frames: {contacts[:, 1].sum()} ({100*contacts[:, 1].mean():.1f}%)",
         "",
-        f"Avg confidence - Left: {confidence[:, 0].mean():.3f}, Right: {confidence[:, 1].mean():.3f}",
-        "",
     ]
+    
+    # === REPROJECTION QUALITY SUMMARY (Prominent) ===
+    lines.append("=" * 70)
+    lines.append(f"  REPROJECTION QUALITY: {overall_symbol} {overall_quality} (mean={overall_error:.1f}px)")
+    lines.append("=" * 70)
+    lines.append("")
+    
+    if reproj_left:
+        l_mean = np.mean(reproj_left)
+        l_max = np.max(reproj_left)
+        l_quality, l_sym = get_quality_rating(l_mean)
+        lines.append(f"  Left foot:  {l_sym} {l_quality:10s} mean={l_mean:5.1f}px, max={l_max:5.1f}px")
+    
+    if reproj_right:
+        r_mean = np.mean(reproj_right)
+        r_max = np.max(reproj_right)
+        r_quality, r_sym = get_quality_rating(r_mean)
+        lines.append(f"  Right foot: {r_sym} {r_quality:10s} mean={r_mean:5.1f}px, max={r_max:5.1f}px")
+    
+    lines.append("")
+    lines.append("  Quality thresholds: <5px=EXCELLENT, <10px=GOOD, <20px=ACCEPTABLE, ≥20px=POOR")
+    lines.append("")
     
     # Events
     events = debug_data.get("events", [])
@@ -806,79 +851,291 @@ def generate_debug_info(
         lines.append(f"  Max adjustment: {stabilization_info.get('max_adjustment', 0):.4f}m")
         lines.append("")
     
-    # Reprojection errors
-    reproj_left = [e for e in debug_data.get("reproj_errors", {}).get("left", []) if e is not None]
-    reproj_right = [e for e in debug_data.get("reproj_errors", {}).get("right", []) if e is not None]
+    # === CONTACT TIMELINE WITH QUALITY ===
+    lines.append("=== CONTACT TIMELINE WITH QUALITY ===")
+    lines.append("-" * 70)
+    lines.append("Frame |  L   |  R   | L_Err | R_Err | Quality")
+    lines.append("-" * 70)
     
-    if reproj_left or reproj_right:
-        lines.append("=== REPROJECTION ERRORS ===")
-        if reproj_left:
-            lines.append(f"  Left foot:  mean={np.mean(reproj_left):.1f}px, max={np.max(reproj_left):.1f}px")
-        if reproj_right:
-            lines.append(f"  Right foot: mean={np.mean(reproj_right):.1f}px, max={np.max(reproj_right):.1f}px")
-        lines.append("")
+    # Get per-frame reprojection errors
+    reproj_left_all = debug_data.get("reproj_errors", {}).get("left", [])
+    reproj_right_all = debug_data.get("reproj_errors", {}).get("right", [])
     
-    # Timeline
-    lines.append("=== CONTACT TIMELINE ===")
-    lines.append("-" * 50)
-    lines.append("Frame | L | R |")
-    lines.append("-" * 50)
-    
-    # Show key frames
+    # Show key frames + every Nth frame
     shown_frames = set([0, T - 1])
     for evt in events:
         shown_frames.add(evt["frame"])
-    for t in range(0, T, max(1, T // 20)):
+    for t in range(0, T, max(1, T // 25)):
         shown_frames.add(t)
     
     for t in sorted(shown_frames):
         if t >= T:
             continue
+        
         l_char = "████" if contacts[t, 0] else "····"
         r_char = "████" if contacts[t, 1] else "····"
-        lines.append(f"{t:5d} | {l_char} | {r_char} |")
+        
+        # Get errors for this frame
+        l_err = reproj_left_all[t] if t < len(reproj_left_all) and reproj_left_all[t] is not None else None
+        r_err = reproj_right_all[t] if t < len(reproj_right_all) and reproj_right_all[t] is not None else None
+        
+        l_err_str = f"{l_err:5.1f}" if l_err is not None else "  N/A"
+        r_err_str = f"{r_err:5.1f}" if r_err is not None else "  N/A"
+        
+        # Frame quality based on average error
+        frame_errors = [e for e in [l_err, r_err] if e is not None]
+        if frame_errors:
+            frame_avg = np.mean(frame_errors)
+            _, quality_sym = get_quality_rating(frame_avg)
+        else:
+            quality_sym = "?"
+        
+        lines.append(f"{t:5d} | {l_char} | {r_char} | {l_err_str} | {r_err_str} |   {quality_sym}")
     
-    lines.append("-" * 50)
+    lines.append("-" * 70)
     
     return "\n".join(lines)
 
 
-def generate_motion_plot_data(debug_data: Dict) -> Dict:
+def generate_motion_graph(
+    debug_data: Dict,
+    contacts: np.ndarray,
+    confidence: np.ndarray,
+    width: int = 1200,
+    height: int = 800
+) -> np.ndarray:
     """
-    Generate data for motion plots.
-    Returns data that can be used to create charts.
+    Generate motion analysis graph as an image.
+    
+    Creates a multi-panel plot showing:
+    - Foot heights over time
+    - Foot-to-pelvis distance
+    - Reprojection errors
+    - Contact timeline
+    
+    Returns:
+        graph_image: (H, W, 3) numpy array
     """
+    import cv2
+    
     T = len(debug_data.get("pelvis_positions", []))
+    if T == 0:
+        # Return blank image if no data
+        return np.ones((height, width, 3), dtype=np.uint8) * 255
     
-    plot_data = {
-        "frames": list(range(T)),
-        "left_foot_height": [],
-        "right_foot_height": [],
-        "left_foot_to_pelvis": debug_data.get("foot_to_pelvis", {}).get("left", []),
-        "right_foot_to_pelvis": debug_data.get("foot_to_pelvis", {}).get("right", []),
-        "pelvis_height": [],
-    }
-    
-    # Extract heights
+    # Extract data
+    left_heights = []
+    right_heights = []
     for h in debug_data.get("foot_heights", {}).get("left", []):
         if isinstance(h, dict):
-            plot_data["left_foot_height"].append(h.get("ankle", 0))
+            left_heights.append(h.get("ankle", 0))
         else:
-            plot_data["left_foot_height"].append(0)
+            left_heights.append(0)
     
     for h in debug_data.get("foot_heights", {}).get("right", []):
         if isinstance(h, dict):
-            plot_data["right_foot_height"].append(h.get("ankle", 0))
+            right_heights.append(h.get("ankle", 0))
         else:
-            plot_data["right_foot_height"].append(0)
+            right_heights.append(0)
     
-    for pos in debug_data.get("pelvis_positions", []):
-        if isinstance(pos, list) and len(pos) >= 2:
-            plot_data["pelvis_height"].append(pos[1])  # Y component
+    left_to_pelvis = debug_data.get("foot_to_pelvis", {}).get("left", [])
+    right_to_pelvis = debug_data.get("foot_to_pelvis", {}).get("right", [])
+    
+    reproj_left = debug_data.get("reproj_errors", {}).get("left", [])
+    reproj_right = debug_data.get("reproj_errors", {}).get("right", [])
+    
+    # Create figure
+    img = np.ones((height, width, 3), dtype=np.uint8) * 255
+    
+    # Layout: 4 panels stacked vertically
+    panel_height = height // 4
+    margin_left = 80
+    margin_right = 40
+    margin_top = 25
+    margin_bottom = 25
+    plot_width = width - margin_left - margin_right
+    plot_height = panel_height - margin_top - margin_bottom
+    
+    # Colors
+    color_left = (0, 150, 0)       # Green
+    color_right = (150, 0, 0)     # Blue (BGR)
+    color_contact = (0, 200, 0)   # Bright green
+    color_flight = (200, 200, 200)  # Gray
+    color_grid = (220, 220, 220)
+    color_text = (40, 40, 40)
+    color_excellent = (0, 180, 0)
+    color_good = (0, 200, 200)
+    color_acceptable = (0, 150, 255)
+    color_poor = (0, 0, 200)
+    
+    def draw_panel(panel_idx: int, title: str, data_left: list, data_right: list, 
+                   y_label: str, show_quality_bands: bool = False):
+        """Draw a single panel."""
+        y_offset = panel_idx * panel_height
+        
+        # Panel background
+        cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (250, 250, 250), -1)
+        cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (200, 200, 200), 1)
+        
+        # Title
+        cv2.putText(img, title, (margin_left, y_offset + 18), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_text, 1)
+        
+        # Y-axis label
+        cv2.putText(img, y_label, (5, y_offset + panel_height // 2), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, color_text, 1)
+        
+        # Plot area
+        plot_x = margin_left
+        plot_y = y_offset + margin_top
+        
+        # Draw quality bands for reprojection panel
+        if show_quality_bands:
+            # Excellent: 0-5px, Good: 5-10px, Acceptable: 10-20px, Poor: 20+
+            max_err = 30  # Assume max error for scaling
+            
+            def y_for_value(v):
+                return int(plot_y + plot_height - (v / max_err) * plot_height)
+            
+            # Draw bands
+            cv2.rectangle(img, (plot_x, y_for_value(5)), (plot_x + plot_width, y_for_value(0)), 
+                         (220, 255, 220), -1)  # Excellent - light green
+            cv2.rectangle(img, (plot_x, y_for_value(10)), (plot_x + plot_width, y_for_value(5)), 
+                         (220, 255, 255), -1)  # Good - light cyan
+            cv2.rectangle(img, (plot_x, y_for_value(20)), (plot_x + plot_width, y_for_value(10)), 
+                         (220, 240, 255), -1)  # Acceptable - light orange
+            cv2.rectangle(img, (plot_x, y_for_value(max_err)), (plot_x + plot_width, y_for_value(20)), 
+                         (220, 220, 255), -1)  # Poor - light red
+            
+            # Labels
+            cv2.putText(img, "EXCELLENT", (plot_x + plot_width + 5, y_for_value(2.5)), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_excellent, 1)
+            cv2.putText(img, "GOOD", (plot_x + plot_width + 5, y_for_value(7.5)), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_good, 1)
+            cv2.putText(img, "ACCEPT", (plot_x + plot_width + 5, y_for_value(15)), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_acceptable, 1)
+            cv2.putText(img, "POOR", (plot_x + plot_width + 5, y_for_value(25)), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_poor, 1)
+        
+        # Grid lines
+        for i in range(5):
+            y = plot_y + int(i * plot_height / 4)
+            cv2.line(img, (plot_x, y), (plot_x + plot_width, y), color_grid, 1)
+        
+        # Get data range
+        all_data = [d for d in data_left + data_right if d is not None]
+        if not all_data:
+            return
+        
+        if show_quality_bands:
+            data_min, data_max = 0, 30
         else:
-            plot_data["pelvis_height"].append(0)
+            data_min = min(all_data)
+            data_max = max(all_data)
+            margin = (data_max - data_min) * 0.1 + 0.001
+            data_min -= margin
+            data_max += margin
+        
+        def x_for_frame(f):
+            return int(plot_x + (f / max(T - 1, 1)) * plot_width)
+        
+        def y_for_value(v):
+            if data_max == data_min:
+                return plot_y + plot_height // 2
+            return int(plot_y + plot_height - ((v - data_min) / (data_max - data_min)) * plot_height)
+        
+        # Draw contact regions as background
+        for t in range(T):
+            x = x_for_frame(t)
+            if t < len(contacts):
+                if contacts[t, 0]:  # Left contact
+                    cv2.line(img, (x, plot_y), (x, plot_y + plot_height), (200, 255, 200), 1)
+                if contacts[t, 1]:  # Right contact
+                    cv2.line(img, (x, plot_y), (x, plot_y + plot_height), (255, 200, 200), 1)
+        
+        # Draw data lines
+        def draw_line(data: list, color: tuple):
+            points = []
+            for t, v in enumerate(data):
+                if v is not None:
+                    x = x_for_frame(t)
+                    y = y_for_value(v)
+                    y = max(plot_y, min(plot_y + plot_height, y))
+                    points.append((x, y))
+            
+            for i in range(1, len(points)):
+                cv2.line(img, points[i-1], points[i], color, 2)
+        
+        draw_line(data_left, color_left)
+        draw_line(data_right, color_right)
+        
+        # Y-axis ticks
+        for i in range(5):
+            y = plot_y + int(i * plot_height / 4)
+            val = data_max - i * (data_max - data_min) / 4
+            cv2.putText(img, f"{val:.2f}", (plot_x - 45, y + 4), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_text, 1)
+        
+        # X-axis ticks (frames)
+        for f in range(0, T, max(1, T // 10)):
+            x = x_for_frame(f)
+            cv2.putText(img, str(f), (x - 10, plot_y + plot_height + 12), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_text, 1)
     
-    return plot_data
+    # Panel 1: Foot Heights
+    draw_panel(0, "Foot Heights (Y position) - Green=Left, Blue=Right", 
+               left_heights, right_heights, "Height")
+    
+    # Panel 2: Foot-to-Pelvis Distance  
+    draw_panel(1, "Foot-to-Pelvis Distance (Contact = increasing)", 
+               left_to_pelvis, right_to_pelvis, "Distance")
+    
+    # Panel 3: Reprojection Errors with quality bands
+    draw_panel(2, "Reprojection Error (px) - Quality Bands", 
+               reproj_left, reproj_right, "Error(px)", show_quality_bands=True)
+    
+    # Panel 4: Contact Timeline
+    y_offset = 3 * panel_height
+    cv2.rectangle(img, (0, y_offset), (width, y_offset + panel_height), (250, 250, 250), -1)
+    cv2.putText(img, "Contact Timeline - Green=Contact, Gray=Flight", 
+               (margin_left, y_offset + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_text, 1)
+    
+    plot_x = margin_left
+    plot_y = y_offset + margin_top
+    bar_height = (plot_height - 20) // 2
+    
+    # Left foot contacts
+    cv2.putText(img, "Left:", (10, plot_y + bar_height // 2 + 5), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+    for t in range(T):
+        x = int(plot_x + (t / max(T - 1, 1)) * plot_width)
+        color = color_contact if contacts[t, 0] else color_flight
+        cv2.line(img, (x, plot_y), (x, plot_y + bar_height), color, max(1, plot_width // T))
+    
+    # Right foot contacts
+    cv2.putText(img, "Right:", (10, plot_y + bar_height + 15 + bar_height // 2 + 5), 
+               cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+    for t in range(T):
+        x = int(plot_x + (t / max(T - 1, 1)) * plot_width)
+        color = color_contact if contacts[t, 1] else color_flight
+        cv2.line(img, (x, plot_y + bar_height + 15), (x, plot_y + 2 * bar_height + 15), color, max(1, plot_width // T))
+    
+    # X-axis (frames)
+    for f in range(0, T, max(1, T // 10)):
+        x = int(plot_x + (f / max(T - 1, 1)) * plot_width)
+        cv2.putText(img, str(f), (x - 10, y_offset + panel_height - 5), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.3, color_text, 1)
+    
+    # Legend
+    legend_y = 15
+    cv2.rectangle(img, (width - 180, legend_y - 10), (width - 10, legend_y + 35), (255, 255, 255), -1)
+    cv2.rectangle(img, (width - 180, legend_y - 10), (width - 10, legend_y + 35), (150, 150, 150), 1)
+    cv2.line(img, (width - 170, legend_y), (width - 140, legend_y), color_left, 2)
+    cv2.putText(img, "Left", (width - 135, legend_y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+    cv2.line(img, (width - 170, legend_y + 20), (width - 140, legend_y + 20), color_right, 2)
+    cv2.putText(img, "Right", (width - 135, legend_y + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color_text, 1)
+    
+    return img
 
 
 # =============================================================================
@@ -965,8 +1222,8 @@ class KinematicContactNode:
             }
         }
     
-    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("stabilized_sequence", "debug_overlay", "debug_info", "motion_plot_data")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "IMAGE", "STRING")
+    RETURN_NAMES = ("stabilized_sequence", "debug_overlay", "motion_graph", "debug_info")
     FUNCTION = "process"
     CATEGORY = "SAM3DBody2abc/Processing"
     
@@ -1123,14 +1380,35 @@ class KinematicContactNode:
         # Generate debug info
         debug_info = generate_debug_info(contacts, confidence, debug_data, stabilization_info)
         
-        # Generate motion plot data (as JSON string)
-        import json
-        plot_data = generate_motion_plot_data(debug_data)
-        plot_data_json = json.dumps(plot_data, indent=2)
+        # Generate motion graph image
+        graph_img = generate_motion_graph(debug_data, contacts, confidence)
+        # Convert BGR to RGB and to tensor
+        graph_img_rgb = cv2.cvtColor(graph_img, cv2.COLOR_BGR2RGB)
+        graph_tensor = torch.from_numpy(graph_img_rgb.astype(np.float32) / 255.0).unsqueeze(0)
+        
+        # === Log quality summary ===
+        reproj_left = [e for e in debug_data.get("reproj_errors", {}).get("left", []) if e is not None]
+        reproj_right = [e for e in debug_data.get("reproj_errors", {}).get("right", []) if e is not None]
+        all_errors = reproj_left + reproj_right
+        
+        if all_errors:
+            overall_error = np.mean(all_errors)
+            quality, symbol = get_quality_rating(overall_error)
+            log.info("")
+            log.info("=" * 60)
+            log.info(f"  REPROJECTION QUALITY: {symbol} {quality} (mean={overall_error:.1f}px)")
+            log.info("=" * 60)
+            if reproj_left:
+                l_quality, l_sym = get_quality_rating(np.mean(reproj_left))
+                log.info(f"  Left foot:  {l_sym} {l_quality} (mean={np.mean(reproj_left):.1f}px)")
+            if reproj_right:
+                r_quality, r_sym = get_quality_rating(np.mean(reproj_right))
+                log.info(f"  Right foot: {r_sym} {r_quality} (mean={np.mean(reproj_right):.1f}px)")
+            log.info("")
         
         log.info("Processing complete")
         
-        return (result, overlay_tensor, debug_info, plot_data_json)
+        return (result, overlay_tensor, graph_tensor, debug_info)
 
 
 # =============================================================================
