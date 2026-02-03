@@ -325,9 +325,12 @@ class KinematicContactDetector:
                     is_contact = is_flat and (pelvis_moving_away or t == 0)
                     contacts[t, foot_idx] = is_contact
                     
-                    # Confidence based on how close to reference geometry
-                    # Lower difference = higher confidence
-                    conf = max(0.0, 1.0 - (geom_diff / (self.config.height_threshold * 2)))
+                    # Confidence: 1.0 when geom_diff=0, 0.0 when geom_diff=threshold
+                    # This makes confidence meaningful for pin threshold
+                    if geom_diff < self.config.height_threshold:
+                        conf = 1.0 - (geom_diff / self.config.height_threshold)
+                    else:
+                        conf = 0.0
                     confidence[t, foot_idx] = conf
                     
                 else:
@@ -617,7 +620,17 @@ class KinematicContactDetector:
 class FootStabilizer:
     """
     Stabilize foot positions during detected contacts.
-    Adjusts root translation to pin feet without IK.
+    
+    Method:
+    1. When contact starts, wait for high-confidence frame to PIN
+    2. During contact, calculate drift from pin_state for each joint
+    3. If ANY joint drift >= threshold: trigger EASE OUT release
+    4. If ALL joints drift < threshold: CLAMP to pin_state (noise reduction)
+    5. Ease-out blends smoothly from pin_state to actual position
+    
+    Pin Modes:
+    - "wait_for_confidence": Wait for conf >= threshold, else use best frame at contact end
+    - "never_pin_low_confidence": Only pin if conf >= threshold is reached, else skip
     """
     
     def __init__(self, config: KinematicContactConfig, log: KinematicLogger):
@@ -628,15 +641,25 @@ class FootStabilizer:
         self,
         frames: List[Dict],
         contacts: np.ndarray,
-        pin_strength: float = 0.8
+        confidence: np.ndarray,
+        geometry_threshold: float = 0.03,
+        ease_frames: int = 2,
+        pin_confidence_threshold: float = 0.95,
+        pin_mode: str = "wait_for_confidence"
     ) -> Tuple[List[Dict], Dict]:
         """
-        Stabilize foot positions during contacts.
+        Stabilize foot positions during contacts with confidence-based pinning.
         
         Args:
             frames: Frame data
             contacts: (T, 2) contact array
-            pin_strength: How strongly to pin (0-1)
+            confidence: (T, 2) confidence array
+            geometry_threshold: Threshold for clamping during pin (meters)
+            ease_frames: Number of frames to blend during release
+            pin_confidence_threshold: Minimum confidence to trigger pin (0.0-1.0)
+            pin_mode: 
+                "wait_for_confidence" - Wait for high conf, use best frame if never reached
+                "never_pin_low_confidence" - Only pin if high conf reached, else skip
         
         Returns:
             stabilized_frames: Updated frames
@@ -645,9 +668,27 @@ class FootStabilizer:
         T = len(frames)
         stabilized_frames = []
         
-        pin_positions = [None, None]  # Current pin position for each foot
+        # Per-foot state
+        pin_state = [None, None]  # {ankle, toe, heel} positions when pinned
+        
+        # Waiting for high confidence to pin
+        waiting_to_pin = [False, False]
+        best_conf_while_waiting = [0.0, 0.0]
+        best_frame_while_waiting = [None, None]  # Store best frame's joint positions
+        contact_start_frame = [-1, -1]
+        
+        # Ease state
+        ease_progress = [0.0, 0.0]
+        easing = [False, False]
+        
+        # Stats
         pin_events = []
-        total_adjustments = []
+        clamped_frames = {"left": 0, "right": 0}
+        eased_frames = {"left": 0, "right": 0}
+        skipped_pins = {"left": 0, "right": 0}
+        
+        self.log.info(f"Stabilizing: threshold={geometry_threshold*100:.1f}cm, ease_frames={ease_frames}")
+        self.log.info(f"  Pin mode: {pin_mode}, confidence_threshold={pin_confidence_threshold}")
         
         for t, frame in enumerate(frames):
             new_frame = frame.copy()
@@ -657,80 +698,236 @@ class FootStabilizer:
                 stabilized_frames.append(new_frame)
                 continue
             
-            trans = np.array(frame.get("pred_cam_t", [0, 0, 5]))
-            adjustment = np.zeros(3)
+            new_joints_3d = joints_3d.copy()
             
             for foot_idx, side in enumerate(["left", "right"]):
-                # Get foot center
+                # Get foot joint indices
                 if side == "left":
-                    indices = [self.config.l_ankle_idx, self.config.l_toe_idx, self.config.l_heel_idx]
+                    ankle_idx = min(self.config.l_ankle_idx, len(joints_3d) - 1)
+                    toe_idx = min(self.config.l_toe_idx, len(joints_3d) - 1)
+                    heel_idx = min(self.config.l_heel_idx, len(joints_3d) - 1)
                 else:
-                    indices = [self.config.r_ankle_idx, self.config.r_toe_idx, self.config.r_heel_idx]
+                    ankle_idx = min(self.config.r_ankle_idx, len(joints_3d) - 1)
+                    toe_idx = min(self.config.r_toe_idx, len(joints_3d) - 1)
+                    heel_idx = min(self.config.r_heel_idx, len(joints_3d) - 1)
                 
-                n_joints = len(joints_3d)
-                indices = [min(i, n_joints - 1) for i in indices]
-                foot_joints = [joints_3d[i] for i in indices]
-                foot_center = np.mean(foot_joints, axis=0)
-                foot_world = foot_center + trans
+                curr_ankle = joints_3d[ankle_idx].copy()
+                curr_toe = joints_3d[toe_idx].copy()
+                curr_heel = joints_3d[heel_idx].copy()
+                curr_conf = confidence[t, foot_idx] if t < len(confidence) else 0.0
                 
-                if contacts[t, foot_idx]:
-                    if pin_positions[foot_idx] is None:
-                        # Start of contact - set pin position
-                        pin_positions[foot_idx] = foot_world.copy()
-                        pin_events.append({
-                            "frame": t,
-                            "foot": side,
-                            "event": "pin_start",
-                            "position": foot_world.tolist(),
-                        })
+                is_contact = contacts[t, foot_idx]
+                
+                # ============================================
+                # STATE: EASING (completing release)
+                # ============================================
+                if easing[foot_idx]:
+                    ease_progress[foot_idx] += 1.0 / max(ease_frames, 1)
+                    
+                    if ease_progress[foot_idx] >= 1.0:
+                        # Ease complete
+                        easing[foot_idx] = False
+                        ease_progress[foot_idx] = 0.0
+                        pin_state[foot_idx] = None
+                        self.log.debug(f"Frame {t}: {side} EASE COMPLETE")
+                        
+                        # If contact still active, start waiting for new pin
+                        if is_contact:
+                            waiting_to_pin[foot_idx] = True
+                            best_conf_while_waiting[foot_idx] = curr_conf
+                            best_frame_while_waiting[foot_idx] = {
+                                'ankle': curr_ankle.copy(),
+                                'toe': curr_toe.copy(),
+                                'heel': curr_heel.copy(),
+                            }
+                            contact_start_frame[foot_idx] = t
                     else:
-                        # During contact - calculate adjustment to keep foot pinned
-                        foot_adjustment = pin_positions[foot_idx] - foot_world
+                        # Still easing - blend
+                        ease_t = ease_progress[foot_idx] ** 2
+                        if pin_state[foot_idx] is not None:
+                            new_joints_3d[ankle_idx] = self._lerp(
+                                pin_state[foot_idx]['ankle'], curr_ankle, ease_t)
+                            new_joints_3d[toe_idx] = self._lerp(
+                                pin_state[foot_idx]['toe'], curr_toe, ease_t)
+                            new_joints_3d[heel_idx] = self._lerp(
+                                pin_state[foot_idx]['heel'], curr_heel, ease_t)
+                            eased_frames[side] += 1
+                    continue
+                
+                # ============================================
+                # STATE: WAITING TO PIN (looking for high confidence)
+                # ============================================
+                if waiting_to_pin[foot_idx]:
+                    if not is_contact:
+                        # Contact ended while waiting
+                        if pin_mode == "wait_for_confidence" and best_frame_while_waiting[foot_idx] is not None:
+                            # Use best frame we saw
+                            pin_state[foot_idx] = best_frame_while_waiting[foot_idx]
+                            pin_events.append({
+                                "frame": t, "foot": side, 
+                                "event": f"pin_at_best (conf={best_conf_while_waiting[foot_idx]:.2f})"
+                            })
+                            self.log.debug(f"Frame {t}: {side} PIN at best conf={best_conf_while_waiting[foot_idx]:.2f}")
+                            # Immediately start easing since contact ended
+                            easing[foot_idx] = True
+                            ease_progress[foot_idx] = 0.0
+                        else:
+                            # never_pin_low_confidence mode - skip this contact
+                            skipped_pins[side] += 1
+                            self.log.debug(f"Frame {t}: {side} SKIPPED PIN (conf never reached {pin_confidence_threshold})")
                         
-                        # Only adjust horizontally (X, Z), not vertically (Y)
-                        foot_adjustment[1] = 0
-                        
-                        adjustment += foot_adjustment * pin_strength
-                else:
-                    if pin_positions[foot_idx] is not None:
-                        # End of contact
+                        waiting_to_pin[foot_idx] = False
+                        best_conf_while_waiting[foot_idx] = 0.0
+                        best_frame_while_waiting[foot_idx] = None
+                        contact_start_frame[foot_idx] = -1
+                        continue
+                    
+                    # Still in contact, check confidence
+                    if curr_conf >= pin_confidence_threshold:
+                        # High confidence reached - PIN NOW
+                        pin_state[foot_idx] = {
+                            'ankle': curr_ankle.copy(),
+                            'toe': curr_toe.copy(),
+                            'heel': curr_heel.copy(),
+                        }
+                        waiting_to_pin[foot_idx] = False
+                        best_conf_while_waiting[foot_idx] = 0.0
+                        best_frame_while_waiting[foot_idx] = None
                         pin_events.append({
-                            "frame": t,
-                            "foot": side,
-                            "event": "pin_end",
-                            "position": pin_positions[foot_idx].tolist(),
+                            "frame": t, "foot": side, 
+                            "event": f"pin_start (conf={curr_conf:.2f})"
                         })
-                        pin_positions[foot_idx] = None
+                        self.log.debug(f"Frame {t}: {side} PIN at conf={curr_conf:.2f}")
+                    else:
+                        # Track best confidence seen
+                        if curr_conf > best_conf_while_waiting[foot_idx]:
+                            best_conf_while_waiting[foot_idx] = curr_conf
+                            best_frame_while_waiting[foot_idx] = {
+                                'ankle': curr_ankle.copy(),
+                                'toe': curr_toe.copy(),
+                                'heel': curr_heel.copy(),
+                            }
+                    continue
+                
+                # ============================================
+                # STATE: PINNED (clamping or releasing)
+                # ============================================
+                if pin_state[foot_idx] is not None:
+                    if not is_contact:
+                        # Contact ended - start ease
+                        easing[foot_idx] = True
+                        ease_progress[foot_idx] = 0.0
+                        pin_events.append({
+                            "frame": t, "foot": side, "event": "ease_start (contact end)"
+                        })
+                        self.log.debug(f"Frame {t}: {side} EASE START (contact ended)")
+                        continue
+                    
+                    # Check drift
+                    drift_ankle = np.linalg.norm(curr_ankle - pin_state[foot_idx]['ankle'])
+                    drift_toe = np.linalg.norm(curr_toe - pin_state[foot_idx]['toe'])
+                    drift_heel = np.linalg.norm(curr_heel - pin_state[foot_idx]['heel'])
+                    max_drift = max(drift_ankle, drift_toe, drift_heel)
+                    
+                    if max_drift >= geometry_threshold:
+                        # Drift exceeded - start ease
+                        easing[foot_idx] = True
+                        ease_progress[foot_idx] = 0.0
+                        pin_events.append({
+                            "frame": t, "foot": side, 
+                            "event": f"ease_start (drift={max_drift*100:.1f}cm)"
+                        })
+                        self.log.debug(f"Frame {t}: {side} EASE START (drift={max_drift*100:.1f}cm)")
+                    else:
+                        # Clamp to pin state
+                        new_joints_3d[ankle_idx] = pin_state[foot_idx]['ankle'].copy()
+                        new_joints_3d[toe_idx] = pin_state[foot_idx]['toe'].copy()
+                        new_joints_3d[heel_idx] = pin_state[foot_idx]['heel'].copy()
+                        clamped_frames[side] += 1
+                    continue
+                
+                # ============================================
+                # STATE: IDLE (no pin, no ease, no waiting)
+                # ============================================
+                if is_contact:
+                    # Contact started - begin waiting for high confidence
+                    waiting_to_pin[foot_idx] = True
+                    best_conf_while_waiting[foot_idx] = curr_conf
+                    best_frame_while_waiting[foot_idx] = {
+                        'ankle': curr_ankle.copy(),
+                        'toe': curr_toe.copy(),
+                        'heel': curr_heel.copy(),
+                    }
+                    contact_start_frame[foot_idx] = t
+                    
+                    # Check if already high confidence on first frame
+                    if curr_conf >= pin_confidence_threshold:
+                        pin_state[foot_idx] = best_frame_while_waiting[foot_idx]
+                        waiting_to_pin[foot_idx] = False
+                        best_frame_while_waiting[foot_idx] = None
+                        pin_events.append({
+                            "frame": t, "foot": side, 
+                            "event": f"pin_start (conf={curr_conf:.2f})"
+                        })
+                        self.log.debug(f"Frame {t}: {side} PIN immediately at conf={curr_conf:.2f}")
             
-            # Average adjustment if both feet are pinned
-            if contacts[t, 0] and contacts[t, 1]:
-                adjustment /= 2
-            
-            # Apply adjustment
-            new_trans = trans + adjustment
-            new_frame["pred_cam_t"] = new_trans.tolist()
-            
-            if "smpl_params" in new_frame and isinstance(new_frame["smpl_params"], dict):
-                new_frame["smpl_params"] = new_frame["smpl_params"].copy()
-                new_frame["smpl_params"]["transl"] = new_trans.tolist()
-            
-            # Add contact info to frame
+            # Update frame
+            new_frame = self._update_frame_joints(new_frame, new_joints_3d)
             new_frame["foot_contact"] = {
                 "left": bool(contacts[t, 0]),
                 "right": bool(contacts[t, 1]),
             }
-            
-            total_adjustments.append(np.linalg.norm(adjustment))
             stabilized_frames.append(new_frame)
+        
+        # Log summary
+        self.log.info(f"Stabilization complete:")
+        self.log.info(f"  Left foot:  {clamped_frames['left']} clamped, {eased_frames['left']} eased, {skipped_pins['left']} skipped")
+        self.log.info(f"  Right foot: {clamped_frames['right']} clamped, {eased_frames['right']} eased, {skipped_pins['right']} skipped")
         
         stabilization_info = {
             "pin_events": pin_events,
-            "total_adjustments": total_adjustments,
-            "avg_adjustment": np.mean(total_adjustments) if total_adjustments else 0,
-            "max_adjustment": np.max(total_adjustments) if total_adjustments else 0,
+            "clamped_frames": clamped_frames,
+            "eased_frames": eased_frames,
+            "skipped_pins": skipped_pins,
+            "geometry_threshold": geometry_threshold,
+            "ease_frames": ease_frames,
+            "pin_confidence_threshold": pin_confidence_threshold,
+            "pin_mode": pin_mode,
         }
         
         return stabilized_frames, stabilization_info
+    
+    def _lerp(self, a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+        """Linear interpolation from a to b by t."""
+        return a + (b - a) * t
+    
+    def _get_joints_3d(self, frame: Dict) -> Optional[np.ndarray]:
+        """Extract 3D joints from frame."""
+        for key in ["pred_keypoints_3d", "keypoints_3d", "joints_3d", "joint_coords"]:
+            if key in frame:
+                joints = np.array(frame[key])
+                while joints.ndim > 2:
+                    joints = joints[0]
+                return joints
+        return None
+    
+    def _update_frame_joints(self, frame: Dict, new_joints: np.ndarray) -> Dict:
+        """Update frame with new joint positions."""
+        new_frame = frame.copy()
+        
+        for key in ["pred_keypoints_3d", "keypoints_3d", "joints_3d", "joint_coords"]:
+            if key in new_frame:
+                original = new_frame[key]
+                if isinstance(original, np.ndarray):
+                    if original.ndim == 2:
+                        new_frame[key] = new_joints
+                    elif original.ndim == 3:
+                        new_frame[key] = new_joints[np.newaxis, ...]
+                else:
+                    new_frame[key] = new_joints.tolist()
+                break
+        
+        return new_frame
     
     def _get_joints_3d(self, frame: Dict) -> Optional[np.ndarray]:
         """Extract 3D joints from frame."""
@@ -1644,12 +1841,22 @@ class KinematicContactNode:
                     "default": True,
                     "tooltip": "Enable foot pinning during contacts"
                 }),
-                "pin_strength": ("FLOAT", {
-                    "default": 0.8,
-                    "min": 0.0,
+                "ease_frames": ("INT", {
+                    "default": 2,
+                    "min": 1,
+                    "max": 10,
+                    "tooltip": "Number of frames to smoothly blend when releasing pin (prevents jerky movement)"
+                }),
+                "pin_confidence_threshold": ("FLOAT", {
+                    "default": 0.95,
+                    "min": 0.5,
                     "max": 1.0,
-                    "step": 0.1,
-                    "tooltip": "How strongly to pin feet (0=off, 1=full lock)"
+                    "step": 0.05,
+                    "tooltip": "Minimum confidence required to pin foot (higher = stricter, pins at better frames)"
+                }),
+                "pin_mode": (["wait_for_confidence", "never_pin_low_confidence"], {
+                    "default": "wait_for_confidence",
+                    "tooltip": "wait_for_confidence: Use best frame if threshold never reached. never_pin_low_confidence: Skip contact if threshold never reached."
                 }),
                 
                 # Visualization
@@ -1692,7 +1899,9 @@ class KinematicContactNode:
         geometry_threshold: float = 0.03,
         min_contact_frames: int = 2,
         enable_stabilization: bool = True,
-        pin_strength: float = 0.8,
+        ease_frames: int = 2,
+        pin_confidence_threshold: float = 0.95,
+        pin_mode: str = "wait_for_confidence",
         show_feet: bool = True,
         show_hips: bool = True,
         show_torso: bool = True,
@@ -1797,10 +2006,21 @@ class KinematicContactNode:
         # Stabilize if enabled
         stabilization_info = None
         if enable_stabilization:
-            log.info(f"Applying stabilization (pin_strength={pin_strength})")
+            log.info(f"Applying stabilization:")
+            log.info(f"  threshold={geometry_threshold*100:.1f}cm, ease_frames={ease_frames}")
+            log.info(f"  pin_confidence={pin_confidence_threshold}, mode={pin_mode}")
             stabilizer = FootStabilizer(config, log)
-            frames, stabilization_info = stabilizer.stabilize(frames, contacts, pin_strength)
+            frames, stabilization_info = stabilizer.stabilize(
+                frames, contacts, confidence,
+                geometry_threshold=geometry_threshold,
+                ease_frames=ease_frames,
+                pin_confidence_threshold=pin_confidence_threshold,
+                pin_mode=pin_mode
+            )
             log.info(f"Stabilization: {len(stabilization_info.get('pin_events', []))} pin events")
+            log.info(f"  Clamped: L={stabilization_info.get('clamped_frames', {}).get('left', 0)}, R={stabilization_info.get('clamped_frames', {}).get('right', 0)}")
+            log.info(f"  Eased:   L={stabilization_info.get('eased_frames', {}).get('left', 0)}, R={stabilization_info.get('eased_frames', {}).get('right', 0)}")
+            log.info(f"  Skipped: L={stabilization_info.get('skipped_pins', {}).get('left', 0)}, R={stabilization_info.get('skipped_pins', {}).get('right', 0)}")
         
         # Update mesh_sequence
         result = mesh_sequence.copy()
