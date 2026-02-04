@@ -18,8 +18,16 @@ License: Apache 2.0
 import numpy as np
 import torch
 import cv2
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass, field
+
+# Try to import scipy for advanced filters
+try:
+    from scipy.signal import savgol_filter, butter, filtfilt
+    from scipy.ndimage import uniform_filter1d
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
 
 
 # =============================================================================
@@ -96,6 +104,381 @@ class KinematicLogger:
     def debug(self, msg): self._log(f"DEBUG: {msg}", "debug")
     def warning(self, msg): self._log(f"⚠ WARNING: {msg}", "normal")
     def error(self, msg): self._log(f"✗ ERROR: {msg}", "normal")
+
+
+# =============================================================================
+# Joint Smoothing Filters
+# =============================================================================
+
+class OneEuroFilter:
+    """
+    One-Euro Filter - adaptive smoothing that's responsive to fast motion.
+    
+    Reference: Casiez et al., "1€ Filter: A Simple Speed-based Low-pass Filter 
+    for Noisy Input in Interactive Systems" (CHI 2012)
+    
+    Great for motion capture because:
+    - Smooth when motion is slow (reduces jitter)
+    - Responsive when motion is fast (reduces lag)
+    """
+    
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.007, d_cutoff: float = 1.0):
+        """
+        Args:
+            min_cutoff: Minimum cutoff frequency (Hz). Lower = more smoothing when slow.
+            beta: Speed coefficient. Higher = more responsive to fast motion.
+            d_cutoff: Cutoff for derivative computation.
+        """
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.x_prev = None
+        self.dx_prev = None
+        self.t_prev = None
+    
+    def _smoothing_factor(self, t_e: float, cutoff: float) -> float:
+        r = 2 * np.pi * cutoff * t_e
+        return r / (r + 1)
+    
+    def _exponential_smoothing(self, a: float, x: np.ndarray, x_prev: np.ndarray) -> np.ndarray:
+        return a * x + (1 - a) * x_prev
+    
+    def __call__(self, x: np.ndarray, t: float = None) -> np.ndarray:
+        """Filter a single sample."""
+        if t is None:
+            t = 1.0 / 30.0  # Assume 30fps if not specified
+        
+        if self.x_prev is None:
+            self.x_prev = x.copy()
+            self.dx_prev = np.zeros_like(x)
+            self.t_prev = 0.0
+            return x.copy()
+        
+        t_e = t - self.t_prev if self.t_prev is not None else 1.0 / 30.0
+        t_e = max(t_e, 1e-6)  # Prevent division by zero
+        
+        # Derivative
+        dx = (x - self.x_prev) / t_e
+        a_d = self._smoothing_factor(t_e, self.d_cutoff)
+        dx_hat = self._exponential_smoothing(a_d, dx, self.dx_prev)
+        
+        # Adaptive cutoff based on speed
+        speed = np.linalg.norm(dx_hat)
+        cutoff = self.min_cutoff + self.beta * speed
+        
+        # Filter
+        a = self._smoothing_factor(t_e, cutoff)
+        x_hat = self._exponential_smoothing(a, x, self.x_prev)
+        
+        self.x_prev = x_hat.copy()
+        self.dx_prev = dx_hat.copy()
+        self.t_prev = t
+        
+        return x_hat
+    
+    def reset(self):
+        """Reset filter state."""
+        self.x_prev = None
+        self.dx_prev = None
+        self.t_prev = None
+
+
+class JointSmoother:
+    """
+    Smooth 3D joint positions using various filter types.
+    
+    Supports:
+    - Savitzky-Golay: Good for preserving peaks/edges
+    - Butterworth: Standard biomechanics filter, clean frequency cutoff
+    - One-Euro: Adaptive, good for varying speed motion
+    
+    Handles long videos with chunked processing.
+    """
+    
+    def __init__(self, log: KinematicLogger):
+        self.log = log
+    
+    def smooth_frames(
+        self,
+        frames: List[Dict],
+        filter_type: str = "none",
+        fps: float = 30.0,
+        # Savitzky-Golay params
+        savgol_window: int = 5,
+        savgol_order: int = 2,
+        # Butterworth params
+        butter_cutoff_hz: float = 6.0,
+        butter_order: int = 2,
+        # One-Euro params
+        one_euro_min_cutoff: float = 1.0,
+        one_euro_beta: float = 0.007,
+        # Chunking for long videos
+        chunk_size: int = 500,
+        chunk_overlap: int = 50,
+    ) -> Tuple[List[Dict], Dict]:
+        """
+        Smooth 3D joints across all frames.
+        
+        Args:
+            frames: List of frame data
+            filter_type: "none", "savgol", "butterworth", "one_euro"
+            fps: Frame rate for Butterworth filter
+            savgol_window: Window size for Savitzky-Golay (must be odd)
+            savgol_order: Polynomial order for Savitzky-Golay
+            butter_cutoff_hz: Cutoff frequency for Butterworth
+            butter_order: Filter order for Butterworth
+            one_euro_min_cutoff: Minimum cutoff for One-Euro
+            one_euro_beta: Speed coefficient for One-Euro
+            chunk_size: Process in chunks for long videos (0=no chunking)
+            chunk_overlap: Overlap between chunks to avoid edge artifacts
+        
+        Returns:
+            smoothed_frames: Frames with smoothed joints
+            smooth_info: Statistics about smoothing
+        """
+        if filter_type == "none":
+            return frames, {"filter": "none", "applied": False}
+        
+        if not SCIPY_AVAILABLE and filter_type in ["savgol", "butterworth"]:
+            self.log.warning(f"scipy not available, cannot use {filter_type} filter. Install with: pip install scipy")
+            return frames, {"filter": filter_type, "applied": False, "error": "scipy not available"}
+        
+        T = len(frames)
+        self.log.info(f"Smoothing {T} frames with {filter_type} filter...")
+        
+        # Extract all 3D joints into array
+        joints_3d_list = []
+        valid_frames = []
+        
+        for t, frame in enumerate(frames):
+            j3d = self._get_joints_3d(frame)
+            if j3d is not None:
+                joints_3d_list.append(j3d)
+                valid_frames.append(t)
+            else:
+                joints_3d_list.append(None)
+        
+        if len(valid_frames) < 3:
+            self.log.warning("Not enough valid frames for smoothing")
+            return frames, {"filter": filter_type, "applied": False, "error": "insufficient frames"}
+        
+        # Convert to array for valid frames only
+        n_joints = joints_3d_list[valid_frames[0]].shape[0]
+        n_dims = joints_3d_list[valid_frames[0]].shape[1]  # Should be 3 (x,y,z)
+        
+        # Build continuous array
+        joints_array = np.zeros((len(valid_frames), n_joints, n_dims))
+        for i, t in enumerate(valid_frames):
+            joints_array[i] = joints_3d_list[t]
+        
+        # Store original for comparison
+        original_array = joints_array.copy()
+        
+        # Apply smoothing based on filter type
+        if chunk_size > 0 and len(valid_frames) > chunk_size:
+            # Chunked processing for long videos
+            smoothed_array = self._smooth_chunked(
+                joints_array, filter_type, fps,
+                savgol_window, savgol_order,
+                butter_cutoff_hz, butter_order,
+                one_euro_min_cutoff, one_euro_beta,
+                chunk_size, chunk_overlap
+            )
+        else:
+            # Process all at once
+            smoothed_array = self._apply_filter(
+                joints_array, filter_type, fps,
+                savgol_window, savgol_order,
+                butter_cutoff_hz, butter_order,
+                one_euro_min_cutoff, one_euro_beta
+            )
+        
+        # Calculate smoothing statistics
+        diff = smoothed_array - original_array
+        mean_change = np.mean(np.abs(diff))
+        max_change = np.max(np.abs(diff))
+        
+        self.log.info(f"  Mean change: {mean_change*1000:.2f}mm, Max change: {max_change*1000:.2f}mm")
+        
+        # Write back to frames
+        smoothed_frames = []
+        valid_idx = 0
+        for t, frame in enumerate(frames):
+            new_frame = frame.copy()
+            if t in valid_frames:
+                new_frame = self._update_frame_joints(new_frame, smoothed_array[valid_idx])
+                # Store original for comparison/visualization
+                new_frame["_original_joints_3d"] = original_array[valid_idx].tolist()
+                valid_idx += 1
+            smoothed_frames.append(new_frame)
+        
+        smooth_info = {
+            "filter": filter_type,
+            "applied": True,
+            "total_frames": T,
+            "smoothed_frames": len(valid_frames),
+            "mean_change_mm": float(mean_change * 1000),
+            "max_change_mm": float(max_change * 1000),
+            "params": {
+                "fps": fps,
+                "savgol_window": savgol_window,
+                "savgol_order": savgol_order,
+                "butter_cutoff_hz": butter_cutoff_hz,
+                "butter_order": butter_order,
+                "one_euro_min_cutoff": one_euro_min_cutoff,
+                "one_euro_beta": one_euro_beta,
+            }
+        }
+        
+        return smoothed_frames, smooth_info
+    
+    def _apply_filter(
+        self,
+        joints_array: np.ndarray,
+        filter_type: str,
+        fps: float,
+        savgol_window: int,
+        savgol_order: int,
+        butter_cutoff_hz: float,
+        butter_order: int,
+        one_euro_min_cutoff: float,
+        one_euro_beta: float
+    ) -> np.ndarray:
+        """Apply filter to joints array (T, J, 3)."""
+        T, n_joints, n_dims = joints_array.shape
+        smoothed = joints_array.copy()
+        
+        if filter_type == "savgol":
+            # Savitzky-Golay filter
+            window = min(savgol_window, T)
+            if window % 2 == 0:
+                window -= 1
+            window = max(window, 3)
+            order = min(savgol_order, window - 1)
+            
+            for j in range(n_joints):
+                for d in range(n_dims):
+                    smoothed[:, j, d] = savgol_filter(joints_array[:, j, d], window, order)
+        
+        elif filter_type == "butterworth":
+            # Butterworth low-pass filter
+            nyquist = fps / 2.0
+            cutoff_normalized = min(butter_cutoff_hz / nyquist, 0.99)
+            
+            if cutoff_normalized > 0 and T > 3 * butter_order:
+                b, a = butter(butter_order, cutoff_normalized, btype='low')
+                for j in range(n_joints):
+                    for d in range(n_dims):
+                        # filtfilt applies filter forward and backward (zero phase)
+                        try:
+                            smoothed[:, j, d] = filtfilt(b, a, joints_array[:, j, d])
+                        except ValueError:
+                            # If filtfilt fails (e.g., too few samples), use original
+                            pass
+        
+        elif filter_type == "one_euro":
+            # One-Euro adaptive filter
+            dt = 1.0 / fps
+            for j in range(n_joints):
+                for d in range(n_dims):
+                    filt = OneEuroFilter(min_cutoff=one_euro_min_cutoff, beta=one_euro_beta)
+                    for t in range(T):
+                        smoothed[t, j, d] = filt(np.array([joints_array[t, j, d]]), t * dt)[0]
+        
+        return smoothed
+    
+    def _smooth_chunked(
+        self,
+        joints_array: np.ndarray,
+        filter_type: str,
+        fps: float,
+        savgol_window: int,
+        savgol_order: int,
+        butter_cutoff_hz: float,
+        butter_order: int,
+        one_euro_min_cutoff: float,
+        one_euro_beta: float,
+        chunk_size: int,
+        chunk_overlap: int
+    ) -> np.ndarray:
+        """Process in chunks for long videos."""
+        T = joints_array.shape[0]
+        smoothed = np.zeros_like(joints_array)
+        weights = np.zeros(T)  # For blending overlaps
+        
+        self.log.verbose(f"  Processing in chunks: size={chunk_size}, overlap={chunk_overlap}")
+        
+        start = 0
+        chunk_num = 0
+        while start < T:
+            end = min(start + chunk_size, T)
+            chunk = joints_array[start:end].copy()
+            
+            # Apply filter to chunk
+            chunk_smoothed = self._apply_filter(
+                chunk, filter_type, fps,
+                savgol_window, savgol_order,
+                butter_cutoff_hz, butter_order,
+                one_euro_min_cutoff, one_euro_beta
+            )
+            
+            # Determine valid range (exclude overlap regions except at boundaries)
+            valid_start = 0 if start == 0 else chunk_overlap // 2
+            valid_end = len(chunk) if end == T else len(chunk) - chunk_overlap // 2
+            
+            # Write to output with blending weights
+            for i in range(valid_start, valid_end):
+                global_idx = start + i
+                # Simple blend weight (could be improved with cross-fade)
+                w = 1.0
+                smoothed[global_idx] += chunk_smoothed[i] * w
+                weights[global_idx] += w
+            
+            chunk_num += 1
+            if chunk_num % 10 == 0:
+                self.log.verbose(f"  Processed chunk {chunk_num} (frames {start}-{end})")
+            
+            # Move to next chunk
+            start = end - chunk_overlap
+            if start >= T - chunk_overlap:
+                break
+        
+        # Normalize by weights
+        for t in range(T):
+            if weights[t] > 0:
+                smoothed[t] /= weights[t]
+            else:
+                smoothed[t] = joints_array[t]
+        
+        return smoothed
+    
+    def _get_joints_3d(self, frame: Dict) -> Optional[np.ndarray]:
+        """Extract 3D joints from frame."""
+        for key in ["pred_keypoints_3d", "keypoints_3d", "joints_3d", "joint_coords"]:
+            if key in frame:
+                joints = np.array(frame[key])
+                while joints.ndim > 2:
+                    joints = joints[0]
+                return joints
+        return None
+    
+    def _update_frame_joints(self, frame: Dict, new_joints: np.ndarray) -> Dict:
+        """Update frame with new joint positions."""
+        new_frame = frame.copy()
+        
+        for key in ["pred_keypoints_3d", "keypoints_3d", "joints_3d", "joint_coords"]:
+            if key in new_frame:
+                original = new_frame[key]
+                if isinstance(original, np.ndarray):
+                    if original.ndim == 2:
+                        new_frame[key] = new_joints
+                    elif original.ndim == 3:
+                        new_frame[key] = new_joints[np.newaxis, ...]
+                else:
+                    new_frame[key] = new_joints.tolist()
+                break
+        
+        return new_frame
 
 
 # =============================================================================
@@ -1859,6 +2242,57 @@ class KinematicContactNode:
                     "tooltip": "wait_for_confidence: Use best frame if threshold never reached. never_pin_low_confidence: Skip contact if threshold never reached."
                 }),
                 
+                # 3D Joint Smoothing
+                "smooth_filter": (["none", "savgol", "butterworth", "one_euro"], {
+                    "default": "none",
+                    "tooltip": "Filter to smooth 3D joints. savgol=preserve peaks, butterworth=clean cutoff, one_euro=adaptive"
+                }),
+                "smooth_when": (["before_detection", "after_stabilization", "both"], {
+                    "default": "before_detection",
+                    "tooltip": "When to apply smoothing: before contact detection, after stabilization, or both"
+                }),
+                "fps": ("FLOAT", {
+                    "default": 30.0,
+                    "min": 1.0,
+                    "max": 120.0,
+                    "step": 1.0,
+                    "tooltip": "Frame rate for Butterworth filter cutoff calculation"
+                }),
+                "savgol_window": ("INT", {
+                    "default": 5,
+                    "min": 3,
+                    "max": 31,
+                    "step": 2,
+                    "tooltip": "Window size for Savitzky-Golay filter (must be odd)"
+                }),
+                "butter_cutoff_hz": ("FLOAT", {
+                    "default": 6.0,
+                    "min": 1.0,
+                    "max": 30.0,
+                    "step": 1.0,
+                    "tooltip": "Cutoff frequency for Butterworth filter (Hz). 6Hz=walking, 12Hz=running"
+                }),
+                "one_euro_min_cutoff": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.1,
+                    "max": 10.0,
+                    "step": 0.1,
+                    "tooltip": "Min cutoff for One-Euro filter. Lower=smoother when slow"
+                }),
+                "one_euro_beta": ("FLOAT", {
+                    "default": 0.007,
+                    "min": 0.0,
+                    "max": 0.1,
+                    "step": 0.001,
+                    "tooltip": "Speed coefficient for One-Euro. Higher=more responsive to fast motion"
+                }),
+                "chunk_size": ("INT", {
+                    "default": 500,
+                    "min": 0,
+                    "max": 5000,
+                    "tooltip": "Process in chunks for long videos (0=no chunking). Recommended for >1000 frames."
+                }),
+                
                 # Visualization
                 "show_feet": ("BOOLEAN", {"default": True}),
                 "show_hips": ("BOOLEAN", {"default": True}),
@@ -1902,6 +2336,14 @@ class KinematicContactNode:
         ease_frames: int = 2,
         pin_confidence_threshold: float = 0.95,
         pin_mode: str = "wait_for_confidence",
+        smooth_filter: str = "none",
+        smooth_when: str = "before_detection",
+        fps: float = 30.0,
+        savgol_window: int = 5,
+        butter_cutoff_hz: float = 6.0,
+        one_euro_min_cutoff: float = 1.0,
+        one_euro_beta: float = 0.007,
+        chunk_size: int = 500,
         show_feet: bool = True,
         show_hips: bool = True,
         show_torso: bool = True,
@@ -1909,7 +2351,7 @@ class KinematicContactNode:
         highlight_joints: str = "",
         log_level: str = "verbose",
     ):
-        """Process mesh sequence with reference-based contact detection."""
+        """Process mesh sequence with reference-based contact detection and optional smoothing."""
         
         log = KinematicLogger(log_level)
         log.info("=" * 60)
@@ -1956,6 +2398,28 @@ class KinematicContactNode:
         T = len(frames)
         log.info(f"Processing {T} frames")
         log.info(f"Joint indices: ankle=({l_ankle_idx},{r_ankle_idx}), toe=({l_toe_idx},{r_toe_idx}), heel=({l_heel_idx},{r_heel_idx})")
+        
+        # Initialize smoother
+        smoother = JointSmoother(log)
+        smooth_info_before = None
+        smooth_info_after = None
+        
+        # === SMOOTHING BEFORE DETECTION ===
+        if smooth_filter != "none" and smooth_when in ["before_detection", "both"]:
+            log.info(f"Applying {smooth_filter} smoothing BEFORE detection...")
+            frames, smooth_info_before = smoother.smooth_frames(
+                frames,
+                filter_type=smooth_filter,
+                fps=fps,
+                savgol_window=savgol_window,
+                butter_cutoff_hz=butter_cutoff_hz,
+                one_euro_min_cutoff=one_euro_min_cutoff,
+                one_euro_beta=one_euro_beta,
+                chunk_size=chunk_size,
+                chunk_overlap=50
+            )
+            if smooth_info_before.get("applied"):
+                log.info(f"  Pre-smoothing: mean={smooth_info_before.get('mean_change_mm', 0):.2f}mm, max={smooth_info_before.get('max_change_mm', 0):.2f}mm")
         
         # Extract global intrinsics from mesh_sequence
         global_intrinsics = {
@@ -2022,6 +2486,23 @@ class KinematicContactNode:
             log.info(f"  Eased:   L={stabilization_info.get('eased_frames', {}).get('left', 0)}, R={stabilization_info.get('eased_frames', {}).get('right', 0)}")
             log.info(f"  Skipped: L={stabilization_info.get('skipped_pins', {}).get('left', 0)}, R={stabilization_info.get('skipped_pins', {}).get('right', 0)}")
         
+        # === SMOOTHING AFTER STABILIZATION ===
+        if smooth_filter != "none" and smooth_when in ["after_stabilization", "both"]:
+            log.info(f"Applying {smooth_filter} smoothing AFTER stabilization...")
+            frames, smooth_info_after = smoother.smooth_frames(
+                frames,
+                filter_type=smooth_filter,
+                fps=fps,
+                savgol_window=savgol_window,
+                butter_cutoff_hz=butter_cutoff_hz,
+                one_euro_min_cutoff=one_euro_min_cutoff,
+                one_euro_beta=one_euro_beta,
+                chunk_size=chunk_size,
+                chunk_overlap=50
+            )
+            if smooth_info_after.get("applied"):
+                log.info(f"  Post-smoothing: mean={smooth_info_after.get('mean_change_mm', 0):.2f}mm, max={smooth_info_after.get('max_change_mm', 0):.2f}mm")
+        
         # Update mesh_sequence
         result = mesh_sequence.copy()
         if frame_keys is not None:
@@ -2041,6 +2522,19 @@ class KinematicContactNode:
                 "right": float(confidence[:, 1].mean()),
             },
             "stabilization_enabled": enable_stabilization,
+            "smoothing": {
+                "filter": smooth_filter,
+                "when": smooth_when if smooth_filter != "none" else "none",
+                "before_detection": smooth_info_before if smooth_info_before else {},
+                "after_stabilization": smooth_info_after if smooth_info_after else {},
+            }
+        }
+        
+        # Store smoothing info in debug_data for motion graph
+        debug_data["smoothing"] = {
+            "filter": smooth_filter,
+            "applied_before": smooth_info_before.get("applied", False) if smooth_info_before else False,
+            "applied_after": smooth_info_after.get("applied", False) if smooth_info_after else False,
         }
         
         # Convert images to numpy
