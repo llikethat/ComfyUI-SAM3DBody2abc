@@ -250,8 +250,8 @@ class MultiCameraTriangulator:
             "unit": "meters",
             "primary_camera": {
                 "index": 0,
-                "id": cameras[0]["id"],
-                "label": cameras[0]["label"],
+                "id": cameras_data[0].get("id", "cam_0"),
+                "label": cameras_data[0].get("label", "CameraA"),
                 "note": "Use this camera's video for Maya image plane overlay"
             },
             "joints": {},
