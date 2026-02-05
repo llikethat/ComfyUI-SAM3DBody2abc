@@ -15,6 +15,30 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.9.2
+- NEW: 🎬 SAM3 Chunked Video Processing (Memory-Efficient!)
+  - Process videos with 1000+ frames without GPU OOM errors
+  - Chunked frame loading - only loads N frames to GPU at a time
+  - 4 new nodes for complete SAM3 segmentation pipeline:
+    * SAM3 Model Loader (Chunked) - HuggingFace auto-download support
+    * SAM3 Video Processor (Chunked) - Memory-efficient initialization
+    * SAM3 Propagate (Chunked) - Process video in chunks with overlap
+    * SAM3 Output (Chunked) - Convert to standard mask format
+  - Configurable chunk_size (default 100 frames)
+  - Overlap frames for seamless mask stitching
+  - GPU cache clearing between chunks
+  - Memory usage: ~1GB per 100 frames vs ~15GB for 1500 frames
+- NEW: 3D Joint Smoothing in Kinematic Contact Detector
+  - Savitzky-Golay filter (preserves peaks/edges)
+  - Butterworth filter (clean frequency cutoff, biomechanics standard)
+  - One-Euro filter (adaptive, responsive to fast motion)
+  - Apply before detection, after stabilization, or both
+  - Chunked processing for long videos
+- FIXED: Confidence-based pinning with proper formula
+  - conf = 1.0 - (geom_diff / threshold) when below threshold
+  - Pin at high-confidence frames (conf >= 0.95)
+  - Ease-out release over N frames (quadratic curve)
+
 Version: 5.9.1
 - NEW: 🦶📐 Kinematic Contact Detector node - PURE GEOMETRY APPROACH
   - Detects foot contacts using biomechanical principles, NO ML models
@@ -401,6 +425,17 @@ _kinematic_contact = _load_module("sam3d2abc_kinematic_contact", os.path.join(_n
 if _kinematic_contact:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_KinematicContact"] = _kinematic_contact.KinematicContactNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_KinematicContact"] = "🦶📐 Kinematic Contact Detector"
+
+# Load and register SAM3 Chunked Video Processing nodes - NEW in v5.9.2
+# Memory-efficient SAM3 processing for long videos (1000+ frames)
+try:
+    from .nodes.sam3_chunked import NODE_CLASS_MAPPINGS as SAM3_CHUNKED_NODES
+    from .nodes.sam3_chunked import NODE_DISPLAY_NAME_MAPPINGS as SAM3_CHUNKED_NAMES
+    NODE_CLASS_MAPPINGS.update(SAM3_CHUNKED_NODES)
+    NODE_DISPLAY_NAME_MAPPINGS.update(SAM3_CHUNKED_NAMES)
+    print("[SAM3DBody2abc] SAM3 Chunked video processing loaded (memory-efficient)")
+except ImportError as e:
+    print(f"[SAM3DBody2abc] SAM3 Chunked nodes not loaded: {e}")
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
