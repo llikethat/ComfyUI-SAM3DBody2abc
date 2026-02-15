@@ -57,8 +57,10 @@ class KinematicContactConfig:
     spine_idx: int = 6
     
     # Detection thresholds
-    height_threshold: float = 0.03  # meters - tolerance for "same height"
+    height_threshold: float = 0.05  # meters - tolerance for "same height" (increased from 0.03)
     distance_threshold: float = 0.001  # meters - minimum pelvis movement
+    depth_scale_limit: float = 0.25  # max depth change ratio before disabling scaling (0.25 = 25%)
+    stationary_threshold: float = 0.02  # meters - pelvis movement threshold for "stationary" detection
     
     # Smoothing
     min_contact_frames: int = 2  # Minimum frames for valid contact
@@ -683,8 +685,16 @@ class KinematicContactDetector:
                 
                 # Compare geometry to reference (with depth normalization)
                 if ref_geom is not None and ref_depth > 0:
-                    # Depth scaling factor
-                    depth_scale = curr_depth / ref_depth
+                    # Depth scaling factor - LIMIT for small depth changes (FIX #1)
+                    raw_depth_scale = curr_depth / ref_depth
+                    depth_change_ratio = abs(raw_depth_scale - 1.0)
+                    
+                    # Only apply depth scaling for significant depth changes
+                    # For stationary poses, small depth variations cause false negatives
+                    if depth_change_ratio < self.config.depth_scale_limit:
+                        depth_scale = 1.0  # Don't scale for small depth changes
+                    else:
+                        depth_scale = raw_depth_scale
                     
                     # Calculate geometry difference
                     geom_diff = self._compare_geometry(curr_geom, ref_geom, depth_scale)
@@ -697,23 +707,38 @@ class KinematicContactDetector:
                     is_flat = geom_diff < self.config.height_threshold
                     debug_data["foot_flat"][side].append(is_flat)
                     
-                    # Secondary validation: pelvis moving away (body moving over planted foot)
+                    # Check pelvis movement (for debug data, not decision)
                     pelvis_moving_away = False
+                    pelvis_stationary = True
                     if t > 0 and len(debug_data["foot_to_pelvis"][side]) > 1:
                         prev_dist = debug_data["foot_to_pelvis"][side][-2]
-                        pelvis_moving_away = foot_to_pelvis > prev_dist - 0.01  # Small tolerance
+                        pelvis_moving_away = foot_to_pelvis > prev_dist - 0.01
+                        # Check if pelvis is relatively stationary
+                        pelvis_movement = abs(foot_to_pelvis - prev_dist)
+                        pelvis_stationary = pelvis_movement < self.config.stationary_threshold
                     debug_data["pelvis_moving_away"][side].append(pelvis_moving_away)
                     
-                    # Contact decision: flat geometry AND pelvis moving away (or first frame)
-                    is_contact = is_flat and (pelvis_moving_away or t == 0)
+                    # Contact decision: SIMPLIFIED - just use is_flat (FIX #2)
+                    # Removed pelvis_moving_away requirement which fails for stationary poses
+                    # The geometry comparison is sufficient for contact detection
+                    is_contact = is_flat
                     contacts[t, foot_idx] = is_contact
                     
-                    # Confidence: 1.0 when geom_diff=0, 0.0 when geom_diff=threshold
-                    # This makes confidence meaningful for pin threshold
-                    if geom_diff < self.config.height_threshold:
-                        conf = 1.0 - (geom_diff / self.config.height_threshold)
+                    # Confidence: Gradual falloff instead of hard cutoff (FIX #3)
+                    # Use sigmoid-like curve for smoother confidence transition
+                    # conf = 1.0 at geom_diff=0, conf ~= 0.5 at threshold, gradual tail beyond
+                    threshold = self.config.height_threshold
+                    if geom_diff < threshold:
+                        # High confidence zone: linear from 1.0 to 0.5
+                        conf = 1.0 - 0.5 * (geom_diff / threshold)
                     else:
-                        conf = 0.0
+                        # Low confidence zone: exponential decay from 0.5 toward 0
+                        # This gives non-zero confidence even beyond threshold
+                        overshoot = (geom_diff - threshold) / threshold
+                        conf = 0.5 * np.exp(-overshoot * 2)  # Decay factor of 2
+                    
+                    # Clamp to valid range
+                    conf = float(max(0.0, min(1.0, conf)))
                     confidence[t, foot_idx] = conf
                     
                 else:
@@ -736,6 +761,10 @@ class KinematicContactDetector:
                     self.log.debug(f"Frame {t}: {side} {event}")
                 
                 prev_contacts[foot_idx] = is_contact
+        
+        # FIX #4: Check for stationary poses where both feet should be on ground
+        # If both feet are at similar absolute heights, likely both are on ground
+        self._detect_stationary_double_support(frames, contacts, confidence, debug_data)
         
         # Filter short contacts
         contacts = self._filter_short_contacts(contacts)
@@ -966,6 +995,82 @@ class KinematicContactDetector:
             errors.append(error)
         
         return np.mean(errors) if errors else 0.0
+    
+    def _detect_stationary_double_support(
+        self, 
+        frames: List[Dict], 
+        contacts: np.ndarray, 
+        confidence: np.ndarray,
+        debug_data: Dict
+    ):
+        """
+        Detect stationary poses where both feet should be on ground.
+        
+        When both feet are at similar absolute heights relative to pelvis,
+        and the person is relatively stationary, both feet are likely on ground.
+        This helps with standing poses, violin playing, etc.
+        """
+        T = len(frames)
+        
+        for t in range(T):
+            # Get foot heights from debug data
+            left_heights = debug_data["foot_heights"]["left"]
+            right_heights = debug_data["foot_heights"]["right"]
+            
+            if t >= len(left_heights) or t >= len(right_heights):
+                continue
+            
+            l_data = left_heights[t]
+            r_data = right_heights[t]
+            
+            if l_data is None or r_data is None:
+                continue
+            
+            # Get minimum height of each foot (closest to ground)
+            if isinstance(l_data, dict):
+                l_min = min(l_data.get("ankle", 0), l_data.get("toe", 0), l_data.get("heel", 0))
+            else:
+                l_min = 0
+            
+            if isinstance(r_data, dict):
+                r_min = min(r_data.get("ankle", 0), r_data.get("toe", 0), r_data.get("heel", 0))
+            else:
+                r_min = 0
+            
+            # Check if both feet at similar height (within 3cm)
+            height_diff = abs(l_min - r_min)
+            both_at_same_level = height_diff < 0.03
+            
+            # Check if both feet have low geometry difference (are flat)
+            l_geom_list = debug_data["geometry_diff"]["left"]
+            r_geom_list = debug_data["geometry_diff"]["right"]
+            
+            l_geom_diff = l_geom_list[t] if t < len(l_geom_list) else None
+            r_geom_diff = r_geom_list[t] if t < len(r_geom_list) else None
+            
+            if l_geom_diff is None or r_geom_diff is None:
+                continue
+            
+            # Relaxed threshold for double support detection (1.5x normal)
+            relaxed_threshold = self.config.height_threshold * 1.5
+            both_relatively_flat = l_geom_diff < relaxed_threshold and r_geom_diff < relaxed_threshold
+            
+            # If both feet at same level and relatively flat, mark both as contact
+            if both_at_same_level and both_relatively_flat:
+                # Only upgrade if at least one foot was already detected as contact
+                # or if both have reasonable geometry scores
+                if contacts[t, 0] or contacts[t, 1] or (l_geom_diff < self.config.height_threshold * 2 and r_geom_diff < self.config.height_threshold * 2):
+                    contacts[t, 0] = True
+                    contacts[t, 1] = True
+                    
+                    # Set confidence based on geometry difference
+                    threshold = self.config.height_threshold
+                    if l_geom_diff < threshold:
+                        confidence[t, 0] = max(confidence[t, 0], 1.0 - 0.5 * (l_geom_diff / threshold))
+                    if r_geom_diff < threshold:
+                        confidence[t, 1] = max(confidence[t, 1], 1.0 - 0.5 * (r_geom_diff / threshold))
+                    
+                    self.log.debug(f"Frame {t}: Double support detected (both feet at same level)")
     
     def _filter_short_contacts(self, contacts: np.ndarray) -> np.ndarray:
         """Filter out contacts shorter than minimum duration."""
@@ -2206,11 +2311,18 @@ class KinematicContactNode:
                 
                 # Detection parameters
                 "geometry_threshold": ("FLOAT", {
-                    "default": 0.03,
-                    "min": 0.005,
+                    "default": 0.05,
+                    "min": 0.01,
                     "max": 0.15,
                     "step": 0.005,
-                    "tooltip": "Max geometry difference from reference to count as contact (meters). Lower = stricter."
+                    "tooltip": "Max geometry difference from reference to count as contact (meters). Lower = stricter. Increased default for better stationary pose detection."
+                }),
+                "depth_scale_limit": ("FLOAT", {
+                    "default": 0.25,
+                    "min": 0.1,
+                    "max": 0.5,
+                    "step": 0.05,
+                    "tooltip": "Max depth change ratio before applying depth scaling (0.25 = 25%). Higher = less scaling for stationary poses."
                 }),
                 "min_contact_frames": ("INT", {
                     "default": 2,
@@ -2330,7 +2442,8 @@ class KinematicContactNode:
         l_hip_idx: int = 11,
         r_hip_idx: int = 12,
         spine_idx: int = 6,
-        geometry_threshold: float = 0.03,
+        geometry_threshold: float = 0.05,
+        depth_scale_limit: float = 0.25,
         min_contact_frames: int = 2,
         enable_stabilization: bool = True,
         ease_frames: int = 2,
@@ -2371,6 +2484,7 @@ class KinematicContactNode:
             r_hip_idx=r_hip_idx,
             spine_idx=spine_idx,
             height_threshold=geometry_threshold,  # Reuse this field for geometry threshold
+            depth_scale_limit=depth_scale_limit,  # NEW: limit depth scaling for stationary poses
             min_contact_frames=min_contact_frames,
             show_feet=show_feet,
             show_hips=show_hips,

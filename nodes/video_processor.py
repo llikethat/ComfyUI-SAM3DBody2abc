@@ -238,10 +238,10 @@ class VideoBatchProcessor:
                     "max": 30,
                 }),
                 "batch_size": ("INT", {
-                    "default": 10,
+                    "default": 50,
                     "min": 1,
-                    "max": 50,
-                    "tooltip": "Frames to process per batch. Lower = less VRAM, Higher = faster."
+                    "max": 500,
+                    "tooltip": "Progress update interval. Higher = less console output."
                 }),
                 "external_intrinsics": ("CAMERA_INTRINSICS", {
                     "tooltip": "External camera intrinsics from MoGe2 (overrides SAM3DBody estimation)."
