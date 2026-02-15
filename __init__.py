@@ -15,6 +15,22 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.9.3
+- FIXED: Kinematic Contact Detector - stationary pose detection
+  - Added depth_scale_limit parameter (default 0.25) to prevent false negatives
+  - Removed pelvis_moving_away requirement (failed for standing poses)
+  - Gradual confidence falloff instead of hard 0.00 cutoff
+  - New double support detection for both-feet-on-ground poses
+  - Increased default geometry_threshold from 0.03m to 0.05m
+- UPDATED: Video Batch Processor batch_size
+  - Increased max from 50 to 500
+  - Changed default from 10 to 50
+  - Clarified tooltip: controls progress update interval, not GPU batching
+- REMOVED: Unused nodes cleaned up
+  - SLAM Camera Solver (nodes/slam/)
+  - MegaSAM Camera Solver (megasam_solver.py)
+  - Foot Contact Test (foot_contact_test.py)
+
 Version: 5.9.2
 - CHANGED: SAM3 nodes moved to separate package (ComfyUI-SAM3-Chunked)
   - Install ComfyUI-SAM3-Chunked alongside this package
@@ -131,10 +147,10 @@ Version: 5.2.0
 - NEW: 📐 Body Shape Lock node
 - NEW: 🔄 Pose Smoothing node  
 - NEW: 🦶 Foot Contact Enforcer node
-- NEW: 📹 SLAM Camera Solver node
+- NEW: 📐 Body Shape Lock node
 """
 
-__version__ = "5.9.1"
+__version__ = "5.9.3"
 
 import os
 import sys
@@ -263,20 +279,6 @@ if _ground_contact:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootContactEnforcer"] = _ground_contact.FootContactNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootContactEnforcer"] = "🦶 Foot Contact Enforcer"
 
-# Load and register SLAM camera solver
-_slam_path = os.path.join(_nodes, "slam")
-if os.path.isdir(_slam_path):
-    try:
-        _slam_solver = _load_module(
-            "sam3d2abc_slam_solver",
-            os.path.join(_slam_path, "slam_camera_solver.py")
-        )
-        if _slam_solver:
-            NODE_CLASS_MAPPINGS["SAM3DBody2abc_SLAMCameraSolver"] = _slam_solver.SLAMCameraSolver
-            NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SLAMCameraSolver"] = "📹 SLAM Camera Solver"
-    except Exception as e:
-        print(f"[SAM3DBody2abc] Error loading SLAM solver: {e}")
-
 # Load and register multicamera nodes
 _multicamera_path = os.path.join(_nodes, "multicamera")
 if os.path.isdir(_multicamera_path):
@@ -340,12 +342,6 @@ if _colmap_bridge:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = _colmap_bridge.COLMAPToExtrinsicsBridge
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_COLMAPBridge"] = "🔗 COLMAP to Extrinsics Bridge"
 
-# Load and register MegaSAM camera solver
-_megasam_solver = _load_module("sam3d2abc_megasam_solver", os.path.join(_nodes, "megasam_solver.py"))
-if _megasam_solver:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_MegaSAMCameraSolver"] = _megasam_solver.MegaSAMCameraSolver
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MegaSAMCameraSolver"] = "🎬 MegaSAM Camera Solver"
-
 # Load and register video stabilizer
 _video_stabilizer = _load_module("sam3d2abc_video_stabilizer", os.path.join(_nodes, "video_stabilizer.py"))
 if _video_stabilizer:
@@ -375,12 +371,6 @@ if _moge_intrinsics:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = _moge_intrinsics.ApplyIntrinsicsToMeshSequence
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_MoGe2Intrinsics"] = "📐 MoGe2 Intrinsics Estimator"
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_ApplyIntrinsicsToMesh"] = "📐 Apply Intrinsics to Mesh"
-
-# Load and register foot contact test node
-_foot_contact_test = _load_module("sam3d2abc_foot_contact_test", os.path.join(_nodes, "foot_contact_test.py"))
-if _foot_contact_test:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_FootContactTest"] = _foot_contact_test.FootContactTest
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_FootContactTest"] = "🦶 Foot Contact Test (Calibration)"
 
 # Load and register foot tracker (TAPNet-based)
 _foot_tracker = _load_module("sam3d2abc_foot_tracker", os.path.join(_nodes, "foot_tracker.py"))
