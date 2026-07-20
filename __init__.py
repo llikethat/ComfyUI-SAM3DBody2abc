@@ -410,6 +410,12 @@ if _kinematic_contact:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_KinematicContact"] = _kinematic_contact.KinematicContactNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_KinematicContact"] = "🦶📐 Kinematic Contact Detector"
 
+# Load and register Joint Temporal Stabilizer
+_joint_stabilizer = _load_module("sam3d2abc_joint_stabilizer", os.path.join(_nodes, "joint_temporal_stabilizer.py"))
+if _joint_stabilizer:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_JointTemporalStabilizer"] = _joint_stabilizer.JointTemporalStabilizer
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_JointTemporalStabilizer"] = "🦴 Joint Temporal Stabilizer"
+
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
 for name in NODE_CLASS_MAPPINGS:
