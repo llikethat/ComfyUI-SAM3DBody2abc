@@ -1,12 +1,13 @@
 """
 Joint Temporal Stabilizer for SAM3DBody2abc
 ============================================
-Version: 1.4.0 - Fixed: use joint_coords not joints
+Version: 1.6.0 - Fixed logging with flush
 """
 
 import numpy as np
 import torch
 import cv2
+import sys
 from typing import Dict, List, Tuple, Optional, Any, Union
 from copy import deepcopy
 
@@ -17,9 +18,15 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 
+def log(msg):
+    """Print with flush to ensure immediate output."""
+    print(f"[JointStabilizer] {msg}", flush=True)
+    sys.stdout.flush()
+
+
 SKELETON_CONFIGS = {
-    "MHR_127": {"feet_indices": [15, 16, 17, 18, 19, 20]},
-    "MHR_70": {"feet_indices": [15, 16, 17, 18, 19, 20]},
+    "MHR_127": {"feet_indices": [14, 15, 16, 17, 18, 19]},
+    "MHR_70": {"feet_indices": [14, 15, 16, 17, 18, 19]},
     "SMPL_24": {"feet_indices": [7, 8, 10, 11]},
     "HALPE_26": {"feet_indices": [15, 16, 20, 21, 22, 23, 24, 25]},
     "AUTO": {"feet_indices": []},
@@ -31,8 +38,6 @@ COLORS = {
     "feet_original": (0, 100, 255),
     "feet_stabilized": (0, 255, 100),
     "ground_contact": (255, 255, 0),
-    "trajectory_original": (0, 0, 200),
-    "trajectory_stabilized": (0, 200, 0),
     "text_fg": (255, 255, 255),
 }
 
@@ -62,11 +67,8 @@ class JointTemporalStabilizer:
                 "savgol_order": ("INT", {"default": 2, "min": 1, "max": 4}),
                 "show_original": ("BOOLEAN", {"default": True}),
                 "show_stabilized": ("BOOLEAN", {"default": True}),
-                "show_trajectories": ("BOOLEAN", {"default": True}),
-                "trajectory_length": ("INT", {"default": 15, "min": 5, "max": 60}),
                 "show_ground_contact": ("BOOLEAN", {"default": True}),
-                "joint_radius": ("INT", {"default": 4, "min": 2, "max": 10}),
-                "log_level": (["silent", "normal", "verbose"], {"default": "normal"}),
+                "joint_radius": ("INT", {"default": 6, "min": 2, "max": 15}),
             },
         }
 
@@ -95,18 +97,14 @@ class JointTemporalStabilizer:
         savgol_order: int = 2,
         show_original: bool = True,
         show_stabilized: bool = True,
-        show_trajectories: bool = True,
-        trajectory_length: int = 15,
         show_ground_contact: bool = True,
-        joint_radius: int = 4,
-        log_level: str = "normal",
+        joint_radius: int = 6,
     ):
-        verbose = log_level == "verbose"
-        silent = log_level == "silent"
+        log("=" * 50)
+        log("STARTING Joint Temporal Stabilizer")
+        log("=" * 50)
         
-        # =====================================================================
-        # Extract frames from mesh_sequence
-        # =====================================================================
+        # Extract frames
         frames = []
         frame_keys = None
         
@@ -121,18 +119,7 @@ class JointTemporalStabilizer:
         elif isinstance(mesh_sequence, list):
             frames = mesh_sequence
         
-        if not silent:
-            print(f"[JointStabilizer] Processing {len(frames)} frames")
-        
-        if not frames:
-            if torch.is_tensor(images):
-                images_np = images.cpu().numpy()
-            else:
-                images_np = np.array(images)
-            if images_np.max() <= 1.0:
-                images_np = (images_np * 255).astype(np.uint8)
-            empty_overlay = torch.from_numpy(images_np.astype(np.float32) / 255.0)
-            return (mesh_sequence, empty_overlay, "No frames found")
+        log(f"Extracted {len(frames)} frames from mesh_sequence")
         
         # Convert images
         if torch.is_tensor(images):
@@ -145,26 +132,32 @@ class JointTemporalStabilizer:
             else:
                 images_np = images_np.astype(np.uint8)
         
-        # =====================================================================
-        # Extract joints - check multiple possible keys
-        # =====================================================================
+        N_images, H, W = images_np.shape[:3]
+        log(f"Images: {N_images} frames, {W}x{H}")
+        
+        if not frames:
+            log("ERROR: No frames found!")
+            empty_overlay = torch.from_numpy(images_np.astype(np.float32) / 255.0)
+            return (mesh_sequence, empty_overlay, "No frames found")
+        
+        # Extract joints
+        JOINT_KEYS = ["joint_coords", "joints", "pred_keypoints_3d"]
         joints_list = []
         focal_lengths = []
-        image_sizes = []
+        cx_list = []
+        cy_list = []
         valid_frame_indices = []
-        
-        # Possible joint keys in order of preference
-        JOINT_KEYS = ["joint_coords", "joints", "pred_keypoints_3d"]
         
         for i, frame in enumerate(frames):
             if not isinstance(frame, dict):
                 continue
             
-            # Find joints
             joints = None
             for key in JOINT_KEYS:
                 if key in frame and frame[key] is not None:
                     joints = frame[key]
+                    if i == 0:
+                        log(f"Found joints using key: '{key}'")
                     break
             
             if joints is not None:
@@ -172,40 +165,32 @@ class JointTemporalStabilizer:
                     joints = joints.cpu().numpy()
                 joints_list.append(np.array(joints))
                 focal_lengths.append(frame.get("focal_length"))
-                
-                # Get image size from frame or images
-                img_size = frame.get("image_size")
-                if img_size is None:
-                    cx = frame.get("cx")
-                    cy = frame.get("cy")
-                    if cx is not None and cy is not None:
-                        img_size = (int(cx * 2), int(cy * 2))
-                    else:
-                        img_size = (images_np.shape[2], images_np.shape[1])
-                image_sizes.append(img_size)
+                cx_list.append(frame.get("cx", W / 2))
+                cy_list.append(frame.get("cy", H / 2))
                 valid_frame_indices.append(i)
         
-        if not silent:
-            print(f"[JointStabilizer] Found {len(joints_list)} frames with joints")
+        log(f"Found {len(joints_list)} frames with valid joints")
         
         if len(joints_list) == 0:
+            log("ERROR: No joints found in any frame!")
             empty_overlay = torch.from_numpy(images_np.astype(np.float32) / 255.0)
-            return (mesh_sequence, empty_overlay, "No joints found in frames")
+            return (mesh_sequence, empty_overlay, "No joints found")
         
         # Stack joints
         joints_array = np.stack(joints_list, axis=0)
         original_joints = joints_array.copy()
         N, J, D = joints_array.shape
         
-        if not silent:
-            print(f"[JointStabilizer] {N} frames, {J} joints, {D}D")
+        log(f"Joint array shape: {N} frames, {J} joints, {D}D")
+        log(f"First joint position (frame 0): {joints_array[0, 0, :]}")
         
         # Get joint groups
         feet_indices, body_indices = self._get_joint_groups(skeleton_format, custom_feet_indices, J)
-        if not silent:
-            print(f"[JointStabilizer] Feet: {feet_indices}, Body: {len(body_indices)} joints")
+        log(f"Feet indices: {feet_indices}")
+        log(f"Body joints: {len(body_indices)}")
         
         # Stabilize
+        log("Starting stabilization...")
         stabilized, ground_contact = self._stabilize_joints(
             joints_array, feet_indices, body_indices,
             feet_ema_alpha, feet_hysteresis_px, feet_velocity_damping,
@@ -213,12 +198,11 @@ class JointTemporalStabilizer:
             enable_ground_contact, ground_velocity_threshold, ground_contact_ema,
             enable_savgol, savgol_window, savgol_order
         )
+        log("Stabilization complete")
         
-        # Update frames with stabilized joints
-        # Use the same key that was found
+        # Update frames
         for i, frame_idx in enumerate(valid_frame_indices):
             frame = frames[frame_idx]
-            # Update the first matching key
             for key in JOINT_KEYS:
                 if key in frame and frame[key] is not None:
                     frames[frame_idx][key] = stabilized[i]
@@ -229,18 +213,111 @@ class JointTemporalStabilizer:
         if frame_keys is not None:
             output_sequence["frames"] = {k: frames[i] for i, k in enumerate(frame_keys)}
         else:
-            if "frames" in output_sequence:
+            if isinstance(mesh_sequence, dict) and "frames" in mesh_sequence:
                 output_sequence["frames"] = frames
             else:
                 output_sequence = frames
         
+        # =====================================================================
         # Render overlay
-        overlay = self._render_debug_overlay(
-            images_np, original_joints, stabilized, ground_contact,
-            focal_lengths, image_sizes, valid_frame_indices,
-            feet_indices, show_original, show_stabilized, show_trajectories,
-            trajectory_length, show_ground_contact, joint_radius
-        )
+        # =====================================================================
+        log("Rendering debug overlay...")
+        overlay = images_np.copy()
+        
+        # Debug first frame projection
+        if len(valid_frame_indices) > 0:
+            vi = 0
+            focal = focal_lengths[vi]
+            cx = cx_list[vi] if cx_list[vi] is not None else W / 2
+            cy = cy_list[vi] if cy_list[vi] is not None else H / 2
+            
+            if focal is None:
+                focal = max(W, H)
+            elif hasattr(focal, '__len__'):
+                focal = float(np.array(focal).flatten()[0])
+            else:
+                focal = float(focal)
+            
+            log(f"Frame 0 projection params: focal={focal:.1f}, cx={cx:.1f}, cy={cy:.1f}")
+            
+            test_joint = original_joints[0, 0]
+            log(f"Frame 0 joint[0] 3D: [{test_joint[0]:.4f}, {test_joint[1]:.4f}, {test_joint[2]:.4f}]")
+            
+            z = max(test_joint[2], 0.1)
+            proj_x = test_joint[0] * focal / z + cx
+            proj_y = test_joint[1] * focal / z + cy
+            log(f"Frame 0 joint[0] 2D: [{proj_x:.1f}, {proj_y:.1f}]")
+        
+        for vi, frame_idx in enumerate(valid_frame_indices):
+            img_idx = frame_idx
+            if img_idx >= N_images:
+                continue
+            
+            frame_img = overlay[img_idx]
+            
+            focal = focal_lengths[vi]
+            cx = cx_list[vi] if cx_list[vi] is not None else W / 2
+            cy = cy_list[vi] if cy_list[vi] is not None else H / 2
+            
+            if focal is None:
+                focal = max(W, H)
+            elif hasattr(focal, '__len__'):
+                focal = float(np.array(focal).flatten()[0])
+            else:
+                focal = float(focal)
+            
+            orig_3d = original_joints[vi]
+            stab_3d = stabilized[vi]
+            gc_frame = ground_contact[vi] if ground_contact is not None else None
+            
+            orig_2d = self._project_joints(orig_3d, focal, cx, cy, W, H)
+            stab_2d = self._project_joints(stab_3d, focal, cx, cy, W, H)
+            
+            # Draw joints
+            for j in range(J):
+                is_foot = j in feet_indices
+                grounded = gc_frame is not None and j < len(gc_frame) and gc_frame[j] > 0.5 if is_foot else False
+                
+                ox, oy = int(orig_2d[j, 0]), int(orig_2d[j, 1])
+                sx, sy = int(stab_2d[j, 0]), int(stab_2d[j, 1])
+                
+                if show_original:
+                    color = COLORS["feet_original"] if is_foot else COLORS["original_joint"]
+                    cv2.circle(frame_img, (ox, oy), joint_radius, color, -1)
+                    cv2.circle(frame_img, (ox, oy), joint_radius, (0, 0, 0), 1)
+                
+                if show_stabilized:
+                    if grounded and show_ground_contact:
+                        color = COLORS["ground_contact"]
+                    else:
+                        color = COLORS["feet_stabilized"] if is_foot else COLORS["stabilized_joint"]
+                    cv2.circle(frame_img, (sx, sy), joint_radius, color, -1)
+                    cv2.circle(frame_img, (sx, sy), joint_radius, (0, 0, 0), 1)
+                
+                if show_original and show_stabilized:
+                    disp = np.sqrt((ox - sx)**2 + (oy - sy)**2)
+                    if disp > 2:
+                        cv2.line(frame_img, (ox, oy), (sx, sy), (255, 255, 255), 1)
+            
+            # Legend
+            cv2.rectangle(frame_img, (5, 5), (150, 90), (0, 0, 0), -1)
+            y = 25
+            if show_original:
+                cv2.circle(frame_img, (20, y), 8, COLORS["original_joint"], -1)
+                cv2.putText(frame_img, "Original", (35, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
+                y += 22
+            if show_stabilized:
+                cv2.circle(frame_img, (20, y), 8, COLORS["stabilized_joint"], -1)
+                cv2.putText(frame_img, "Stabilized", (35, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
+                y += 22
+            if show_ground_contact:
+                cv2.circle(frame_img, (20, y), 8, COLORS["ground_contact"], -1)
+                cv2.putText(frame_img, "Grounded", (35, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
+            
+            cv2.putText(frame_img, f"F{img_idx}", (W - 60, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLORS["text_fg"], 2)
+        
+        log(f"Overlay rendered for {len(valid_frame_indices)} frames")
+        
         overlay_tensor = torch.from_numpy(overlay.astype(np.float32) / 255.0)
         
         # Stats
@@ -253,16 +330,25 @@ class JointTemporalStabilizer:
             f"=== Joint Temporal Stabilizer ===\n"
             f"Frames: {N}, Joints: {J}\n"
             f"Feet indices: {feet_indices}\n"
-            f"Feet settings: EMA={feet_ema_alpha}, hyst={feet_hysteresis_px}, damp={feet_velocity_damping}\n"
-            f"Body settings: EMA={body_ema_alpha}, hyst={body_hysteresis_px}, damp={body_velocity_damping}\n"
+            f"Feet: EMA={feet_ema_alpha}, hyst={feet_hysteresis_px}, damp={feet_velocity_damping}\n"
+            f"Body: EMA={body_ema_alpha}, hyst={body_hysteresis_px}, damp={body_velocity_damping}\n"
             f"Ground contact: {'ON' if enable_ground_contact else 'OFF'}, frames={gc_frames}\n"
-            f"Mean displacement - feet: {feet_disp:.4f}, body: {body_disp:.4f}"
+            f"Mean disp - feet: {feet_disp:.4f}, body: {body_disp:.4f}"
         )
         
-        if not silent:
-            print(f"[JointStabilizer] Done! Disp: feet={feet_disp:.4f}, body={body_disp:.4f}")
+        log(f"DONE! feet_disp={feet_disp:.4f}, body_disp={body_disp:.4f}")
+        log("=" * 50)
         
         return (output_sequence, overlay_tensor, debug_info)
+
+    def _project_joints(self, joints_3d, focal, cx, cy, W, H):
+        z = joints_3d[:, 2:3]
+        z = np.clip(z, 0.1, None)
+        x = joints_3d[:, 0] * focal / z.flatten() + cx
+        y = joints_3d[:, 1] * focal / z.flatten() + cy
+        x = np.clip(x, 0, W - 1)
+        y = np.clip(y, 0, H - 1)
+        return np.stack([x, y], axis=-1)
 
     def _get_joint_groups(self, skeleton_format, custom_feet, num_joints):
         if custom_feet.strip():
@@ -272,7 +358,7 @@ class JointTemporalStabilizer:
             feet = [i for i in SKELETON_CONFIGS[skeleton_format]["feet_indices"] if i < num_joints]
         else:
             if num_joints >= 100:
-                feet = [15, 16, 17, 18, 19, 20]
+                feet = [14, 15, 16, 17, 18, 19]
             elif num_joints >= 24:
                 feet = [7, 8, 10, 11]
             else:
@@ -324,106 +410,6 @@ class JointTemporalStabilizer:
             result[:, j, :] = self._hyst(result[:, j, :], b_hyst)
         
         return result, gc
-
-    def _render_debug_overlay(self, images_np, original, stabilized, gc,
-                               focals, sizes, valid_idx, feet_idx,
-                               show_o, show_s, show_t, t_len, show_gc, radius):
-        N_img = len(images_np)
-        H, W = images_np.shape[1:3]
-        overlay = images_np.copy()
-        valid_set = set(valid_idx)
-        
-        for img_i in range(N_img):
-            frame = overlay[img_i]
-            if img_i not in valid_set:
-                cv2.putText(frame, "No joints", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLORS["text_fg"], 2)
-                continue
-            
-            vi = valid_idx.index(img_i)
-            orig_2d = self._project(original[vi], focals[vi], sizes[vi])
-            stab_2d = self._project(stabilized[vi], focals[vi], sizes[vi])
-            if orig_2d is None:
-                continue
-            
-            gc_frame = gc[vi] if gc is not None else None
-            
-            # Draw trajectories
-            if show_t and vi > 0:
-                start = max(0, vi - t_len)
-                for t in range(start, vi):
-                    if t in valid_set:
-                        t_vi = valid_idx.index(t) if t in valid_idx else None
-                        if t_vi is not None:
-                            prev_o = self._project(original[t_vi], focals[t_vi], sizes[t_vi])
-                            prev_s = self._project(stabilized[t_vi], focals[t_vi], sizes[t_vi])
-                            curr_o = self._project(original[t_vi+1] if t_vi+1 < len(original) else original[t_vi], 
-                                                   focals[min(t_vi+1, len(focals)-1)], 
-                                                   sizes[min(t_vi+1, len(sizes)-1)])
-                            curr_s = self._project(stabilized[t_vi+1] if t_vi+1 < len(stabilized) else stabilized[t_vi],
-                                                   focals[min(t_vi+1, len(focals)-1)],
-                                                   sizes[min(t_vi+1, len(sizes)-1)])
-                            if prev_o is not None and curr_o is not None:
-                                for j in feet_idx:
-                                    if show_o:
-                                        cv2.line(frame, tuple(prev_o[j].astype(int)), tuple(curr_o[j].astype(int)), COLORS["trajectory_original"], 1)
-                                    if show_s:
-                                        cv2.line(frame, tuple(prev_s[j].astype(int)), tuple(curr_s[j].astype(int)), COLORS["trajectory_stabilized"], 1)
-            
-            # Draw joints
-            for j in range(original[vi].shape[0]):
-                is_foot = j in feet_idx
-                grounded = gc_frame is not None and gc_frame[j] > 0.5 if is_foot else False
-                ox, oy = int(orig_2d[j, 0]), int(orig_2d[j, 1])
-                sx, sy = int(stab_2d[j, 0]), int(stab_2d[j, 1])
-                
-                if show_o:
-                    c = COLORS["feet_original"] if is_foot else COLORS["original_joint"]
-                    cv2.circle(frame, (ox, oy), radius, c, -1)
-                    cv2.circle(frame, (ox, oy), radius, (0,0,0), 1)
-                if show_s:
-                    c = COLORS["ground_contact"] if (grounded and show_gc) else (COLORS["feet_stabilized"] if is_foot else COLORS["stabilized_joint"])
-                    cv2.circle(frame, (sx, sy), radius, c, -1)
-                    cv2.circle(frame, (sx, sy), radius, (0,0,0), 1)
-                
-                # Line between original and stabilized
-                if show_o and show_s:
-                    disp = np.sqrt((ox-sx)**2 + (oy-sy)**2)
-                    if disp > 2:
-                        cv2.line(frame, (ox, oy), (sx, sy), (255, 255, 255), 1)
-            
-            # Legend
-            y = 20
-            if show_o:
-                cv2.circle(frame, (15, y), 6, COLORS["original_joint"], -1)
-                cv2.putText(frame, "Original", (30, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
-                y += 20
-            if show_s:
-                cv2.circle(frame, (15, y), 6, COLORS["stabilized_joint"], -1)
-                cv2.putText(frame, "Stabilized", (30, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
-                y += 20
-            if show_gc and gc_frame is not None and any(gc_frame[j] > 0.5 for j in feet_idx if j < len(gc_frame)):
-                cv2.circle(frame, (15, y), 6, COLORS["ground_contact"], -1)
-                cv2.putText(frame, "Grounded", (30, y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
-            
-            cv2.putText(frame, f"F{img_i}", (W-50, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLORS["text_fg"], 1)
-        
-        return overlay
-
-    def _project(self, j3d, focal, size):
-        if j3d is None:
-            return None
-        W, H = size if size else (640, 480)
-        if focal is not None:
-            if hasattr(focal, '__len__'):
-                f = float(np.array(focal).flatten()[0])
-            else:
-                f = float(focal)
-        else:
-            f = max(W, H)
-        z = np.clip(j3d[:, 2:3], 0.1, None)
-        x = j3d[:, 0] * f / z.flatten() + W / 2
-        y = j3d[:, 1] * f / z.flatten() + H / 2
-        return np.stack([np.clip(x, 0, W-1), np.clip(y, 0, H-1)], axis=-1)
 
     def _smooth_1d(self, s, a):
         r = s.copy()
