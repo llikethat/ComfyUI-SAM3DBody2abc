@@ -1,7 +1,7 @@
 """
 Joint Temporal Stabilizer for SAM3DBody2abc
 ============================================
-Version: 1.6.0 - Fixed logging with flush
+Version: 1.7.0 - Fixed: transform joints to camera space using pred_cam_t
 """
 
 import numpy as np
@@ -19,7 +19,6 @@ except ImportError:
 
 
 def log(msg):
-    """Print with flush to ensure immediate output."""
     print(f"[JointStabilizer] {msg}", flush=True)
     sys.stdout.flush()
 
@@ -140,9 +139,15 @@ class JointTemporalStabilizer:
             empty_overlay = torch.from_numpy(images_np.astype(np.float32) / 255.0)
             return (mesh_sequence, empty_overlay, "No frames found")
         
-        # Extract joints
-        JOINT_KEYS = ["joint_coords", "joints", "pred_keypoints_3d"]
+        # Debug first frame structure
+        if frames and isinstance(frames[0], dict):
+            log(f"Frame 0 keys: {list(frames[0].keys())}")
+        
+        # =====================================================================
+        # Extract joints - need to transform to camera space
+        # =====================================================================
         joints_list = []
+        cam_t_list = []
         focal_lengths = []
         cx_list = []
         cy_list = []
@@ -152,22 +157,52 @@ class JointTemporalStabilizer:
             if not isinstance(frame, dict):
                 continue
             
+            # Get joint coordinates (in local/canonical space)
             joints = None
-            for key in JOINT_KEYS:
+            joint_key_used = None
+            
+            # Try different keys
+            for key in ["joint_coords", "joints", "pred_keypoints_3d"]:
                 if key in frame and frame[key] is not None:
                     joints = frame[key]
-                    if i == 0:
-                        log(f"Found joints using key: '{key}'")
+                    joint_key_used = key
                     break
             
-            if joints is not None:
-                if isinstance(joints, torch.Tensor):
-                    joints = joints.cpu().numpy()
-                joints_list.append(np.array(joints))
-                focal_lengths.append(frame.get("focal_length"))
-                cx_list.append(frame.get("cx", W / 2))
-                cy_list.append(frame.get("cy", H / 2))
-                valid_frame_indices.append(i)
+            if joints is None:
+                continue
+            
+            if isinstance(joints, torch.Tensor):
+                joints = joints.cpu().numpy()
+            joints = np.array(joints)
+            
+            # Get camera translation for transforming to camera space
+            cam_t = frame.get("pred_cam_t")
+            if cam_t is not None:
+                if isinstance(cam_t, torch.Tensor):
+                    cam_t = cam_t.cpu().numpy()
+                cam_t = np.array(cam_t).flatten()
+            
+            if i == 0:
+                log(f"Using joint key: '{joint_key_used}'")
+                log(f"Joint shape: {joints.shape}")
+                log(f"pred_cam_t: {cam_t}")
+                log(f"Sample joint (local): {joints[0]}")
+            
+            # Transform joints to camera space: joints_cam = joints + cam_t
+            if cam_t is not None and len(cam_t) >= 3:
+                joints_camera = joints + cam_t.reshape(1, 3)
+            else:
+                joints_camera = joints
+            
+            if i == 0:
+                log(f"Sample joint (camera): {joints_camera[0]}")
+            
+            joints_list.append(joints_camera)
+            cam_t_list.append(cam_t)
+            focal_lengths.append(frame.get("focal_length"))
+            cx_list.append(frame.get("cx", W / 2))
+            cy_list.append(frame.get("cy", H / 2))
+            valid_frame_indices.append(i)
         
         log(f"Found {len(joints_list)} frames with valid joints")
         
@@ -176,18 +211,19 @@ class JointTemporalStabilizer:
             empty_overlay = torch.from_numpy(images_np.astype(np.float32) / 255.0)
             return (mesh_sequence, empty_overlay, "No joints found")
         
-        # Stack joints
+        # Stack joints (now in camera space)
         joints_array = np.stack(joints_list, axis=0)
         original_joints = joints_array.copy()
         N, J, D = joints_array.shape
         
         log(f"Joint array shape: {N} frames, {J} joints, {D}D")
-        log(f"First joint position (frame 0): {joints_array[0, 0, :]}")
+        log(f"Joint range X: [{joints_array[:,:,0].min():.2f}, {joints_array[:,:,0].max():.2f}]")
+        log(f"Joint range Y: [{joints_array[:,:,1].min():.2f}, {joints_array[:,:,1].max():.2f}]")
+        log(f"Joint range Z: [{joints_array[:,:,2].min():.2f}, {joints_array[:,:,2].max():.2f}]")
         
         # Get joint groups
         feet_indices, body_indices = self._get_joint_groups(skeleton_format, custom_feet_indices, J)
         log(f"Feet indices: {feet_indices}")
-        log(f"Body joints: {len(body_indices)}")
         
         # Stabilize
         log("Starting stabilization...")
@@ -200,12 +236,23 @@ class JointTemporalStabilizer:
         )
         log("Stabilization complete")
         
-        # Update frames
+        # =====================================================================
+        # Update frames - need to convert back to local space
+        # =====================================================================
         for i, frame_idx in enumerate(valid_frame_indices):
             frame = frames[frame_idx]
-            for key in JOINT_KEYS:
+            cam_t = cam_t_list[i]
+            
+            # Convert stabilized joints back to local space
+            if cam_t is not None and len(cam_t) >= 3:
+                joints_local = stabilized[i] - cam_t.reshape(1, 3)
+            else:
+                joints_local = stabilized[i]
+            
+            # Update the frame
+            for key in ["joint_coords", "joints", "pred_keypoints_3d"]:
                 if key in frame and frame[key] is not None:
-                    frames[frame_idx][key] = stabilized[i]
+                    frames[frame_idx][key] = joints_local
                     break
         
         # Rebuild output
@@ -238,10 +285,10 @@ class JointTemporalStabilizer:
             else:
                 focal = float(focal)
             
-            log(f"Frame 0 projection params: focal={focal:.1f}, cx={cx:.1f}, cy={cy:.1f}")
+            log(f"Frame 0 projection: focal={focal:.1f}, cx={cx:.1f}, cy={cy:.1f}")
             
             test_joint = original_joints[0, 0]
-            log(f"Frame 0 joint[0] 3D: [{test_joint[0]:.4f}, {test_joint[1]:.4f}, {test_joint[2]:.4f}]")
+            log(f"Frame 0 joint[0] 3D (camera space): [{test_joint[0]:.4f}, {test_joint[1]:.4f}, {test_joint[2]:.4f}]")
             
             z = max(test_joint[2], 0.1)
             proj_x = test_joint[0] * focal / z + cx
