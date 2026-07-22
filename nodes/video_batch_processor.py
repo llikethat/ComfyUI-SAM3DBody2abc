@@ -36,6 +36,9 @@ class SAM3DBodyBatchProcessor:
                 "mask": ("MASK", {
                     "tooltip": "Optional segmentation mask to guide reconstruction"
                 }),
+                "tracked_keypoints_2d": ("KEYPOINTS_2D", {
+                    "tooltip": "Pre-tracked 2D keypoints from Keypoint2DTracker for temporal consistency"
+                }),
                 "bbox_threshold": ("FLOAT", {
                     "default": 0.8,
                     "min": 0.0,
@@ -429,6 +432,7 @@ class SAM3DBodyBatchProcessor:
         model,
         images,
         mask=None,
+        tracked_keypoints_2d=None,
         bbox_threshold: float = 0.8,
         inference_type: str = "full",
         start_frame: int = 0,
@@ -461,6 +465,14 @@ class SAM3DBodyBatchProcessor:
         print(f"[SAM3DBody2abc] Processing {len(frame_indices)} frames out of {total_frames} total")
         if mask is not None:
             print(f"[SAM3DBody2abc] Using provided mask")
+        
+        # Extract tracked 2D keypoints if provided (from Keypoint2DTracker)
+        tracked_kp_array = None
+        if tracked_keypoints_2d is not None:
+            tracked_kp_array = tracked_keypoints_2d.get("keypoints")  # (N, 70, 2)
+            num_tracked = tracked_keypoints_2d.get("num_frames", 0)
+            print(f"[SAM3DBody2abc] Using TRACKED 2D keypoints: {num_tracked} frames, {tracked_kp_array.shape[1] if tracked_kp_array is not None else 0} joints")
+            print(f"[SAM3DBody2abc] ⚡ Temporal consistency enabled via TAPIR tracking")
         
         # Get image size for focal length calculation
         img_h, img_w = images.shape[1], images.shape[2]
@@ -782,6 +794,18 @@ class SAM3DBodyBatchProcessor:
                             if bbox is not None:
                                 bbox_center_x = (bbox[0] + bbox[2]) / 2
                             
+                            # Extract 2D keypoints - use tracked if available, else per-frame
+                            pred_kp_2d = output.get("pred_keypoints_2d", None)
+                            if pred_kp_2d is not None:
+                                if isinstance(pred_kp_2d, torch.Tensor):
+                                    pred_kp_2d = pred_kp_2d.cpu().numpy()
+                            
+                            # Override with tracked keypoints if available
+                            keypoints_source = "per_frame"
+                            if tracked_kp_array is not None and idx < len(tracked_kp_array):
+                                pred_kp_2d = tracked_kp_array[idx]
+                                keypoints_source = "tracked"
+                            
                             mesh_data = {
                                 "frame_index": idx,
                                 "source_frame": frame_idx,
@@ -797,6 +821,8 @@ class SAM3DBodyBatchProcessor:
                                 "focal_length": focal_length,
                                 "image_size": (img_w, img_h),
                                 "bbox": bbox,
+                                "pred_keypoints_2d": pred_kp_2d,  # 2D keypoints (tracked or per-frame)
+                                "keypoints_source": keypoints_source,  # "tracked" or "per_frame"
                                 "pose_params": {
                                     "body_pose": output.get("body_pose_params", None),
                                     "hand_pose": output.get("hand_pose_params", None),

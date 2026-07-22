@@ -1,4 +1,4 @@
-# SAM3DBody2abc v5.8.0
+# SAM3DBody2abc v5.9.4
 
 **Standalone** ComfyUI package for video-to-animated-FBX export using Meta's SAM-3D-Body.
 
@@ -14,6 +14,7 @@
 - 📷 **Multi-Camera Support** - N-camera triangulation for jitter-free 3D
 - ⚡ **Physics-Based Foot Contact** - GroundLink neural network for accurate ground contact
 - 🎭 **Silhouette Refinement** - SMPL-based differentiable rendering (optional)
+- 🎯 **TAPIR Keypoint Tracking** - Detect-once-track-all for temporal consistency
 
 ## Installation
 
@@ -59,6 +60,23 @@ On first run, it automatically downloads:
 [Load Video] → [🎬 Video Batch Processor] → [⚡ GroundLink Foot Contact] → [📦 Export Animated FBX]
 ```
 
+### Single Camera with Temporal Consistency (NEW in v5.9.4)
+
+```
+[Load Video] ─────────────────────────────────────────────────────────────────┐
+     │                                                                         │
+     └──→ [🎯 Keypoint 2D Tracker] ──→ tracked_keypoints_2d                    │
+                   ↓ (TAPIR tracks 70 keypoints across all frames)             │
+     ┌─────────────┘                                                           │
+     ↓                                                                         ↓
+[🎬 Video Batch Processor] ←── tracked_keypoints_2d ←─────────────────────────┘
+     │
+     ↓ (temporally consistent 2D keypoints)
+[📦 Export Animated FBX]
+```
+
+This workflow eliminates per-frame detection jitter by detecting keypoints once in frame 0, then using TAPIR to track them across all frames.
+
 ### Multi-Camera Triangulation (Jitter-Free 3D)
 
 ```
@@ -90,6 +108,7 @@ Camera C: [Load Video] → [🎬 Video Batch Processor] → [📷 Camera Accumul
 | Node | Description |
 |------|-------------|
 | 🔧 Load SAM3DBody Model (Direct) | Load model (auto-downloads on first run) |
+| 🎯 Keypoint 2D Tracker | **NEW** - TAPIR-based keypoint tracking for temporal consistency |
 | 🎬 Video Batch Processor | Process video → MESH_SEQUENCE |
 | 📦 Export Animated FBX | Export to FBX/Alembic |
 | 📄 Export BVH | Export to BVH motion capture format |
@@ -200,7 +219,21 @@ This means no foot contacts were detected. Check:
 
 ## Changelog
 
-### v5.8.0 (Current)
+### v5.9.4 (Current)
+- **NEW**: 🎯 Keypoint 2D Tracker (TAPIR-based)
+  - Detects 2D keypoints once in frame 0 using SAM3D
+  - Tracks those 70 keypoints across all frames using TAPIR
+  - Eliminates per-frame detection jitter at the source
+  - Outputs KEYPOINTS_2D type for downstream nodes
+  - Automatic resolution scaling for memory efficiency
+- **UPDATED**: 🎬 Video Batch Processor now accepts `tracked_keypoints_2d`
+  - Connect output from Keypoint 2D Tracker for temporal consistency
+  - Stores tracked keypoints in mesh_sequence for downstream nodes
+- **NEW**: 🦶📐 Kinematic Contact Detector (v5.9.1)
+  - Pure geometry approach - detects foot contacts using biomechanical principles
+  - No ML models required
+
+### v5.8.0
 - **NEW**: Camera Accumulator now accepts per-camera intrinsics
   - `focal_length_mm` input (0 = auto-detect from mesh_sequence)
   - `sensor_width_mm` input (default: 36mm full-frame)
