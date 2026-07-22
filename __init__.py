@@ -15,6 +15,14 @@ Outputs match SAM3DBody Process:
 - Uses SAM3DBodyExportFBX format for single frames
 - Animated FBX has shape keys + skeleton keyframes
 
+Version: 5.9.4
+- NEW: 🎯 Keypoint 2D Tracker (TAPIR-based)
+  - Detects 2D keypoints once in frame 0 using SAM3D
+  - Tracks those 70 keypoints across all frames using TAPIR
+  - Eliminates per-frame detection jitter at the source
+  - Outputs KEYPOINTS_2D type for downstream nodes
+  - Automatic resolution scaling for memory efficiency
+
 Version: 5.9.3
 - FIXED: Kinematic Contact Detector - stationary pose detection
   - Added depth_scale_limit parameter (default 0.25) to prevent false negatives
@@ -150,7 +158,7 @@ Version: 5.2.0
 - NEW: 📐 Body Shape Lock node
 """
 
-__version__ = "5.9.3"
+__version__ = "5.9.4"
 
 import os
 import sys
@@ -410,11 +418,11 @@ if _kinematic_contact:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_KinematicContact"] = _kinematic_contact.KinematicContactNode
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_KinematicContact"] = "🦶📐 Kinematic Contact Detector"
 
-# Load and register Joint Temporal Stabilizer
-_joint_stabilizer = _load_module("sam3d2abc_joint_stabilizer", os.path.join(_nodes, "joint_temporal_stabilizer.py"))
-if _joint_stabilizer:
-    NODE_CLASS_MAPPINGS["SAM3DBody2abc_JointTemporalStabilizer"] = _joint_stabilizer.JointTemporalStabilizer
-    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_JointTemporalStabilizer"] = "🦴 Joint Temporal Stabilizer"
+# Load and register Keypoint 2D Tracker (TAPIR-based) - NEW in v5.9.4
+_keypoint_tracker = _load_module("sam3d2abc_keypoint_2d_tracker", os.path.join(_nodes, "keypoint_2d_tracker.py"))
+if _keypoint_tracker:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_Keypoint2DTracker"] = _keypoint_tracker.Keypoint2DTracker
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Keypoint2DTracker"] = "🎯 Keypoint 2D Tracker"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
