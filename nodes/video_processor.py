@@ -196,6 +196,9 @@ class VideoBatchProcessor:
                 "masks": ("MASK", {
                     "tooltip": "Masks from SAM3 Video Output or any mask source. Shape: (N, H, W) or (N, 1, H, W)"
                 }),
+                "tracked_keypoints_2d": ("KEYPOINTS_2D", {
+                    "tooltip": "Pre-tracked 2D keypoints from Keypoint2DTracker for temporal consistency"
+                }),
                 "fps": ("FLOAT", {
                     "default": 24.0,
                     "min": 1.0,
@@ -318,6 +321,7 @@ class VideoBatchProcessor:
         model: Dict,
         images: torch.Tensor,
         masks: Optional[torch.Tensor] = None,
+        tracked_keypoints_2d: Optional[Dict] = None,
         fps: float = 24.0,
         object_id: int = 0,
         bbox_threshold: float = 0.8,
@@ -413,6 +417,14 @@ class VideoBatchProcessor:
         if active_mask is not None:
             mask_frames = active_mask.shape[0] if hasattr(active_mask, 'shape') and active_mask.ndim >= 1 else 1
             log.info(f"Using per-frame masks ({mask_frames} masks available)")
+        
+        # Extract tracked 2D keypoints if provided (from Keypoint2DTracker)
+        tracked_kp_array = None
+        if tracked_keypoints_2d is not None:
+            tracked_kp_array = tracked_keypoints_2d.get("keypoints")  # (N, 70, 2)
+            num_tracked = tracked_keypoints_2d.get("num_frames", 0)
+            log.info(f"Using TRACKED 2D keypoints: {num_tracked} frames, {tracked_kp_array.shape[1] if tracked_kp_array is not None else 0} joints")
+            log.info(f"⚡ Temporal consistency enabled via TAPIR tracking")
         
         # Normalize external intrinsics if provided
         # Priority: external_intrinsics (CAMERA_INTRINSICS) > intrinsics_json (INTRINSICS) > SAM3DBody
@@ -736,11 +748,19 @@ class VideoBatchProcessor:
                                     diff = final_focal_length - focal_length
                                     log.info(f"  SAM3DBody focal was: {focal_length:.1f}px (diff: {diff:+.1f}px)")
                         
+                        # Get per-frame 2D keypoints, override with tracked if available
+                        pred_kp_2d = to_numpy(output.get("pred_keypoints_2d"))
+                        keypoints_source = "per_frame"
+                        if tracked_kp_array is not None and i < len(tracked_kp_array):
+                            pred_kp_2d = tracked_kp_array[i]
+                            keypoints_source = "tracked"
+                        
                         frames[frame_idx] = {
                             "vertices": to_numpy(output.get("pred_vertices")),
                             "joint_coords": to_numpy(output.get("pred_joint_coords")),
                             "joint_rotations": to_numpy(output.get("pred_global_rots")),  # Per-joint rotations!
-                            "pred_keypoints_2d": to_numpy(output.get("pred_keypoints_2d")),  # 2D keypoints for overlay
+                            "pred_keypoints_2d": pred_kp_2d,  # 2D keypoints (tracked or per-frame)
+                            "keypoints_source": keypoints_source,  # "tracked" or "per_frame"
                             "pred_keypoints_3d": to_numpy(output.get("pred_keypoints_3d")),  # 3D keypoints for projection validation
                             "pred_cam_t": to_numpy(output.get("pred_cam_t")),
                             "focal_length": final_focal_length,
