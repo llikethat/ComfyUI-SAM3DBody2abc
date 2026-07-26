@@ -279,9 +279,14 @@ class Keypoint2DTracker:
                 fov_estimator=None,
             )
             
-            # Ensure model is in float32 to avoid BFloat16 sparse matrix issues
-            if hasattr(estimator, 'model') and hasattr(estimator.model, 'float'):
-                estimator.model.float()
+            # Force ALL model components to float32 to avoid BFloat16 issues
+            if hasattr(estimator, 'model'):
+                for name, param in estimator.model.named_parameters():
+                    param.data = param.data.float()
+                for name, buffer in estimator.model.named_buffers():
+                    if buffer.is_floating_point():
+                        buffer.data = buffer.data.float()
+                log(f"Model parameters converted to float32")
             
             # Get single frame
             frame = images[frame_idx]  # (H, W, C)
