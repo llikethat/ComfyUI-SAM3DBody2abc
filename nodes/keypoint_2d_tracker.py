@@ -314,17 +314,19 @@ class Keypoint2DTracker:
             
             log(f"Running SAM3D on frame {frame_idx}...")
             
-            # Run inference - pass bbox if we have a mask
-            if frame_mask is not None and frame_bbox is not None:
-                outputs = estimator.process_one_image(
-                    frame, 
-                    bboxes=frame_bbox,
-                    masks=frame_mask,
-                    use_mask=True
-                )
-            else:
-                # No mask - let SAM3D auto-detect
-                outputs = estimator.process_one_image(frame)
+            # Disable autocast to avoid BFloat16 sparse matrix issues
+            with torch.cuda.amp.autocast(enabled=False):
+                # Run inference - pass bbox if we have a mask
+                if frame_mask is not None and frame_bbox is not None:
+                    outputs = estimator.process_one_image(
+                        frame, 
+                        bboxes=frame_bbox,
+                        masks=frame_mask,
+                        use_mask=True
+                    )
+                else:
+                    # No mask - let SAM3D auto-detect
+                    outputs = estimator.process_one_image(frame)
             
             # Handle list output (multiple people)
             if isinstance(outputs, list):
