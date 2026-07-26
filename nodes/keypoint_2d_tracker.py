@@ -202,6 +202,22 @@ class Keypoint2DTracker:
         
         return (output, confidence, bbox, status)
 
+    def _compute_bbox_from_mask(self, mask_np):
+        """Compute bbox [x1,y1,x2,y2] from mask."""
+        if mask_np.ndim == 3:
+            mask_np = mask_np[:, :, 0]
+        
+        rows = np.any(mask_np > 0.5, axis=1)
+        cols = np.any(mask_np > 0.5, axis=0)
+        
+        if not rows.any() or not cols.any():
+            return None
+        
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        
+        return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
+
     def _detect_keypoints(
         self,
         images: torch.Tensor,
@@ -276,6 +292,7 @@ class Keypoint2DTracker:
             
             # Get mask for this frame if provided
             frame_mask = None
+            frame_bbox = None
             if mask is not None:
                 if len(mask.shape) == 4:
                     frame_mask = mask[frame_idx, 0].cpu().numpy()
@@ -289,11 +306,25 @@ class Keypoint2DTracker:
                     frame_mask = (frame_mask > 0.5).astype(np.uint8)
                 else:
                     frame_mask = (frame_mask > 127).astype(np.uint8)
+                
+                # Compute bbox from mask (required by SAM3D when using mask)
+                frame_bbox = self._compute_bbox_from_mask(frame_mask)
+                if frame_bbox is not None:
+                    log(f"Computed bbox from mask: {frame_bbox[0].tolist()}")
             
             log(f"Running SAM3D on frame {frame_idx}...")
             
-            # Run inference
-            outputs = estimator.process_one_image(frame, masks=frame_mask)
+            # Run inference - pass bbox if we have a mask
+            if frame_mask is not None and frame_bbox is not None:
+                outputs = estimator.process_one_image(
+                    frame, 
+                    bboxes=frame_bbox,
+                    masks=frame_mask,
+                    use_mask=True
+                )
+            else:
+                # No mask - let SAM3D auto-detect
+                outputs = estimator.process_one_image(frame)
             
             # Handle list output (multiple people)
             if isinstance(outputs, list):
