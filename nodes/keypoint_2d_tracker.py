@@ -212,11 +212,56 @@ class Keypoint2DTracker:
         """Detect 2D keypoints using SAM3D model."""
         
         try:
-            # Get the estimator from model dict
-            model = sam3d_model.get("model")
-            if model is None:
-                log("ERROR: No model in sam3d_model dict")
+            # sam3d_model is a CONFIG dict, not the loaded model
+            # We need to load it the same way video_processor does
+            
+            if not isinstance(sam3d_model, dict):
+                log(f"ERROR: sam3d_model must be a dict, got {type(sam3d_model)}")
                 return None, []
+            
+            log(f"sam3d_model keys: {list(sam3d_model.keys())}")
+            
+            # Get paths from config
+            ckpt_path = sam3d_model.get("ckpt_path") or sam3d_model.get("model_path")
+            mhr_path = sam3d_model.get("mhr_path", "")
+            device = sam3d_model.get("device", "cuda")
+            
+            if not ckpt_path:
+                log("sam3d_model missing checkpoint path")
+                return None, []
+            
+            log(f"Loading SAM3D for keypoint detection...")
+            log(f"  Checkpoint: {ckpt_path}")
+            
+            # Import and load the model
+            try:
+                from sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
+            except ImportError as e:
+                log(f"Could not import sam_3d_body: {e}")
+                return None, []
+            
+            # Load the model
+            result = load_sam_3d_body(
+                checkpoint_path=ckpt_path,
+                device=device,
+                mhr_path=mhr_path
+            )
+            
+            # Handle different return signatures
+            if isinstance(result, tuple):
+                sam_3d_model_loaded = result[0]
+                model_cfg = result[1] if len(result) > 1 else None
+            else:
+                sam_3d_model_loaded = result
+                model_cfg = None
+            
+            estimator = SAM3DBodyEstimator(
+                sam_3d_body_model=sam_3d_model_loaded,
+                model_cfg=model_cfg,
+                human_detector=None,
+                human_segmentor=None,
+                fov_estimator=None,
+            )
             
             # Get single frame
             frame = images[frame_idx]  # (H, W, C)
@@ -238,15 +283,17 @@ class Keypoint2DTracker:
                     frame_mask = mask[frame_idx].cpu().numpy()
                 else:
                     frame_mask = mask.cpu().numpy()
+                
+                # Ensure binary mask
+                if frame_mask.max() <= 1.0:
+                    frame_mask = (frame_mask > 0.5).astype(np.uint8)
+                else:
+                    frame_mask = (frame_mask > 127).astype(np.uint8)
             
-            # Check if model has process_one_image method
-            if hasattr(model, 'process_one_image'):
-                outputs = model.process_one_image(frame, mask=frame_mask)
-            elif hasattr(model, '__call__'):
-                outputs = model(frame, mask=frame_mask)
-            else:
-                log(f"ERROR: Unknown model type: {type(model)}")
-                return None, []
+            log(f"Running SAM3D on frame {frame_idx}...")
+            
+            # Run inference
+            outputs = estimator.process_one_image(frame, masks=frame_mask)
             
             # Handle list output (multiple people)
             if isinstance(outputs, list):
@@ -258,12 +305,14 @@ class Keypoint2DTracker:
             # Extract 2D keypoints
             keypoints_2d = outputs.get("pred_keypoints_2d")
             if keypoints_2d is None:
-                log("WARNING: pred_keypoints_2d not in model output")
+                log("pred_keypoints_2d not in model output")
                 log(f"Available keys: {list(outputs.keys())}")
                 return None, []
             
             if isinstance(keypoints_2d, torch.Tensor):
                 keypoints_2d = keypoints_2d.cpu().numpy()
+            
+            log(f"Detected {keypoints_2d.shape[0]} keypoints")
             
             # Get bbox
             bbox = outputs.get("bbox", [])
@@ -275,7 +324,7 @@ class Keypoint2DTracker:
             return keypoints_2d, bbox
             
         except Exception as e:
-            log(f"ERROR in _detect_keypoints: {e}")
+            log(f"Exception in _detect_keypoints: {e}")
             import traceback
             traceback.print_exc()
             return None, []
