@@ -271,6 +271,17 @@ class Keypoint2DTracker:
                 sam_3d_model_loaded = result
                 model_cfg = None
             
+            # Force model to float32 BEFORE creating estimator to avoid BFloat16 issues
+            if hasattr(sam_3d_model_loaded, 'float'):
+                sam_3d_model_loaded = sam_3d_model_loaded.float()
+                log(f"SAM3D model converted to float32")
+            
+            # Also recursively convert all submodules
+            if hasattr(sam_3d_model_loaded, 'modules'):
+                for module in sam_3d_model_loaded.modules():
+                    if hasattr(module, 'float'):
+                        module.float()
+            
             estimator = SAM3DBodyEstimator(
                 sam_3d_body_model=sam_3d_model_loaded,
                 model_cfg=model_cfg,
@@ -279,14 +290,13 @@ class Keypoint2DTracker:
                 fov_estimator=None,
             )
             
-            # Force ALL model components to float32 to avoid BFloat16 issues
-            if hasattr(estimator, 'model'):
-                for name, param in estimator.model.named_parameters():
-                    param.data = param.data.float()
-                for name, buffer in estimator.model.named_buffers():
-                    if buffer.is_floating_point():
-                        buffer.data = buffer.data.float()
-                log(f"Model parameters converted to float32")
+            # Also ensure estimator's internal model is float32
+            if hasattr(estimator, 'model') and hasattr(estimator.model, 'float'):
+                estimator.model.float()
+            if hasattr(estimator, 'backbone') and hasattr(estimator.backbone, 'float'):
+                estimator.backbone.float()
+            
+            log(f"Estimator created, all models should be float32")
             
             # Get single frame
             frame = images[frame_idx]  # (H, W, C)
@@ -337,9 +347,13 @@ class Keypoint2DTracker:
                 cv2.imwrite(tmp.name, frame_bgr)
                 tmp_path = tmp.name
             
+            # Disable any global BFloat16 settings that might affect inference
+            prev_matmul_precision = torch.get_float32_matmul_precision()
+            torch.set_float32_matmul_precision('highest')
+            
             try:
-                # Disable autocast and use no_grad to avoid BFloat16 sparse matrix issues
-                with torch.cuda.amp.autocast(enabled=False):
+                # Disable autocast and use no_grad to avoid BFloat16 issues
+                with torch.amp.autocast('cuda', enabled=False):
                     with torch.no_grad():
                         # Run inference - pass bbox if we have a mask
                         if frame_mask is not None and frame_bbox is not None:
@@ -353,6 +367,7 @@ class Keypoint2DTracker:
                             # No mask - let SAM3D auto-detect
                             outputs = estimator.process_one_image(tmp_path)
             finally:
+                torch.set_float32_matmul_precision(prev_matmul_precision)
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
             
