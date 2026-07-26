@@ -279,16 +279,27 @@ class Keypoint2DTracker:
                 fov_estimator=None,
             )
             
+            # Ensure model is in float32 to avoid BFloat16 sparse matrix issues
+            if hasattr(estimator, 'model') and hasattr(estimator.model, 'float'):
+                estimator.model.float()
+            
             # Get single frame
             frame = images[frame_idx]  # (H, W, C)
             if isinstance(frame, torch.Tensor):
                 frame = frame.cpu().numpy()
             
-            # Ensure uint8
+            # Ensure uint8 RGB
             if frame.max() <= 1.0:
                 frame = (frame * 255).astype(np.uint8)
             else:
                 frame = frame.astype(np.uint8)
+            
+            # Convert RGB to BGR for OpenCV/SAM3D
+            import cv2
+            if frame.shape[-1] == 3:
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:
+                frame_bgr = frame
             
             # Get mask for this frame if provided
             frame_mask = None
@@ -314,19 +325,31 @@ class Keypoint2DTracker:
             
             log(f"Running SAM3D on frame {frame_idx}...")
             
-            # Disable autocast to avoid BFloat16 sparse matrix issues
-            with torch.cuda.amp.autocast(enabled=False):
-                # Run inference - pass bbox if we have a mask
-                if frame_mask is not None and frame_bbox is not None:
-                    outputs = estimator.process_one_image(
-                        frame, 
-                        bboxes=frame_bbox,
-                        masks=frame_mask,
-                        use_mask=True
-                    )
-                else:
-                    # No mask - let SAM3D auto-detect
-                    outputs = estimator.process_one_image(frame)
+            # Save to temp file (SAM3D expects file path)
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                cv2.imwrite(tmp.name, frame_bgr)
+                tmp_path = tmp.name
+            
+            try:
+                # Disable autocast and use no_grad to avoid BFloat16 sparse matrix issues
+                with torch.cuda.amp.autocast(enabled=False):
+                    with torch.no_grad():
+                        # Run inference - pass bbox if we have a mask
+                        if frame_mask is not None and frame_bbox is not None:
+                            outputs = estimator.process_one_image(
+                                tmp_path, 
+                                bboxes=frame_bbox,
+                                masks=frame_mask,
+                                use_mask=True
+                            )
+                        else:
+                            # No mask - let SAM3D auto-detect
+                            outputs = estimator.process_one_image(tmp_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
             
             # Handle list output (multiple people)
             if isinstance(outputs, list):
@@ -403,7 +426,7 @@ class Keypoint2DTracker:
         log(f"Loading TAPIR from: {checkpoint}")
         
         try:
-            self.tapir_model = tapir_model.TAPIR(pyramid_level=0)
+            self.tapir_model = tapir_model.TAPIR(pyramid_level=1)
             self.tapir_model.load_state_dict(torch.load(checkpoint, map_location=self.device))
             self.tapir_model = self.tapir_model.to(self.device)
             self.tapir_model.eval()
