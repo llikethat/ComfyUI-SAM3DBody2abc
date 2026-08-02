@@ -111,30 +111,43 @@ class SMPLTemporalRefitter:
         
         # Handle different possible formats for tracked_keypoints_2d
         tracked_kp = None
+        log(f"tracked_keypoints_2d type: {type(tracked_keypoints_2d)}")
+        
         if isinstance(tracked_keypoints_2d, dict):
             tracked_kp = tracked_keypoints_2d.get("keypoints")
+            log(f"Extracted from dict, keypoints type: {type(tracked_kp)}")
+            if tracked_kp is not None and hasattr(tracked_kp, 'shape'):
+                log(f"Keypoints shape: {tracked_kp.shape}")
         elif isinstance(tracked_keypoints_2d, np.ndarray):
             tracked_kp = tracked_keypoints_2d
+            log(f"Input is ndarray, shape: {tracked_kp.shape}")
         elif hasattr(tracked_keypoints_2d, 'numpy'):
             tracked_kp = tracked_keypoints_2d.numpy()
+            log(f"Converted from tensor, shape: {tracked_kp.shape}")
         
         if tracked_kp is None:
             log(f"WARNING: Could not extract keypoints from tracked_keypoints_2d")
-            log(f"Type: {type(tracked_keypoints_2d)}")
             if isinstance(tracked_keypoints_2d, dict):
-                log(f"Keys: {list(tracked_keypoints_2d.keys())}")
+                log(f"Dict keys: {list(tracked_keypoints_2d.keys())}")
+                for k, v in tracked_keypoints_2d.items():
+                    vtype = type(v).__name__
+                    vshape = v.shape if hasattr(v, 'shape') else 'N/A'
+                    log(f"  {k}: type={vtype}, shape={vshape}")
         
         if not frames:
             log("ERROR: No frames in mesh_sequence")
-            return (mesh_sequence, "Error: No frames in mesh_sequence")
+            # Return empty debug video
+            empty_debug = torch.zeros(1, 64, 64, 3)
+            return (mesh_sequence, empty_debug, "Error: No frames in mesh_sequence")
         
         if tracked_kp is None:
             log("ERROR: No keypoints in tracked_keypoints_2d")
-            return (mesh_sequence, "Error: No tracked keypoints")
+            empty_debug = torch.zeros(1, 64, 64, 3)
+            return (mesh_sequence, empty_debug, "Error: No tracked keypoints")
         
         frame_indices = sorted(frames.keys())
         num_frames = len(frame_indices)
-        num_keypoints = tracked_kp.shape[1]
+        num_keypoints = tracked_kp.shape[1] if hasattr(tracked_kp, 'shape') and len(tracked_kp.shape) > 1 else 0
         
         log(f"Input: {num_frames} frames, {num_keypoints} keypoints")
         log(f"Settings: {iterations} iters, lr={learning_rate}, temporal={temporal_weight}")
