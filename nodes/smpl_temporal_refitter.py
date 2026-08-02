@@ -94,7 +94,7 @@ class SMPLTemporalRefitter:
         self,
         mesh_sequence: Dict,
         tracked_keypoints_2d: Dict,
-        images: Optional[torch.Tensor] = None,
+        images: torch.Tensor,
         iterations: int = 50,
         learning_rate: float = 0.01,
         temporal_weight: float = 0.5,
