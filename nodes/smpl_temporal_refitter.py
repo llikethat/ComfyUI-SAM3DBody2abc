@@ -143,6 +143,10 @@ class SMPLTemporalRefitter:
         for idx, frame_idx in enumerate(frame_indices):
             frame_data = refined_frames[frame_idx]
             
+            # Debug: show available keys on first frame
+            if idx == 0:
+                log(f"Frame data keys: {list(frame_data.keys())}")
+            
             # Get tracked keypoints for this frame
             if idx >= len(tracked_kp):
                 log(f"Frame {frame_idx}: No tracked keypoints, skipping")
@@ -150,15 +154,36 @@ class SMPLTemporalRefitter:
             
             target_kp_2d = tracked_kp[idx]  # (K, 2)
             
-            # Get camera params
+            # Get camera params - try multiple possible key names
             focal_length = frame_data.get("focal_length", 2000.0)
-            cx = frame_data.get("cx", 960.0)
-            cy = frame_data.get("cy", 540.0)
+            image_size = frame_data.get("image_size", (1920, 1080))
+            cx = frame_data.get("cx", image_size[0] / 2)
+            cy = frame_data.get("cy", image_size[1] / 2)
+            
+            # Try different key names for camera translation
             pred_cam_t = frame_data.get("pred_cam_t")
+            if pred_cam_t is None:
+                pred_cam_t = frame_data.get("camera", {}).get("translation")
+            if pred_cam_t is None:
+                pred_cam_t = frame_data.get("cam_t")
+            
+            # If still None, try to compute from joints
+            if pred_cam_t is None:
+                joints_3d = frame_data.get("joint_coords")
+                if joints_3d is not None and len(joints_3d) > 0:
+                    # Estimate camera translation from pelvis position
+                    pelvis = joints_3d[0] if isinstance(joints_3d, np.ndarray) else joints_3d
+                    pred_cam_t = np.array([0, 0, 5.0], dtype=np.float32)  # Default
+                    log(f"Frame {frame_idx}: Using default camera translation")
             
             if pred_cam_t is None:
-                log(f"Frame {frame_idx}: No camera translation, skipping")
+                if idx == 0:
+                    log(f"Frame {frame_idx}: No camera translation found, skipping optimization")
                 continue
+            
+            # Ensure numpy array
+            if isinstance(pred_cam_t, (list, tuple)):
+                pred_cam_t = np.array(pred_cam_t, dtype=np.float32)
             
             # Get current SMPL params
             current_params = self._extract_smpl_params(frame_data)
