@@ -1,41 +1,38 @@
 """
 Keypoint 2D Tracker for SAM3DBody2abc
 =====================================
-Version: 1.0.0
+Version: 2.0.0
 
-Detects 2D keypoints in frame 0, then uses TAPIR to track them
-across all frames for temporal consistency.
+TAPIR-based 2D keypoint tracking. Takes initial keypoints from mesh_sequence
+(frame 0) and tracks them across all frames.
 
-This replaces per-frame detection with detect-once-track-all approach,
-eliminating jitter at the source.
+This version does NOT load SAM3D - it uses keypoints already detected by
+Video Batch Processor, avoiding BF16 conflicts.
 """
 
 import os
-import sys
 import gc
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, Tuple, Optional, Any
 
 
 def log(msg):
     print(f"[Keypoint2DTracker] {msg}", flush=True)
 
 
-# TAPIR Import (same pattern as camera_solver_v2.py)
+# TAPIR Import
 TAPIR_AVAILABLE = False
 TAPIR_BACKEND = None
 
 try:
     from tapnet.torch import tapir_model
-    from tapnet.utils import transforms as tapir_transforms
     TAPIR_BACKEND = "tapnet"
     TAPIR_AVAILABLE = True
 except ImportError:
     try:
         from tapir.torch import tapir_model
-        from tapir.utils import transforms as tapir_transforms
         TAPIR_BACKEND = "tapir"
         TAPIR_AVAILABLE = True
     except ImportError:
@@ -44,31 +41,31 @@ except ImportError:
 
 class Keypoint2DTracker:
     """
-    Detect 2D keypoints once, track with TAPIR across all frames.
+    Track 2D keypoints using TAPIR.
     
-    Pipeline:
-        Frame 0: SAM3D → pred_keypoints_2d (70, 2)
-        Frame 0-N: TAPIR tracks those 70 points
-        Output: tracked_keypoints_2d (N, 70, 2)
+    Takes initial keypoints from mesh_sequence (detected by Video Processor)
+    and tracks them across all frames.
+    
+    Workflow:
+        [Video Processor] → mesh_sequence (with pred_keypoints_2d)
+              ↓
+        [Keypoint2DTracker] → tracked_keypoints_2d
+              ↓
+        [Video Processor] (2nd pass with tracked keypoints)
     """
-    
-    DEFAULT_CHECKPOINT = "models/tapir/bootstapir_checkpoint_v2.pt"
     
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "images": ("IMAGE",),
-                "sam3d_model": ("SAM3D_MODEL",),
+                "mesh_sequence": ("MESH_SEQUENCE",),
             },
             "optional": {
                 "detection_frame": ("INT", {
                     "default": 0, 
                     "min": 0,
-                    "tooltip": "Frame to detect keypoints (usually 0)"
-                }),
-                "mask": ("MASK", {
-                    "tooltip": "Optional mask for person detection"
+                    "tooltip": "Frame to get initial keypoints from (usually 0)"
                 }),
                 "tapir_checkpoint": ("STRING", {
                     "default": "",
@@ -81,8 +78,8 @@ class Keypoint2DTracker:
             },
         }
 
-    RETURN_TYPES = ("KEYPOINTS_2D", "TENSOR", "BBOX", "STRING")
-    RETURN_NAMES = ("tracked_keypoints_2d", "tracking_confidence", "detection_bbox", "status")
+    RETURN_TYPES = ("KEYPOINTS_2D", "TENSOR", "STRING")
+    RETURN_NAMES = ("tracked_keypoints_2d", "tracking_confidence", "status")
     FUNCTION = "process"
     CATEGORY = "SAM3DBody2abc/Tracking"
 
@@ -93,15 +90,14 @@ class Keypoint2DTracker:
     def process(
         self,
         images: torch.Tensor,
-        sam3d_model: Dict,
+        mesh_sequence: Dict,
         detection_frame: int = 0,
-        mask: Optional[torch.Tensor] = None,
         tapir_checkpoint: str = "",
         tracking_resolution: str = "half",
-    ) -> Tuple[Dict, torch.Tensor, List, str]:
+    ) -> Tuple[Dict, torch.Tensor, str]:
         
         log("=" * 60)
-        log("Starting Keypoint 2D Tracker")
+        log("Keypoint 2D Tracker v2.0 (TAPIR-only)")
         log("=" * 60)
         
         # Get dimensions
@@ -109,21 +105,16 @@ class Keypoint2DTracker:
         H, W = images.shape[1], images.shape[2]
         log(f"Input: {num_frames} frames, {W}x{H}")
         
-        if detection_frame >= num_frames:
-            detection_frame = 0
-            log(f"Detection frame out of range, using frame 0")
-        
         # =====================================================================
-        # Step 1: Detect 2D keypoints in detection_frame using SAM3D
+        # Step 1: Extract 2D keypoints from mesh_sequence
         # =====================================================================
-        log(f"Step 1: Detecting keypoints in frame {detection_frame}...")
+        log(f"Step 1: Extracting keypoints from mesh_sequence frame {detection_frame}...")
         
-        keypoints_2d, bbox = self._detect_keypoints(
-            images, sam3d_model, detection_frame, mask
-        )
+        keypoints_2d = self._extract_keypoints_from_mesh(mesh_sequence, detection_frame)
         
         if keypoints_2d is None:
-            log("ERROR: Failed to detect keypoints!")
+            log("ERROR: Could not extract keypoints from mesh_sequence!")
+            log("Make sure Video Processor runs BEFORE this node.")
             empty_kp = {
                 "keypoints": np.zeros((num_frames, 70, 2), dtype=np.float32),
                 "num_frames": num_frames,
@@ -131,21 +122,20 @@ class Keypoint2DTracker:
                 "detection_frame": detection_frame,
             }
             empty_conf = torch.zeros(num_frames, 70)
-            return (empty_kp, empty_conf, [], "Failed to detect keypoints")
+            return (empty_kp, empty_conf, "Failed: No keypoints in mesh_sequence")
         
         num_keypoints = keypoints_2d.shape[0]
-        log(f"Detected {num_keypoints} keypoints in frame {detection_frame}")
+        log(f"Extracted {num_keypoints} keypoints from frame {detection_frame}")
         log(f"Keypoint range: x=[{keypoints_2d[:,0].min():.1f}, {keypoints_2d[:,0].max():.1f}], "
             f"y=[{keypoints_2d[:,1].min():.1f}, {keypoints_2d[:,1].max():.1f}]")
         
         # =====================================================================
-        # Step 2: Track keypoints using TAPIR
+        # Step 2: Load TAPIR and track
         # =====================================================================
         log(f"Step 2: Loading TAPIR model...")
         
         if not self._load_tapir(tapir_checkpoint):
             log("ERROR: TAPIR not available, using static keypoints")
-            # Fallback: repeat detection frame keypoints for all frames
             static_kp = np.tile(keypoints_2d[np.newaxis, :, :], (num_frames, 1, 1))
             output = {
                 "keypoints": static_kp,
@@ -154,7 +144,7 @@ class Keypoint2DTracker:
                 "detection_frame": detection_frame,
             }
             confidence = torch.ones(num_frames, num_keypoints)
-            return (output, confidence, bbox, "TAPIR unavailable - using static keypoints")
+            return (output, confidence, "TAPIR unavailable - using static keypoints")
         
         log(f"Step 3: Running TAPIR tracking ({tracking_resolution} resolution)...")
         
@@ -172,7 +162,7 @@ class Keypoint2DTracker:
                 "detection_frame": detection_frame,
             }
             conf = torch.ones(num_frames, num_keypoints)
-            return (output, conf, bbox, "TAPIR tracking failed - using static keypoints")
+            return (output, conf, "TAPIR tracking failed - using static keypoints")
         
         log(f"Tracking complete: {tracks.shape}")
         
@@ -180,7 +170,7 @@ class Keypoint2DTracker:
         # Step 3: Package output
         # =====================================================================
         output = {
-            "keypoints": tracks,  # (N, 70, 2)
+            "keypoints": tracks,  # (N, num_keypoints, 2)
             "num_frames": num_frames,
             "num_keypoints": num_keypoints,
             "detection_frame": detection_frame,
@@ -200,222 +190,60 @@ class Keypoint2DTracker:
         log(status.replace('\n', ', '))
         log("=" * 60)
         
-        return (output, confidence, bbox, status)
+        return (output, confidence, status)
 
-    def _compute_bbox_from_mask(self, mask_np):
-        """Compute bbox [x1,y1,x2,y2] from mask."""
-        if mask_np.ndim == 3:
-            mask_np = mask_np[:, :, 0]
-        
-        rows = np.any(mask_np > 0.5, axis=1)
-        cols = np.any(mask_np > 0.5, axis=0)
-        
-        if not rows.any() or not cols.any():
-            return None
-        
-        rmin, rmax = np.where(rows)[0][[0, -1]]
-        cmin, cmax = np.where(cols)[0][[0, -1]]
-        
-        return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
-
-    def _detect_keypoints(
+    def _extract_keypoints_from_mesh(
         self,
-        images: torch.Tensor,
-        sam3d_model: Dict,
+        mesh_sequence: Dict,
         frame_idx: int,
-        mask: Optional[torch.Tensor],
-    ) -> Tuple[Optional[np.ndarray], List]:
-        """Detect 2D keypoints using SAM3D model."""
+    ) -> Optional[np.ndarray]:
+        """Extract 2D keypoints from mesh_sequence."""
         
         try:
-            # sam3d_model is a CONFIG dict, not the loaded model
-            # We need to load it the same way video_processor does
+            frames = mesh_sequence.get("frames", {})
             
-            if not isinstance(sam3d_model, dict):
-                log(f"ERROR: sam3d_model must be a dict, got {type(sam3d_model)}")
-                return None, []
+            if not frames:
+                log("mesh_sequence has no frames")
+                return None
             
-            log(f"sam3d_model keys: {list(sam3d_model.keys())}")
+            # Get available frame indices
+            frame_keys = sorted(frames.keys())
+            log(f"Available frames in mesh_sequence: {len(frame_keys)}")
             
-            # Get paths from config
-            ckpt_path = sam3d_model.get("ckpt_path") or sam3d_model.get("model_path")
-            mhr_path = sam3d_model.get("mhr_path", "")
-            device = sam3d_model.get("device", "cuda")
-            
-            if not ckpt_path:
-                log("sam3d_model missing checkpoint path")
-                return None, []
-            
-            log(f"Loading SAM3D for keypoint detection...")
-            log(f"  Checkpoint: {ckpt_path}")
-            
-            # Disable BFloat16 globally to avoid conflicts with SAM3 mask model
-            if torch.cuda.is_available():
-                torch.backends.cuda.matmul.allow_bf16_reduced_precision_gemm = False
-                torch.backends.cudnn.allow_tf32 = False
-                torch.backends.cuda.matmul.allow_tf32 = False
-            
-            # Import and load the model
-            try:
-                from sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
-            except ImportError as e:
-                log(f"Could not import sam_3d_body: {e}")
-                return None, []
-            
-            # Load the model
-            result = load_sam_3d_body(
-                checkpoint_path=ckpt_path,
-                device=device,
-                mhr_path=mhr_path
-            )
-            
-            # Handle different return signatures
-            if isinstance(result, tuple):
-                sam_3d_model_loaded = result[0]
-                model_cfg = result[1] if len(result) > 1 else None
-            else:
-                sam_3d_model_loaded = result
-                model_cfg = None
-            
-            # Force model to float32 BEFORE creating estimator to avoid BFloat16 issues
-            if hasattr(sam_3d_model_loaded, 'float'):
-                sam_3d_model_loaded = sam_3d_model_loaded.float()
-                log(f"SAM3D model converted to float32")
-            
-            # Also recursively convert all submodules
-            if hasattr(sam_3d_model_loaded, 'modules'):
-                for module in sam_3d_model_loaded.modules():
-                    if hasattr(module, 'float'):
-                        module.float()
-            
-            estimator = SAM3DBodyEstimator(
-                sam_3d_body_model=sam_3d_model_loaded,
-                model_cfg=model_cfg,
-                human_detector=None,
-                human_segmentor=None,
-                fov_estimator=None,
-            )
-            
-            # Also ensure estimator's internal model is float32
-            if hasattr(estimator, 'model') and hasattr(estimator.model, 'float'):
-                estimator.model.float()
-            if hasattr(estimator, 'backbone') and hasattr(estimator.backbone, 'float'):
-                estimator.backbone.float()
-            
-            log(f"Estimator created, all models should be float32")
-            
-            # Get single frame
-            frame = images[frame_idx]  # (H, W, C)
-            if isinstance(frame, torch.Tensor):
-                frame = frame.cpu().numpy()
-            
-            # Ensure uint8 RGB
-            if frame.max() <= 1.0:
-                frame = (frame * 255).astype(np.uint8)
-            else:
-                frame = frame.astype(np.uint8)
-            
-            # Convert RGB to BGR for OpenCV/SAM3D
-            import cv2
-            if frame.shape[-1] == 3:
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            else:
-                frame_bgr = frame
-            
-            # Get mask for this frame if provided
-            frame_mask = None
-            frame_bbox = None
-            if mask is not None:
-                if len(mask.shape) == 4:
-                    frame_mask = mask[frame_idx, 0].cpu().numpy()
-                elif len(mask.shape) == 3:
-                    frame_mask = mask[frame_idx].cpu().numpy()
+            if frame_idx not in frames:
+                # Try to find closest frame
+                if frame_keys:
+                    frame_idx = frame_keys[0]
+                    log(f"Frame {frame_idx} not found, using first available: {frame_idx}")
                 else:
-                    frame_mask = mask.cpu().numpy()
-                
-                # Ensure binary mask
-                if frame_mask.max() <= 1.0:
-                    frame_mask = (frame_mask > 0.5).astype(np.uint8)
-                else:
-                    frame_mask = (frame_mask > 127).astype(np.uint8)
-                
-                # Compute bbox from mask (required by SAM3D when using mask)
-                frame_bbox = self._compute_bbox_from_mask(frame_mask)
-                if frame_bbox is not None:
-                    log(f"Computed bbox from mask: {frame_bbox[0].tolist()}")
+                    return None
             
-            log(f"Running SAM3D on frame {frame_idx}...")
+            frame_data = frames[frame_idx]
             
-            # Save to temp file (SAM3D expects file path)
-            import tempfile
-            import os
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                cv2.imwrite(tmp.name, frame_bgr)
-                tmp_path = tmp.name
+            # Get pred_keypoints_2d
+            keypoints_2d = frame_data.get("pred_keypoints_2d")
             
-            # Clear any existing autocast cache and disable BF16
-            if torch.cuda.is_available():
-                torch.clear_autocast_cache()
-                torch.backends.cuda.matmul.allow_bf16_reduced_precision_gemm = False
-            
-            # Disable any global BFloat16 settings
-            prev_matmul_precision = torch.get_float32_matmul_precision()
-            torch.set_float32_matmul_precision('highest')
-            
-            try:
-                # Disable autocast completely
-                with torch.amp.autocast('cuda', enabled=False):
-                    with torch.amp.autocast('cpu', enabled=False):
-                        with torch.no_grad():
-                            # Run inference - pass bbox if we have a mask
-                            if frame_mask is not None and frame_bbox is not None:
-                                outputs = estimator.process_one_image(
-                                    tmp_path, 
-                                    bboxes=frame_bbox,
-                                    masks=frame_mask,
-                                    use_mask=True
-                                )
-                            else:
-                                # No mask - let SAM3D auto-detect
-                                outputs = estimator.process_one_image(tmp_path)
-            finally:
-                torch.set_float32_matmul_precision(prev_matmul_precision)
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            
-            # Handle list output (multiple people)
-            if isinstance(outputs, list):
-                if len(outputs) == 0:
-                    log("No detections in frame")
-                    return None, []
-                outputs = outputs[0]  # Take first person
-            
-            # Extract 2D keypoints
-            keypoints_2d = outputs.get("pred_keypoints_2d")
             if keypoints_2d is None:
-                log("pred_keypoints_2d not in model output")
-                log(f"Available keys: {list(outputs.keys())}")
-                return None, []
+                log(f"No pred_keypoints_2d in frame {frame_idx}")
+                log(f"Available keys: {list(frame_data.keys())}")
+                return None
             
             if isinstance(keypoints_2d, torch.Tensor):
                 keypoints_2d = keypoints_2d.cpu().numpy()
             
-            log(f"Detected {keypoints_2d.shape[0]} keypoints")
+            keypoints_2d = np.array(keypoints_2d, dtype=np.float32)
             
-            # Get bbox
-            bbox = outputs.get("bbox", [])
-            if isinstance(bbox, torch.Tensor):
-                bbox = bbox.cpu().numpy().tolist()
-            elif isinstance(bbox, np.ndarray):
-                bbox = bbox.tolist()
+            if keypoints_2d.ndim != 2 or keypoints_2d.shape[1] != 2:
+                log(f"Invalid keypoints shape: {keypoints_2d.shape}")
+                return None
             
-            return keypoints_2d, bbox
+            return keypoints_2d
             
         except Exception as e:
-            log(f"Exception in _detect_keypoints: {e}")
+            log(f"Error extracting keypoints: {e}")
             import traceback
             traceback.print_exc()
-            return None, []
+            return None
 
     def _load_tapir(self, checkpoint_path: str = "") -> bool:
         """Load TAPIR model."""
@@ -438,6 +266,7 @@ class Keypoint2DTracker:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".."),
             os.getcwd(),
+            "/home/burny/ComfyUI",
         ]
         
         for base in base_dirs:
@@ -466,6 +295,8 @@ class Keypoint2DTracker:
             return True
         except Exception as e:
             log(f"ERROR loading TAPIR: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _run_tapir_tracking(
