@@ -249,6 +249,12 @@ class Keypoint2DTracker:
             log(f"Loading SAM3D for keypoint detection...")
             log(f"  Checkpoint: {ckpt_path}")
             
+            # Disable BFloat16 globally to avoid conflicts with SAM3 mask model
+            if torch.cuda.is_available():
+                torch.backends.cuda.matmul.allow_bf16_reduced_precision_gemm = False
+                torch.backends.cudnn.allow_tf32 = False
+                torch.backends.cuda.matmul.allow_tf32 = False
+            
             # Import and load the model
             try:
                 from sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
@@ -347,25 +353,31 @@ class Keypoint2DTracker:
                 cv2.imwrite(tmp.name, frame_bgr)
                 tmp_path = tmp.name
             
-            # Disable any global BFloat16 settings that might affect inference
+            # Clear any existing autocast cache and disable BF16
+            if torch.cuda.is_available():
+                torch.clear_autocast_cache()
+                torch.backends.cuda.matmul.allow_bf16_reduced_precision_gemm = False
+            
+            # Disable any global BFloat16 settings
             prev_matmul_precision = torch.get_float32_matmul_precision()
             torch.set_float32_matmul_precision('highest')
             
             try:
-                # Disable autocast and use no_grad to avoid BFloat16 issues
+                # Disable autocast completely
                 with torch.amp.autocast('cuda', enabled=False):
-                    with torch.no_grad():
-                        # Run inference - pass bbox if we have a mask
-                        if frame_mask is not None and frame_bbox is not None:
-                            outputs = estimator.process_one_image(
-                                tmp_path, 
-                                bboxes=frame_bbox,
-                                masks=frame_mask,
-                                use_mask=True
-                            )
-                        else:
-                            # No mask - let SAM3D auto-detect
-                            outputs = estimator.process_one_image(tmp_path)
+                    with torch.amp.autocast('cpu', enabled=False):
+                        with torch.no_grad():
+                            # Run inference - pass bbox if we have a mask
+                            if frame_mask is not None and frame_bbox is not None:
+                                outputs = estimator.process_one_image(
+                                    tmp_path, 
+                                    bboxes=frame_bbox,
+                                    masks=frame_mask,
+                                    use_mask=True
+                                )
+                            else:
+                                # No mask - let SAM3D auto-detect
+                                outputs = estimator.process_one_image(tmp_path)
             finally:
                 torch.set_float32_matmul_precision(prev_matmul_precision)
                 if os.path.exists(tmp_path):
