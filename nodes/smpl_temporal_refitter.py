@@ -43,6 +43,7 @@ class SMPLTemporalRefitter:
             "required": {
                 "mesh_sequence": ("MESH_SEQUENCE",),
                 "tracked_keypoints_2d": ("KEYPOINTS_2D",),
+                "images": ("IMAGE",),
             },
             "optional": {
                 "iterations": ("INT", {
@@ -80,8 +81,8 @@ class SMPLTemporalRefitter:
             },
         }
 
-    RETURN_TYPES = ("MESH_SEQUENCE", "STRING")
-    RETURN_NAMES = ("refined_mesh_sequence", "status")
+    RETURN_TYPES = ("MESH_SEQUENCE", "IMAGE", "STRING")
+    RETURN_NAMES = ("refined_mesh_sequence", "debug_video", "status")
     FUNCTION = "process"
     CATEGORY = "SAM3DBody2abc/Refinement"
 
@@ -93,12 +94,13 @@ class SMPLTemporalRefitter:
         self,
         mesh_sequence: Dict,
         tracked_keypoints_2d: Dict,
+        images: Optional[torch.Tensor] = None,
         iterations: int = 50,
         learning_rate: float = 0.01,
         temporal_weight: float = 0.5,
         keypoint_weight: float = 1.0,
         use_confidence: bool = True,
-    ) -> Tuple[Dict, str]:
+    ) -> Tuple[Dict, torch.Tensor, str]:
         
         log("=" * 60)
         log("SMPL Temporal Refitter v1.0")
@@ -200,6 +202,11 @@ class SMPLTemporalRefitter:
                 log(f"Frame {frame_idx}: No 3D joints, skipping")
                 continue
             
+            # Store original 2D keypoints for debug visualization
+            original_kp_2d = frame_data.get("pred_keypoints_2d")
+            if original_kp_2d is not None:
+                frame_data["original_keypoints_2d"] = np.array(original_kp_2d).copy()
+            
             # Compute loss before optimization
             loss_before = self._compute_reprojection_loss(
                 joints_3d, target_kp_2d, pred_cam_t, focal_length, cx, cy
@@ -280,7 +287,108 @@ class SMPLTemporalRefitter:
         log(status.replace('\n', ', '))
         log("=" * 60)
         
-        return (refined_sequence, status)
+        # Generate debug visualization
+        debug_video = self._create_debug_video(
+            images=images,
+            refined_frames=refined_frames,
+            tracked_kp=tracked_kp,
+            frame_indices=frame_indices,
+        )
+        
+        return (refined_sequence, debug_video, status)
+    
+    def _create_debug_video(
+        self,
+        images: torch.Tensor,
+        refined_frames: Dict,
+        tracked_kp: np.ndarray,
+        frame_indices: List[int],
+    ) -> torch.Tensor:
+        """Create debug video showing tracked keypoints and refined joints."""
+        import cv2
+        
+        num_frames = len(images)
+        debug_frames = []
+        
+        # Colors (BGR for cv2)
+        COLOR_TRACKED = (0, 255, 0)    # Green - TAPIR tracked 2D keypoints
+        COLOR_REFINED = (255, 0, 0)    # Blue - Refined 3D joints projected to 2D
+        COLOR_ORIGINAL = (0, 0, 255)   # Red - Original per-frame keypoints
+        
+        for idx in range(num_frames):
+            # Get frame
+            frame = images[idx].cpu().numpy()
+            if frame.max() <= 1.0:
+                frame = (frame * 255).astype(np.uint8)
+            else:
+                frame = frame.astype(np.uint8)
+            
+            # Convert RGB to BGR for cv2
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            # Draw tracked keypoints (green) - should be smooth
+            if idx < len(tracked_kp):
+                for kp in tracked_kp[idx]:
+                    x, y = int(kp[0]), int(kp[1])
+                    if 0 <= x < frame_bgr.shape[1] and 0 <= y < frame_bgr.shape[0]:
+                        cv2.circle(frame_bgr, (x, y), 3, COLOR_TRACKED, -1)
+            
+            # Find corresponding frame in refined_frames
+            frame_idx = frame_indices[idx] if idx < len(frame_indices) else idx
+            if frame_idx in refined_frames:
+                frame_data = refined_frames[frame_idx]
+                
+                # Draw original keypoints (red) if available
+                original_kp = frame_data.get("original_keypoints_2d")
+                if original_kp is not None:
+                    for kp in original_kp:
+                        x, y = int(kp[0]), int(kp[1])
+                        if 0 <= x < frame_bgr.shape[1] and 0 <= y < frame_bgr.shape[0]:
+                            cv2.circle(frame_bgr, (x, y), 2, COLOR_ORIGINAL, -1)
+                
+                # Draw refined 3D joints projected to 2D (blue)
+                joints_3d = frame_data.get("joint_coords")
+                pred_cam_t = frame_data.get("pred_cam_t")
+                focal = frame_data.get("focal_length", 2000.0)
+                cx = frame_data.get("cx", frame_bgr.shape[1] / 2)
+                cy = frame_data.get("cy", frame_bgr.shape[0] / 2)
+                
+                if joints_3d is not None and pred_cam_t is not None:
+                    # Project 3D to 2D
+                    if isinstance(joints_3d, torch.Tensor):
+                        joints_3d = joints_3d.cpu().numpy()
+                    if isinstance(pred_cam_t, torch.Tensor):
+                        pred_cam_t = pred_cam_t.cpu().numpy()
+                    
+                    joints_cam = joints_3d + pred_cam_t.reshape(1, 3)
+                    z = np.maximum(joints_cam[:, 2], 0.1)
+                    proj_x = (joints_cam[:, 0] * focal / z + cx).astype(int)
+                    proj_y = (joints_cam[:, 1] * focal / z + cy).astype(int)
+                    
+                    # Draw only first 70 joints (body keypoints)
+                    for i in range(min(70, len(proj_x))):
+                        x, y = proj_x[i], proj_y[i]
+                        if 0 <= x < frame_bgr.shape[1] and 0 <= y < frame_bgr.shape[0]:
+                            cv2.circle(frame_bgr, (x, y), 4, COLOR_REFINED, 1)
+            
+            # Add legend
+            cv2.putText(frame_bgr, "Green: TAPIR tracked", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TRACKED, 2)
+            cv2.putText(frame_bgr, "Blue: Refined 3D proj", (10, 55), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_REFINED, 2)
+            cv2.putText(frame_bgr, f"Frame {idx}", (10, 80), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            # Convert back to RGB
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            debug_frames.append(frame_rgb)
+        
+        # Stack frames
+        debug_video = np.stack(debug_frames, axis=0)
+        debug_video = torch.from_numpy(debug_video).float() / 255.0
+        
+        log(f"Created debug video: {debug_video.shape}")
+        return debug_video
 
     def _load_smpl_model(self, mesh_sequence: Dict) -> Optional[nn.Module]:
         """Try to load SMPL model from mesh_sequence or environment."""
