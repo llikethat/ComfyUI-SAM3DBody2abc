@@ -16,12 +16,16 @@ Outputs match SAM3DBody Process:
 - Animated FBX has shape keys + skeleton keyframes
 
 Version: 5.9.4
-- NEW: 🎯 Keypoint 2D Tracker (TAPIR-based)
-  - Detects 2D keypoints once in frame 0 using SAM3D
-  - Tracks those 70 keypoints across all frames using TAPIR
-  - Eliminates per-frame detection jitter at the source
-  - Outputs KEYPOINTS_2D type for downstream nodes
-  - Automatic resolution scaling for memory efficiency
+- NEW: 🎯 Keypoint 2D Tracker v2.0 (TAPIR-based)
+  - Takes mesh_sequence input (no SAM3D loading - avoids BF16 conflicts)
+  - Extracts 2D keypoints from Video Processor output
+  - Tracks keypoints across all frames using TAPIR
+  - Outputs KEYPOINTS_2D for downstream refinement
+- NEW: 🔄 SMPL Temporal Refitter
+  - Re-optimizes SMPL params using tracked 2D keypoints
+  - Warm-starts each frame from previous frame's solution
+  - Temporal smoothness regularization
+  - Works with or without SMPL model (falls back to joint-only refinement)
 
 Version: 5.9.3
 - FIXED: Kinematic Contact Detector - stationary pose detection
@@ -423,6 +427,12 @@ _keypoint_tracker = _load_module("sam3d2abc_keypoint_2d_tracker", os.path.join(_
 if _keypoint_tracker:
     NODE_CLASS_MAPPINGS["SAM3DBody2abc_Keypoint2DTracker"] = _keypoint_tracker.Keypoint2DTracker
     NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_Keypoint2DTracker"] = "🎯 Keypoint 2D Tracker"
+
+# Load and register SMPL Temporal Refitter - NEW in v5.9.4
+_smpl_refitter = _load_module("sam3d2abc_smpl_refitter", os.path.join(_nodes, "smpl_temporal_refitter.py"))
+if _smpl_refitter:
+    NODE_CLASS_MAPPINGS["SAM3DBody2abc_SMPLTemporalRefitter"] = _smpl_refitter.SMPLTemporalRefitter
+    NODE_DISPLAY_NAME_MAPPINGS["SAM3DBody2abc_SMPLTemporalRefitter"] = "🔄 SMPL Temporal Refitter"
 
 # Print loaded nodes
 print(f"[SAM3DBody2abc] v{__version__} loaded {len(NODE_CLASS_MAPPINGS)} nodes:")
