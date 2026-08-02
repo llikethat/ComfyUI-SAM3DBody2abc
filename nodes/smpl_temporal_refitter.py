@@ -108,7 +108,21 @@ class SMPLTemporalRefitter:
         
         # Extract data
         frames = mesh_sequence.get("frames", {})
-        tracked_kp = tracked_keypoints_2d.get("keypoints")  # (N, K, 2)
+        
+        # Handle different possible formats for tracked_keypoints_2d
+        tracked_kp = None
+        if isinstance(tracked_keypoints_2d, dict):
+            tracked_kp = tracked_keypoints_2d.get("keypoints")
+        elif isinstance(tracked_keypoints_2d, np.ndarray):
+            tracked_kp = tracked_keypoints_2d
+        elif hasattr(tracked_keypoints_2d, 'numpy'):
+            tracked_kp = tracked_keypoints_2d.numpy()
+        
+        if tracked_kp is None:
+            log(f"WARNING: Could not extract keypoints from tracked_keypoints_2d")
+            log(f"Type: {type(tracked_keypoints_2d)}")
+            if isinstance(tracked_keypoints_2d, dict):
+                log(f"Keys: {list(tracked_keypoints_2d.keys())}")
         
         if not frames:
             log("ERROR: No frames in mesh_sequence")
@@ -309,6 +323,11 @@ class SMPLTemporalRefitter:
         
         num_frames = len(images)
         debug_frames = []
+        
+        # Handle None tracked_kp
+        if tracked_kp is None:
+            log("WARNING: tracked_kp is None, debug video will only show refined joints")
+            tracked_kp = np.array([])  # Empty array
         
         # Colors (BGR for cv2)
         COLOR_TRACKED = (0, 255, 0)    # Green - TAPIR tracked 2D keypoints
