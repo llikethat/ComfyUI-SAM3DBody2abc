@@ -382,8 +382,17 @@ class SMPLTemporalRefitter:
                 joints_3d = frame_data.get("joint_coords")
                 pred_cam_t = frame_data.get("pred_cam_t")
                 focal = frame_data.get("focal_length", 2000.0)
-                cx = frame_data.get("cx", frame_bgr.shape[1] / 2)
-                cy = frame_data.get("cy", frame_bgr.shape[0] / 2)
+                img_h, img_w = frame_bgr.shape[:2]
+                cx = frame_data.get("cx")
+                cy = frame_data.get("cy")
+                
+                # Default to image center if not provided
+                if cx is None:
+                    cx = img_w / 2
+                if cy is None:
+                    cy = img_h / 2
+                if focal is None:
+                    focal = 2000.0
                 
                 if joints_3d is not None and pred_cam_t is not None:
                     # Project 3D to 2D
