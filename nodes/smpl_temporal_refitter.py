@@ -33,21 +33,21 @@ class SMPLTemporalRefitter:
             },
             "optional": {
                 "smooth_factor": ("FLOAT", {
-                    "default": 0.7,
+                    "default": 0.85,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
                     "tooltip": "Smoothing factor (0=no smoothing, 1=maximum smoothing)"
                 }),
                 "keypoint_blend": ("FLOAT", {
-                    "default": 0.5,
+                    "default": 0.7,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.1,
                     "tooltip": "Blend between original (0) and tracked (1) keypoints"
                 }),
                 "window_size": ("INT", {
-                    "default": 5,
+                    "default": 7,
                     "min": 1,
                     "max": 15,
                     "step": 2,
@@ -66,9 +66,9 @@ class SMPLTemporalRefitter:
         mesh_sequence: Dict,
         tracked_keypoints_2d: Dict,
         images: torch.Tensor,
-        smooth_factor: float = 0.7,
-        keypoint_blend: float = 0.5,
-        window_size: int = 5,
+        smooth_factor: float = 0.85,
+        keypoint_blend: float = 0.7,
+        window_size: int = 7,
     ) -> Tuple[Dict, torch.Tensor, str]:
         
         log("=" * 60)
@@ -282,15 +282,15 @@ class SMPLTemporalRefitter:
         frame_indices: List[int],
         valid_frames: List[int],
     ) -> torch.Tensor:
-        """Create debug video showing tracked vs refined keypoints."""
+        """Create side-by-side debug video: Left=tracked, Right=refined."""
         import cv2
         
         num_frames = len(images)
         debug_frames = []
         
         # Colors (BGR)
-        COLOR_TRACKED = (0, 255, 0)   # Green - TAPIR tracked
-        COLOR_REFINED = (255, 0, 0)   # Blue - Refined 3D projected
+        COLOR_TRACKED = (0, 255, 0)    # Green - TAPIR tracked
+        COLOR_REFINED = (255, 255, 0)  # Teal/Cyan - Refined 3D projected
         
         for idx in range(num_frames):
             # Get frame
@@ -303,14 +303,18 @@ class SMPLTemporalRefitter:
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             img_h, img_w = frame_bgr.shape[:2]
             
-            # Draw tracked keypoints (green)
+            # Create two copies - left for tracked, right for refined
+            left_frame = frame_bgr.copy()
+            right_frame = frame_bgr.copy()
+            
+            # === LEFT PANE: Draw tracked keypoints (green) ===
             if tracked_kp is not None and idx < len(tracked_kp):
                 for kp in tracked_kp[idx]:
                     x, y = int(kp[0]), int(kp[1])
                     if 0 <= x < img_w and 0 <= y < img_h:
-                        cv2.circle(frame_bgr, (x, y), 3, COLOR_TRACKED, -1)
+                        cv2.circle(left_frame, (x, y), 4, COLOR_TRACKED, -1)
             
-            # Draw refined 3D joints projected (blue)
+            # === RIGHT PANE: Draw refined 3D joints projected (teal) ===
             frame_idx = frame_indices[idx] if idx < len(frame_indices) else idx
             if frame_idx in refined_frames:
                 frame_data = refined_frames[frame_idx]
@@ -334,23 +338,32 @@ class SMPLTemporalRefitter:
                     for i in range(min(70, len(proj_x))):
                         x, y = proj_x[i], proj_y[i]
                         if 0 <= x < img_w and 0 <= y < img_h:
-                            cv2.circle(frame_bgr, (x, y), 4, COLOR_REFINED, 1)
+                            cv2.circle(right_frame, (x, y), 4, COLOR_REFINED, -1)
             
-            # Legend
-            cv2.putText(frame_bgr, "Green: TAPIR tracked", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_TRACKED, 2)
-            cv2.putText(frame_bgr, "Blue: Refined 3D", (10, 55),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_REFINED, 2)
-            cv2.putText(frame_bgr, f"Frame {idx}", (10, 80),
+            # Add labels
+            cv2.putText(left_frame, "TAPIR Tracked (Green)", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_TRACKED, 2)
+            cv2.putText(left_frame, f"Frame {idx}", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            cv2.putText(right_frame, "Refined 3D (Teal)", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_REFINED, 2)
+            cv2.putText(right_frame, f"Frame {idx}", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            # Add divider line
+            cv2.line(left_frame, (img_w - 2, 0), (img_w - 2, img_h), (255, 255, 255), 2)
+            
+            # Combine side by side
+            combined = np.concatenate([left_frame, right_frame], axis=1)
+            
+            frame_rgb = cv2.cvtColor(combined, cv2.COLOR_BGR2RGB)
             debug_frames.append(frame_rgb)
         
         debug_video = np.stack(debug_frames, axis=0)
         debug_video = torch.from_numpy(debug_video).float() / 255.0
         
-        log(f"Debug video shape: {debug_video.shape}")
+        log(f"Debug video shape: {debug_video.shape} (side-by-side)")
         return debug_video
 
 
