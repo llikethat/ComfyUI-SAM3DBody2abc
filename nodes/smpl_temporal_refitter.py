@@ -282,15 +282,16 @@ class SMPLTemporalRefitter:
         frame_indices: List[int],
         valid_frames: List[int],
     ) -> torch.Tensor:
-        """Create side-by-side debug video: Left=tracked, Right=refined."""
+        """Create side-by-side debug video: Left=TAPIR tracked 2D, Right=Refined 3D projected."""
         import cv2
         
         num_frames = len(images)
         debug_frames = []
         
         # Colors (BGR)
-        COLOR_TRACKED = (0, 255, 0)    # Green - TAPIR tracked
+        COLOR_TRACKED = (0, 255, 0)    # Green - TAPIR tracked 2D
         COLOR_REFINED = (255, 255, 0)  # Teal/Cyan - Refined 3D projected
+        COLOR_ORIGINAL = (0, 0, 255)   # Red - Original per-frame 2D (for comparison)
         
         for idx in range(num_frames):
             # Get frame
@@ -303,58 +304,96 @@ class SMPLTemporalRefitter:
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             img_h, img_w = frame_bgr.shape[:2]
             
-            # Create two copies - left for tracked, right for refined
+            # Create two copies
             left_frame = frame_bgr.copy()
             right_frame = frame_bgr.copy()
             
-            # === LEFT PANE: Draw tracked keypoints (green) ===
+            # Get frame data
+            frame_idx = frame_indices[idx] if idx < len(frame_indices) else idx
+            frame_data = refined_frames.get(frame_idx, {})
+            
+            # === LEFT PANE: TAPIR Tracked 2D keypoints (Green) ===
+            # These are already in pixel coordinates from TAPIR
             if tracked_kp is not None and idx < len(tracked_kp):
                 for kp in tracked_kp[idx]:
                     x, y = int(kp[0]), int(kp[1])
                     if 0 <= x < img_w and 0 <= y < img_h:
-                        cv2.circle(left_frame, (x, y), 4, COLOR_TRACKED, -1)
+                        cv2.circle(left_frame, (x, y), 5, COLOR_TRACKED, -1)
             
-            # === RIGHT PANE: Draw refined 3D joints projected (teal) ===
-            frame_idx = frame_indices[idx] if idx < len(frame_indices) else idx
-            if frame_idx in refined_frames:
-                frame_data = refined_frames[frame_idx]
-                joints_3d = frame_data.get("joint_coords")
-                cam_t = frame_data.get("pred_cam_t")
-                focal = frame_data.get("focal_length") or 2000.0
-                cx = frame_data.get("cx") or img_w / 2
-                cy = frame_data.get("cy") or img_h / 2
+            # === RIGHT PANE: Refined/Smoothed joints ===
+            # Option 1: Use pred_keypoints_2d if available (already in pixel coords)
+            # Option 2: Project smoothed 3D joints using camera params
+            
+            # First try to use the original pred_keypoints_2d as baseline
+            # Then overlay the projected smoothed 3D joints
+            
+            # Draw original 2D keypoints (small red dots) for reference
+            original_2d = frame_data.get("pred_keypoints_2d")
+            if original_2d is not None:
+                if isinstance(original_2d, torch.Tensor):
+                    original_2d = original_2d.cpu().numpy()
+                original_2d = np.array(original_2d)
+                for i, kp in enumerate(original_2d[:70]):  # First 70 keypoints
+                    x, y = int(kp[0]), int(kp[1])
+                    if 0 <= x < img_w and 0 <= y < img_h:
+                        cv2.circle(right_frame, (x, y), 2, COLOR_ORIGINAL, -1)
+            
+            # Project smoothed 3D joints (teal circles)
+            joints_3d = frame_data.get("joint_coords")
+            cam_t = frame_data.get("pred_cam_t")
+            
+            if joints_3d is not None:
+                if isinstance(joints_3d, torch.Tensor):
+                    joints_3d = joints_3d.cpu().numpy()
                 
-                if joints_3d is not None and cam_t is not None:
-                    if isinstance(joints_3d, torch.Tensor):
-                        joints_3d = joints_3d.cpu().numpy()
+                # Get camera params with proper defaults
+                focal = frame_data.get("focal_length")
+                if focal is None or focal == 0:
+                    focal = frame_data.get("focal_length_sam3d", 2000.0)
+                if focal is None or focal == 0:
+                    focal = 2000.0
+                    
+                cx = frame_data.get("cx")
+                cy = frame_data.get("cy")
+                if cx is None:
+                    cx = img_w / 2
+                if cy is None:
+                    cy = img_h / 2
+                
+                if cam_t is not None:
                     if isinstance(cam_t, torch.Tensor):
                         cam_t = cam_t.cpu().numpy()
                     
+                    # Project: joints in local space + cam_t = camera space
                     joints_cam = joints_3d + cam_t.reshape(1, 3)
                     z = np.maximum(joints_cam[:, 2], 0.1)
                     proj_x = (joints_cam[:, 0] * focal / z + cx).astype(int)
                     proj_y = (joints_cam[:, 1] * focal / z + cy).astype(int)
                     
+                    # Draw projected joints (teal)
                     for i in range(min(70, len(proj_x))):
                         x, y = proj_x[i], proj_y[i]
                         if 0 <= x < img_w and 0 <= y < img_h:
-                            cv2.circle(right_frame, (x, y), 4, COLOR_REFINED, -1)
+                            cv2.circle(right_frame, (x, y), 5, COLOR_REFINED, -1)
+                else:
+                    # No camera translation - use pred_keypoints_2d directly if available
+                    log(f"Frame {idx}: No cam_t, using pred_keypoints_2d") if idx == 0 else None
             
             # Add labels
-            cv2.putText(left_frame, "TAPIR Tracked (Green)", (10, 30),
+            cv2.putText(left_frame, "TAPIR Tracked 2D (Green)", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_TRACKED, 2)
             cv2.putText(left_frame, f"Frame {idx}", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
-            cv2.putText(right_frame, "Refined 3D (Teal)", (10, 30),
+            cv2.putText(right_frame, "Smoothed 3D Proj (Teal)", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_REFINED, 2)
-            cv2.putText(right_frame, f"Frame {idx}", (10, 60),
+            cv2.putText(right_frame, "Original 2D (Red dots)", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_ORIGINAL, 1)
+            cv2.putText(right_frame, f"Frame {idx}", (10, 85),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             
-            # Add divider line
+            # Combine side by side with divider
             cv2.line(left_frame, (img_w - 2, 0), (img_w - 2, img_h), (255, 255, 255), 2)
-            
-            # Combine side by side
             combined = np.concatenate([left_frame, right_frame], axis=1)
             
             frame_rgb = cv2.cvtColor(combined, cv2.COLOR_BGR2RGB)

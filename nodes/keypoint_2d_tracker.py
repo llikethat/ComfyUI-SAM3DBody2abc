@@ -237,6 +237,40 @@ class Keypoint2DTracker:
                 log(f"Invalid keypoints shape: {keypoints_2d.shape}")
                 return None
             
+            # Check if keypoints might be relative to bbox
+            # If max values are small relative to image size, they might be bbox-relative
+            bbox = frame_data.get("bbox")
+            image_size = frame_data.get("image_size", (1920, 1080))
+            
+            log(f"Keypoints range BEFORE adjustment: x=[{keypoints_2d[:,0].min():.1f}, {keypoints_2d[:,0].max():.1f}], y=[{keypoints_2d[:,1].min():.1f}, {keypoints_2d[:,1].max():.1f}]")
+            log(f"Image size: {image_size}, Bbox: {bbox}")
+            
+            # Check if keypoints need bbox offset
+            if bbox is not None:
+                if isinstance(bbox, torch.Tensor):
+                    bbox = bbox.cpu().numpy()
+                bbox = np.array(bbox).flatten()
+                
+                # If keypoints max values are much smaller than image size,
+                # they might be relative to bbox
+                kp_max_x = keypoints_2d[:, 0].max()
+                kp_max_y = keypoints_2d[:, 1].max()
+                
+                # Heuristic: if keypoints are within bbox dimensions, add offset
+                if len(bbox) >= 4:
+                    bbox_w = bbox[2] - bbox[0]
+                    bbox_h = bbox[3] - bbox[1]
+                    
+                    # If keypoints fit within bbox dimensions, they're likely bbox-relative
+                    if kp_max_x <= bbox_w * 1.1 and kp_max_y <= bbox_h * 1.1:
+                        log(f"Keypoints appear to be bbox-relative, adding offset [{bbox[0]:.1f}, {bbox[1]:.1f}]")
+                        keypoints_2d[:, 0] += bbox[0]
+                        keypoints_2d[:, 1] += bbox[1]
+                    else:
+                        log(f"Keypoints appear to be absolute (kp_max=[{kp_max_x:.1f}, {kp_max_y:.1f}], bbox_size=[{bbox_w:.1f}, {bbox_h:.1f}])")
+            
+            log(f"Keypoints range AFTER adjustment: x=[{keypoints_2d[:,0].min():.1f}, {keypoints_2d[:,0].max():.1f}], y=[{keypoints_2d[:,1].min():.1f}, {keypoints_2d[:,1].max():.1f}]")
+            
             return keypoints_2d
             
         except Exception as e:
